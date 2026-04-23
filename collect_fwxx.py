@@ -59,6 +59,8 @@ import undetected_chromedriver as uc
 # 导入现有模块
 sys.path.insert(0, os.path.dirname(__file__))
 from detection_logger import DetectionLogger
+from browser_utils import is_browser_alive, real_type, create_driver_with_retry
+from cache_utils import read_json_cache, write_json_cache, poll_cache_for_key
 
 # ============================================================================
 # 常量和配置
@@ -77,92 +79,6 @@ STANDALONE_RESULTS_FILE = "data/results/fwxx_standalone_results.json"
 # Part 1: 工具函数（复用现有防爬虫逻辑）
 # ============================================================================
 
-def real_type(text: str, delay_range: tuple = (0.05, 0.18)) -> None:
-    """
-    逐字输入文本，模拟真人输入
-    - 每个字符之间有随机延迟 (50-180ms)
-    - 15% 概率注入 200-500ms 长延迟（反爬虫特征）
-
-    Args:
-        text: 要输入的文本
-        delay_range: 字符间延迟范围（秒）
-    """
-    for char in text:
-        # 随机插入长延迟
-        if random.random() < 0.15:
-            time.sleep(random.uniform(0.2, 0.5))
-
-        # 处理大写字母
-        if char.isupper():
-            pyautogui.hotkey('shift', char.lower())
-        elif char == '.':
-            pyautogui.press('.')
-        else:
-            pyautogui.press(char)
-
-        # 字符间延迟
-        time.sleep(random.uniform(*delay_range))
-
-
-def create_driver_with_retry(max_retries: int = 3):
-    """
-    创建浏览器驱动（带重试）
-
-    Args:
-        max_retries: 最大重试次数
-
-    Returns:
-        Chrome 驱动实例
-    """
-    for attempt in range(max_retries):
-        try:
-            print(f"\n[尝试 {attempt+1}/{max_retries}] 启动浏览器...")
-
-            options = uc.ChromeOptions()
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-
-            # 启用 MITM 代理（collect_fwxx 总是需要）
-            if os.getenv('USE_MITM_PROXY', '').lower() in ('true', '1', 'yes'):
-                print("[*] 启用 MITM 代理: 127.0.0.1:8080")
-                options.add_argument("--proxy-server=http://127.0.0.1:8080")
-                options.add_argument("--ignore-certificate-errors")
-
-            # 检测本地 ChromeDriver 路径
-            local_driver_path = None
-            if sys.platform == 'win32':
-                win_path = os.path.join(os.path.dirname(__file__), 'chromedriver-win64', 'chromedriver.exe')
-                if os.path.exists(win_path):
-                    local_driver_path = win_path
-            else:
-                linux_path = os.path.join(os.path.dirname(__file__), 'chromedriver-linux64', 'chromedriver')
-                if os.path.exists(linux_path):
-                    local_driver_path = linux_path
-
-            if local_driver_path:
-                print(f"[*] 使用本地 ChromeDriver: {local_driver_path}")
-                driver = uc.Chrome(
-                    headless=False,
-                    options=options,
-                    driver_executable_path=local_driver_path,
-                )
-            else:
-                print("[*] 使用自动下载的 ChromeDriver")
-                driver = uc.Chrome(
-                    headless=False,
-                    options=options,
-                )
-
-            print("[✓] 浏览器创建成功!")
-            return driver
-
-        except Exception as e:
-            print(f"[✗] 失败: {str(e)[:80]}")
-            if attempt < max_retries - 1:
-                wait_time = 2 ** attempt
-                time.sleep(wait_time)
-            else:
-                raise RuntimeError("浏览器初始化失败")
 
 
 def countdown(seconds: int, message: str = "请手动记录坐标，倒计时"):
@@ -172,26 +88,6 @@ def countdown(seconds: int, message: str = "请手动记录坐标，倒计时"):
         time.sleep(1)
     print(f"\r{message}: 0 秒...完成！    ")
 
-
-def is_browser_alive(driver) -> bool:
-    """
-    检测浏览器是否还在运行
-
-    通过访问 window_handles 属性来判断浏览器是否仍然连接
-    如果浏览器已关闭，会抛出异常
-
-    Args:
-        driver: Selenium WebDriver 实例
-
-    Returns:
-        True: 浏览器正常运行
-        False: 浏览器已关闭
-    """
-    try:
-        _ = driver.window_handles
-        return True
-    except:
-        return False
 
 
 # ============================================================================
@@ -565,14 +461,11 @@ def collect_one_fwxx(
 
         # 清理缓存中的旧数据（防止脏数据干扰）
         try:
-            if os.path.exists(PATENT_FWXX_CACHE_FILE):
-                with open(PATENT_FWXX_CACHE_FILE, 'r', encoding='utf-8') as f:
-                    cache = json.load(f)
-                if application_no in cache:
-                    del cache[application_no]
-                    with open(PATENT_FWXX_CACHE_FILE, 'w', encoding='utf-8') as f:
-                        json.dump(cache, f)
-        except:
+            cache = read_json_cache(PATENT_FWXX_CACHE_FILE)
+            if application_no in cache:
+                del cache[application_no]
+                write_json_cache(PATENT_FWXX_CACHE_FILE, cache)
+        except Exception:
             pass
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -594,7 +487,7 @@ def collect_one_fwxx(
         time.sleep(0.3)
 
         # 输入申请号（保持原始防爬虫延迟）
-        real_type(application_no)
+        real_type(application_no, delay_range=(0.05, 0.18), pause_prob=0.15)
         time.sleep(random.uniform(0.5, 1))
 
         # 自动点击查询按钮
@@ -669,28 +562,10 @@ def collect_one_fwxx(
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
         print(f"    [*] 从 MITM 缓存读取发文信息...")
-        fwxx_data = None
-        max_wait = 10  # 最多等 10 秒
-        elapsed = 0
-
-        while elapsed < max_wait:
-            try:
-                if os.path.exists(PATENT_FWXX_CACHE_FILE):
-                    with open(PATENT_FWXX_CACHE_FILE, 'r', encoding='utf-8') as f:
-                        cache = json.load(f)
-
-                    # 使用原始申请号格式查询（与 MITM 脚本保持一致）
-                    if application_no in cache:
-                        fwxx_data = cache[application_no]
-                        break
-            except (FileNotFoundError, json.JSONDecodeError):
-                pass
-
-            time.sleep(0.5)
-            elapsed += 0.5
+        fwxx_data = poll_cache_for_key(PATENT_FWXX_CACHE_FILE, application_no, max_wait=10)
 
         if not fwxx_data:
-            print(f"    [!] 未从缓存中获得发文信息（已等待 {elapsed:.1f}s）")
+            print(f"    [!] 未从缓存中获得发文信息")
             # 降级处理：关闭标签但继续
         else:
             print(f"    [✓] 成功读取发文信息")

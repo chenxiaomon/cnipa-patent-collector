@@ -328,26 +328,26 @@ class DetectionLogger:
 
 
 if __name__ == '__main__':
-    # 测试示例
-    logger = DetectionLogger()
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        logger = DetectionLogger(os.path.join(tmpdir, 'test_log.json'))
 
-    # 添加测试记录
-    record1 = DetectionRecord(
-        application_no='CN202310641887.1',
-        status_code=200,
-        response_time_ms=2345,
-        detected=False,
-        response_summary='Success - Record found',
-    )
-    logger.add_record(record1)
+        record1 = DetectionRecord(
+            application_no='CN202310641887.1',
+            status_code=200,
+            response_time_ms=2345,
+            detected=False,
+            response_summary='Success - Record found',
+        )
+        logger.add_record(record1)
 
-    record2 = DetectionRecord(
-        application_no='CN202310869634.X',
-        status_code=403,
-        detected=True,
-        error_message='Request blocked by anti-crawler system',
-    )
-    logger.add_record(record2)
+        record2 = DetectionRecord(
+            application_no='CN202310869634.X',
+            status_code=403,
+            detected=True,
+            error_message='Request blocked by anti-crawler system',
+        )
+        logger.add_record(record2)
 
-    logger.print_summary()
-    print(f"\n日志文件: {logger.log_file}")
+        logger.print_summary()
+        print("\n[测试完成，日志写入临时目录]")

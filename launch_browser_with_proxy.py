@@ -21,16 +21,7 @@ except ImportError:
     print("[!] 请运行: pip install undetected_chromedriver selenium")
     sys.exit(1)
 
-
-def check_mitm_proxy(host: str = "127.0.0.1", port: int = 8080) -> bool:
-    """检查 MITM 代理是否在运行"""
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        result = sock.connect_ex((host, port))
-        sock.close()
-        return result == 0
-    except:
-        return False
+from browser_utils import check_mitm_proxy
 
 
 def launch_chrome_with_proxy(proxy_url: str = "http://127.0.0.1:8080"):

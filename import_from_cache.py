@@ -24,6 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 from detection_logger import DetectionLogger, DetectionRecord
+from cache_utils import normalize_app_no, read_json_cache
 
 
 # ============================================================================
@@ -38,31 +39,6 @@ LOG_FILE = 'data/results/detection_log.json'
 # 工具函数
 # ============================================================================
 
-def normalize_app_no(app_no: str) -> str:
-    """
-    将申请号统一转换为 API 标准格式（纯数字）
-
-    格式转换：
-      CN202511000000.1 → 2025110000001
-      2025110000001   → 2025110000001（已是标准格式）
-
-    Args:
-        app_no: 申请号（可能包含 CN 前缀和点号）
-
-    Returns:
-        标准格式的申请号（纯数字）
-    """
-    if not app_no:
-        return None
-
-    # 移除 CN 前缀
-    normalized = str(app_no).replace('CN', '')
-    # 移除点号
-    normalized = normalized.replace('.', '')
-
-    return normalized if normalized else None
-
-
 def load_cache() -> dict:
     """
     读取 MITM 缓存文件
@@ -74,17 +50,13 @@ def load_cache() -> dict:
         print(f"[!] 缓存文件不存在: {CACHE_FILE}")
         return {}
 
-    try:
-        with open(CACHE_FILE, 'r', encoding='utf-8') as f:
-            cache_data = json.load(f)
-        print(f"[✓] 缓存已加载: {len(cache_data)} 条记录")
-        return cache_data
-    except json.JSONDecodeError as e:
-        print(f"[!] 缓存文件格式错误: {e}")
+    cache_data = read_json_cache(CACHE_FILE)
+    if not cache_data:
+        print(f"[!] 缓存文件格式错误或为空")
         return {}
-    except Exception as e:
-        print(f"[!] 读取缓存失败: {e}")
-        return {}
+
+    print(f"[✓] 缓存已加载: {len(cache_data)} 条记录")
+    return cache_data
 
 
 def load_processed_apps() -> set:

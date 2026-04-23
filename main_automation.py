@@ -32,8 +32,11 @@ except ImportError as e:
     sys.exit(1)
 
 from detection_logger import DetectionLogger, DetectionRecord
-# PatentDataCache 已弃用，改用文件系统共享
-# from patent_data_cache import PatentDataCache
+from browser_utils import (
+    load_credentials, fill_vue_input, is_browser_alive,
+    real_type, create_driver_with_retry,
+)
+from cache_utils import normalize_app_no, poll_cache_for_key
 
 # 配置
 URL = "https://cpquery.cponline.cnipa.gov.cn/"
@@ -59,80 +62,33 @@ def load_search_list() -> list:
     return applications
 
 
-def create_driver_with_retry(max_retries: int = 3):
-    """创建浏览器驱动（带重试）"""
-    print("\n" + "="*60)
-    print("🚀 正在初始化 undetected_chromedriver...")
-    print("="*60)
-
-    for attempt in range(max_retries):
-        try:
-            print(f"\n[尝试 {attempt+1}/{max_retries}] 启动浏览器...")
-
-            options = uc.ChromeOptions()
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-
-            # 配置 MITM 代理（如果启用）
-            if os.getenv('USE_MITM_PROXY', '').lower() in ('true', '1', 'yes'):
-                print("[*] 启用 MITM 代理: 127.0.0.1:8080")
-                options.add_argument("--proxy-server=http://127.0.0.1:8080")
-                options.add_argument("--ignore-certificate-errors")
-
-            driver = uc.Chrome(
-                headless=False,
-                options=options,
-            )
-
-            print("[✓] 浏览器创建成功!")
-            return driver
-
-        except Exception as e:
-            print(f"[✗] 失败: {str(e)[:80]}")
-            if attempt < max_retries - 1:
-                wait_time = 2 ** attempt
-                print(f"  {wait_time} 秒后重试...\n")
-                time.sleep(wait_time)
-            else:
-                print(f"\n[❌] 所有 {max_retries} 次重试都失败了")
-                raise RuntimeError("浏览器初始化失败")
-
-
-def real_type(text: str, delay_range: tuple = (0.03, 0.08)) -> None:
-    """逐字输入文本（优化：收紧延迟以加快输入速度）"""
-    for char in text:
-        # 随机插入延迟（概率降低以加快输入）
-        if random.random() < 0.08:
-            time.sleep(random.uniform(0.1, 0.3))
-
-        if char.isupper():
-            pyautogui.hotkey('shift', char.lower())
-        elif char == '.':
-            pyautogui.press('.')
-        else:
-            pyautogui.press(char)
-
-        time.sleep(random.uniform(*delay_range))
-
-
-def is_browser_alive(driver) -> bool:
+def auto_fill_login(driver, username: str, password: str) -> bool:
     """
-    检测浏览器是否还在运行
+    自动填写代理机构代码和密码，然后等待用户处理验证码
 
-    通过访问 window_handles 属性来判断浏览器是否仍然连接
-    如果浏览器已关闭，会抛出异常
-
-    Args:
-        driver: Selenium WebDriver 实例
-
-    Returns:
-        True: 浏览器正常运行
-        False: 浏览器已关闭
+    Vue.js 需要通过 JS 触发 input 事件才能响应式更新，
+    所以不能直接用 send_keys，而是通过 JS 设值 + 触发事件。
     """
     try:
-        _ = driver.window_handles
+        wait = WebDriverWait(driver, 15)
+
+        print("\n[*] 等待登录页面加载...")
+        username_input = wait.until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, 'input[placeholder="代理机构代码"]'))
+        )
+
+        fill_vue_input(driver, username_input, username)
+        print(f"[✓] 已填写代理机构代码: {username}")
+        time.sleep(0.3)
+
+        password_input = driver.find_element(By.CSS_SELECTOR, 'input[placeholder="请输入密码"]')
+        fill_vue_input(driver, password_input, password)
+        print("[✓] 已填写密码")
+
         return True
-    except:
+
+    except Exception as e:
+        print(f"[!] 自动填写失败: {e}")
         return False
 
 
@@ -141,8 +97,6 @@ def load_or_record_positions() -> tuple:
     从配置文件加载鼠标位置，或者手动记录
     返回: (input_x, input_y, button_x, button_y)
     """
-    import json
-
     # 尝试从配置文件加载
     if os.path.exists(CONFIG_FILE):
         try:
@@ -212,8 +166,7 @@ def read_fwxx_from_cache(cache_file: str, application_no: str) -> dict:
         with open(cache_file, 'r', encoding='utf-8') as f:
             cache_data = json.load(f)
 
-        # 将申请号标准化
-        normalized_app_no = application_no.upper().replace('CN', '').replace('.', '')
+        normalized_app_no = normalize_app_no(application_no)
 
         # 尝试多种格式的申请号查询
         for key in [application_no, normalized_app_no]:
@@ -281,7 +234,6 @@ def navigate_to_fwxx(driver, application_no: str) -> dict:
     """
     try:
         # 1. 点击申请号链接进入详情页
-        # 尝试查找申请号链接
         try:
             # 首先尝试通过 XPath 查找包含申请号的链接
             app_no_link = driver.find_element(
@@ -392,39 +344,16 @@ def search_application(
         time.sleep(random.uniform(0.1, 0.3))
         pyautogui.click()
 
-        # 增强等待机制：应对网络波动
+        # 等待并轮询缓存，最多 8 秒
         # ⭐ 核心原则：宁可不采集，也不要采集错误的数据
-        # ⭐ 优化：去掉初始 3 秒固定等待，改为立即轮询（每条省 ~1.5s）
         cache_file = 'data/patent_cache.json'
-        patent_data = None
-
-        # 等待参数
-        max_wait_time = 8     # 最多等待 8 秒（覆盖网络延迟）
-        elapsed_time = 0
-
-        # 立即开始轮询（无初始固定等待）
-        # 这样可以处理网络延迟的情况（2-8 秒的 API 响应）
-        while elapsed_time < max_wait_time and not patent_data:
-            try:
-                with open(cache_file, 'r', encoding='utf-8') as f:
-                    cache_data = json.load(f)
-                    # 将申请号转换为 MITM 使用的格式
-                    # 规范化应用号：移除 CN 前缀和点，但保留末位字母
-                    # 例如：CN202310869634.X → 202310869634X
-                    normalized_app_no = application_no.upper().replace('CN', '').replace('.', '')
-                    temp_data = cache_data.get(normalized_app_no)
-
-                    # 📌 关键：验证数据完整性（14 个字段都必须有值）
-                    # 不要接受不完整的数据
-                    if temp_data and _is_patent_data_complete(temp_data):
-                        patent_data = temp_data
-                        break
-            except (FileNotFoundError, json.JSONDecodeError):
-                pass
-
-            # 继续等待 500ms 后重试
-            time.sleep(0.5)
-            elapsed_time += 0.5
+        normalized_app_no = normalize_app_no(application_no)
+        patent_data = poll_cache_for_key(
+            cache_file,
+            normalized_app_no,
+            max_wait=8,
+            validate=_is_patent_data_complete,
+        )
 
         if patent_data:
             # ✅ MITM 代理运行，成功拦截了 API 数据
@@ -466,14 +395,13 @@ def search_application(
             else:
                 print(f"  [→] 状态为'{falvzt}'，跳过发文信息采集")
         else:
-            # ❌ 采集失败：未能在 8 秒内获得完整的 14 个专利字段
-            # 使用 status_code=0 明确标记采集失败，而不是 null 数据
+            # ❌ 采集失败：未能在 8 秒内获得完整的专利字段
             record = DetectionRecord(
                 application_no=application_no,
                 status_code=0,
                 response_summary='Failed to collect patent data (MITM timeout or incomplete data)',
                 detected=False,
-                # 不填充 14 个专利字段，保持空白
+                # 不填充专利字段，保持空白
             )
             print(f"  ✗ 未采集数据（网络超时或 MITM 未启动）")
 
@@ -541,15 +469,23 @@ def run_automation(test_count: int = None) -> None:
 
     print("\n✓ 浏览器已打开")
 
-    # 检查是否需要手动登录
-    import sys
-    if sys.stdin.isatty():
-        # 交互模式
-        print("请手动登录，登录完成后回来按 Enter")
-        input()
+    # 半自动登录：自动填写账密，等待用户处理验证码
+    username, password = load_credentials()
+    if username and password:
+        filled = auto_fill_login(driver, username, password)
+        if filled:
+            print("\n" + "="*60)
+            print("请在浏览器中完成验证码，然后点击【登录】按钮")
+            print("登录成功后，回到这里按 Enter 继续...")
+            print("="*60)
     else:
-        # 非交互模式
-        print("⏭️  跳过手动登录步骤（非交互模式）")
+        print("\n⚠️  未找到登录凭证，请手动登录")
+        print("提示：在 .env 文件中填写 CNIPA_USERNAME 和 CNIPA_PASSWORD 可自动填写账密")
+
+    if sys.stdin.isatty():
+        input("登录完成后按 Enter 继续...")
+    else:
+        print("⏭️  跳过登录等待（非交互模式）")
 
     # 加载或记录鼠标位置
     print("\n⏳ 正在加载鼠标位置配置...")

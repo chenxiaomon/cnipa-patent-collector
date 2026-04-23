@@ -29,6 +29,7 @@ import sys
 import time
 
 import undetected_chromedriver as uc
+from browser_utils import check_mitm_proxy
 
 
 def launch_browser_with_proxy(
@@ -121,22 +122,11 @@ def main():
 
     # 检查 MITM 代理是否运行
     print("\n[*] 检查 MITM 代理状态...")
-    try:
-        import socket
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        result = sock.connect_ex(('127.0.0.1', 8080))
-        sock.close()
-
-        if result == 0:
-            print("[✓] MITM 代理 (127.0.0.1:8080) 已启动")
-        else:
-            print("[⚠️ ] MITM 代理未响应")
-            print("请先在另一个终端运行：python start_mitm_proxy.py")
-            sys.exit(1)
-    except Exception as e:
-        print(f"[⚠️ ] 检查代理失败: {e}")
-        print("请确保 MITM 代理已启动")
+    if not check_mitm_proxy():
+        print("[⚠️ ] MITM 代理未响应")
+        print("请先在另一个终端运行：python start_mitm_proxy.py")
         sys.exit(1)
+    print("[✓] MITM 代理 (127.0.0.1:8080) 已启动")
 
     # 启动浏览器
     print("\n[*] 启动浏览器...")
