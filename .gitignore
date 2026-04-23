@@ -1,0 +1,29 @@
+# ── 采集数据（不上传）──────────────────────────────────────
+data/patent_cache.json
+data/patent_fwxx_cache.json
+data/current_fwxx_target.json
+data/fwxx_list.txt
+data/failed_applications.txt
+data/search_list_retry.txt
+data/search_list.txt
+data/raw_responses/
+data/raw_searches/
+data/results/
+
+# ── 浏览器驱动（二进制，不入库）──────────────────────────
+chromedriver-win64/
+
+# ── Python ───────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# ── Claude Code 本地配置 ─────────────────────────────────
+.claude/
+
+# ── 系统文件 ─────────────────────────────────────────────
+.DS_Store
+Thumbs.db
