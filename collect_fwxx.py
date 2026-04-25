@@ -338,7 +338,7 @@ def collect_one_fwxx(
         发文信息字典，或 None 失败
     """
     try:
-        # 检测浏览器是否还活着（改动 3）
+        # 检测浏览器是否还活着
         if not is_browser_alive(driver):
             print(f"    [!] 浏览器已关闭，无法采集")
             return None
@@ -383,8 +383,7 @@ def collect_one_fwxx(
         pyautogui.click()
         time.sleep(3)  # 等待搜索结果
 
-        # ✨ 改动 3（建议）：验证搜索结果是否正常
-        # 尝试检查页面是否有异常提示（"无搜索结果"、"请输入查询条件"等）
+        # 验证搜索结果是否正常（检查页面是否有异常提示）
         try:
             # 检查页面上是否存在常见的"无结果"提示
             page_text = driver.page_source.lower()
@@ -393,7 +392,6 @@ def collect_one_fwxx(
                 print(f"    [*] 跳过此申请号，继续下一个...")
                 return None
         except:
-            # 如果 Selenium 检查失败，继续用标签数量的方式检测（改动1）
             pass
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -403,7 +401,7 @@ def collect_one_fwxx(
         # 自动点击申请号链接
         print(f"    [*] 点击申请号链接进入详情页...")
 
-        # 记录点击前的标签数量（✨ 改动 1：检测新标签）
+        # 记录点击前的标签数量（用于检测是否成功打开新标签）
         tabs_before = len(driver.window_handles)
 
         pyautogui.moveTo(link_x, link_y, duration=random.uniform(0.3, 0.5))
@@ -411,7 +409,7 @@ def collect_one_fwxx(
         pyautogui.click()
         time.sleep(4)  # 详情页加载较慢
 
-        # ✨ 改动 1：检查是否打开了新标签页
+        # 检查是否打开了新标签页
         tabs_after = len(driver.window_handles)
         if tabs_after <= tabs_before:
             # 没有打开新标签 → 搜索失败、无结果或点击无效
@@ -460,7 +458,7 @@ def collect_one_fwxx(
         # 步骤 6：关闭详情页标签，回到搜索页
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-        # ✨ 改动 2：只有在有多个标签时才关闭（守卫条件）
+        # 只有在有多个标签时才关闭
         if len(driver.window_handles) > 1:
             print(f"    [*] 关闭详情页标签...")
             pyautogui.hotkey('ctrl', 'w')
@@ -717,7 +715,7 @@ def run_fwxx_collection(args) -> None:
         failed_count = 0
 
         for idx, application_no in enumerate(targets, 1):
-            # 检测浏览器是否还活着（改动 2）
+            # 检测浏览器是否还活着
             if not is_browser_alive(driver):
                 print("\n⚠️  浏览器已关闭，停止采集")
                 print(f"\n已采集 {success_count} 条，失败 {failed_count} 条，还有 {len(targets) - idx + 1} 条未采集")

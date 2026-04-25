@@ -34,19 +34,6 @@ class PatentMITMScraper:
         if 'cponline.cnipa.gov.cn' not in flow.request.pretty_url:
             return
 
-        # 🔍 DEBUG: 打印所有 CNIPA 请求 URL，帮助识别真实的 API 端点
-        print(f"[DEBUG] CNIPA 请求: {flow.request.method} {flow.request.pretty_url[:120]}")
-
-        # ⭐ 诊断：任何含 fwxx 的 URL 都高亮显示，方便确认实际路径格式
-        url = flow.request.pretty_url
-        if 'fwxx' in url.lower():
-            matched = '/api/view/gn/fwxx' in url
-            print(f"\n{'='*60}")
-            print(f"[FWXX URL 捕获] 匹配预期模式: {matched}")
-            print(f"  实际 URL: {url}")
-            print(f"  预期模式: /api/view/gn/fwxx")
-            print(f"{'='*60}\n")
-
         # 跳过非 200 响应
         if flow.response.status_code != 200:
             return
