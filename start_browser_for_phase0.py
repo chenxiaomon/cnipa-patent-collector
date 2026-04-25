@@ -29,7 +29,7 @@ import sys
 import time
 
 import undetected_chromedriver as uc
-from browser_utils import check_mitm_proxy
+from browser_utils import check_mitm_proxy, create_driver_with_retry, auto_fill_login, load_credentials
 
 
 def launch_browser_with_proxy(
@@ -48,70 +48,49 @@ def launch_browser_with_proxy(
     Returns:
         uc.Chrome 驱动实例
     """
-    for attempt in range(max_retries):
-        try:
-            print(f"\n[尝试 {attempt+1}/{max_retries}] 启动浏览器...")
+    # create_driver_with_retry 内部处理重试和本地 chromedriver 检测
+    driver = create_driver_with_retry(max_retries=max_retries, use_mitm=True)
 
-            options = uc.ChromeOptions()
+    # 打开目标网址
+    print(f"\n[*] 打开: {target_url}")
+    driver.get(target_url)
+    time.sleep(3)
 
-            # 基础选项
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-
-            # 配置 MITM 代理
-            print(f"[*] 配置代理: {proxy_url}")
-            options.add_argument(f"--proxy-server={proxy_url}")
-            options.add_argument("--ignore-certificate-errors")
-            options.add_argument("--ignore-certificate-errors-spki-list")
-
-            # 启动浏览器
-            driver = uc.Chrome(
-                headless=False,
-                options=options,
-            )
-
-            print("[✓] 浏览器启动成功!")
-
-            # 打开目标网址
-            print(f"\n[*] 打开: {target_url}")
-            driver.get(target_url)
-            time.sleep(2)
-
-            print("[✓] 页面已加载")
+    # 自动填写账密
+    username, password = load_credentials()
+    if username and password:
+        filled = auto_fill_login(driver, username, password)
+        if filled:
             print("\n" + "="*70)
-            print("📋 使用说明")
+            print("请在浏览器中完成验证码，然后点击【登录】按钮")
+            print("登录成功后，回到这里按 Enter 继续...")
             print("="*70)
-            print("""
-✅ 浏览器已配置代理 (127.0.0.1:8080)
-✅ HTTPS 证书错误已忽略
-✅ MITM 代理会自动拦截 API 响应
+        else:
+            print("[!] 自动填写失败，请手动登录后按 Enter 继续...")
+    else:
+        print("[!] 未找到登录凭证，请手动登录后按 Enter 继续...")
+        print("    提示：在 .env 中填写 CNIPA_USERNAME / CNIPA_PASSWORD 可自动填写")
+
+    input()
+
+    print("\n" + "="*70)
+    print("📋 使用说明")
+    print("="*70)
+    print("""
+✅ 已登录 CNIPA
+✅ MITM 代理会自动拦截每页 API 响应
 
 操作步骤：
-  1. 手动登录 CNIPA 账户
-  2. 在搜索框中输入申请人名称（如"华为"、"小米"等）
-  3. 点击搜索
-  4. 逐页浏览查看结果（MITM 会自动拦截每页的 API）
-  5. 浏览完毕后，关闭浏览器窗口
-
-监控 MITM：
-  在另一个终端运行：tail -f /tmp/mitmproxy.log（或查看 MITM 终端的输出）
+  1. 在搜索框中输入申请人名称，点击搜索
+  2. 逐页浏览查看结果（终端 1 会显示拦截日志）
+  3. 浏览完毕后，关闭浏览器窗口
 
 导入数据：
-  浏览完成后，在新终端运行：python import_from_cache.py
+  浏览完成后运行：python import_from_cache.py
 """)
-            print("="*70)
+    print("="*70)
 
-            return driver
-
-        except Exception as e:
-            print(f"[✗] 启动失败: {str(e)[:100]}")
-            if attempt < max_retries - 1:
-                wait_time = 2 ** attempt
-                print(f"  {wait_time} 秒后重试...\n")
-                time.sleep(wait_time)
-            else:
-                print(f"\n[❌] 所有 {max_retries} 次重试都失败了")
-                raise RuntimeError("浏览器启动失败")
+    return driver
 
 
 def main():

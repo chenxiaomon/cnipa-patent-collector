@@ -15,7 +15,6 @@ import random
 import warnings
 import json
 from datetime import datetime
-from pathlib import Path
 
 # 禁用 undetected_chromedriver 的垃圾回收警告（已知 bug）
 warnings.filterwarnings("ignore", category=ResourceWarning)
@@ -23,9 +22,6 @@ warnings.filterwarnings("ignore", category=ResourceWarning)
 try:
     import undetected_chromedriver as uc
     import pyautogui
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
 except ImportError as e:
     print(f"❌ 缺失依赖: {e}")
     print("请运行: pip install undetected-chromedriver selenium pyautogui")
@@ -33,8 +29,8 @@ except ImportError as e:
 
 from detection_logger import DetectionLogger, DetectionRecord
 from browser_utils import (
-    load_credentials, fill_vue_input, is_browser_alive,
-    real_type, create_driver_with_retry,
+    load_credentials, fill_vue_input, auto_fill_login,
+    is_browser_alive, real_type, create_driver_with_retry,
 )
 from cache_utils import normalize_app_no, poll_cache_for_key
 
@@ -61,35 +57,6 @@ def load_search_list() -> list:
     print(f"✓ 已加载 {len(applications)} 个申请号")
     return applications
 
-
-def auto_fill_login(driver, username: str, password: str) -> bool:
-    """
-    自动填写代理机构代码和密码，然后等待用户处理验证码
-
-    Vue.js 需要通过 JS 触发 input 事件才能响应式更新，
-    所以不能直接用 send_keys，而是通过 JS 设值 + 触发事件。
-    """
-    try:
-        wait = WebDriverWait(driver, 15)
-
-        print("\n[*] 等待登录页面加载...")
-        username_input = wait.until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, 'input[placeholder="代理机构代码"]'))
-        )
-
-        fill_vue_input(driver, username_input, username)
-        print(f"[✓] 已填写代理机构代码: {username}")
-        time.sleep(0.3)
-
-        password_input = driver.find_element(By.CSS_SELECTOR, 'input[placeholder="请输入密码"]')
-        fill_vue_input(driver, password_input, password)
-        print("[✓] 已填写密码")
-
-        return True
-
-    except Exception as e:
-        print(f"[!] 自动填写失败: {e}")
-        return False
 
 
 def load_or_record_positions() -> tuple:
@@ -147,39 +114,6 @@ def load_or_record_positions() -> tuple:
     return input_x, input_y, button_x, button_y
 
 
-def read_fwxx_from_cache(cache_file: str, application_no: str) -> dict:
-    """
-    从缓存文件读取发文信息
-
-    Args:
-        cache_file: 缓存文件路径
-        application_no: 申请号
-
-    Returns:
-        发文信息字典，包含 fwxx_list, bhsjtzs_xiazaisj, bhsjtzs_data
-        如果未找到返回空字典
-    """
-    try:
-        if not os.path.exists(cache_file):
-            return {}
-
-        with open(cache_file, 'r', encoding='utf-8') as f:
-            cache_data = json.load(f)
-
-        normalized_app_no = normalize_app_no(application_no)
-
-        # 尝试多种格式的申请号查询
-        for key in [application_no, normalized_app_no]:
-            if key in cache_data:
-                return cache_data[key]
-
-        return {}
-
-    except Exception as e:
-        print(f"  [!] 读取发文信息缓存失败: {e}")
-        return {}
-
-
 def _is_patent_data_complete(data: dict) -> bool:
     """
     验证专利数据是否有效（宽松模式：只检查关键字段）
@@ -211,87 +145,6 @@ def _is_patent_data_complete(data: dict) -> bool:
 
     # 其他字段可以 null，不影响数据有效性
     return True
-
-
-def navigate_to_fwxx(driver, application_no: str) -> dict:
-    """
-    进入详情页并采集"发文信息"
-
-    流程：
-    1. 点击搜索结果中的申请号链接（进入详情页）
-    2. 等待页面加载
-    3. 点击"发文信息"标签
-    4. 等待 MITM 拦截 API 响应并缓存数据
-    5. 从缓存读取数据
-    6. 返回到搜索列表
-
-    Args:
-        driver: Selenium WebDriver
-        application_no: 申请号
-
-    Returns:
-        发文信息数据字典，如果失败返回空字典
-    """
-    try:
-        # 1. 点击申请号链接进入详情页
-        try:
-            # 首先尝试通过 XPath 查找包含申请号的链接
-            app_no_link = driver.find_element(
-                By.XPATH,
-                f"//a[contains(translate(., 'CN', 'cn'), '{application_no.lower()}')]"
-            )
-            print(f"  [*] 找到申请号链接，进入详情页...")
-            pyautogui.moveTo(int(app_no_link.location['x']), int(app_no_link.location['y']))
-            time.sleep(0.3)
-            pyautogui.click()
-            time.sleep(3)  # 等待详情页加载
-        except Exception as e:
-            print(f"  [!] 未找到申请号链接，尝试其他方式: {e}")
-            # 可能已经在详情页，或者需要其他导航方式
-            # 继续尝试查找"发文信息"
-
-        # 2. 查找并点击"发文信息"标签
-        try:
-            print(f"  [*] 查找'发文信息'标签...")
-            # 使用 WebDriverWait 等待元素出现（页面可能动态加载）
-            wait = WebDriverWait(driver, 5)
-            fwxx_element = wait.until(
-                EC.presence_of_element_located((By.XPATH, "//*[contains(text(), '发文信息')]"))
-            )
-
-            print(f"  [✓] 找到'发文信息'标签，点击...")
-            pyautogui.moveTo(int(fwxx_element.location['x']), int(fwxx_element.location['y']))
-            time.sleep(0.3)
-            pyautogui.click()
-            time.sleep(3)  # 等待 API 调用和数据到达
-
-        except Exception as e:
-            print(f"  [!] 查找或点击'发文信息'失败: {e}")
-            # 降级处理：返回空字典，不中断程序
-            return {}
-
-        # 3. 从缓存读取发文信息
-        cache_file = 'data/patent_fwxx_cache.json'
-        fwxx_data = read_fwxx_from_cache(cache_file, application_no)
-
-        if fwxx_data:
-            print(f"  [✓] 成功读取发文信息")
-        else:
-            print(f"  [!] 未从缓存中找到发文信息数据")
-
-        # 4. 返回搜索列表（浏览器后退）
-        try:
-            print(f"  [*] 返回搜索列表...")
-            pyautogui.hotkey('alt', 'left')  # 浏览器后退键
-            time.sleep(2)
-        except Exception as e:
-            print(f"  [!] 返回搜索列表失败: {e}")
-
-        return fwxx_data
-
-    except Exception as e:
-        print(f"  [!] 导航发文信息过程失败: {e}")
-        return {}
 
 
 def search_application(
@@ -378,22 +231,6 @@ def search_application(
                 anjianywzt=patent_data.get('anjianywzt'),
             )
             print(f"  ✓ 获得专利数据: {patent_data.get('zhuanlimc', 'N/A')}")
-
-            # ⭐ 新增：检查是否需要采集发文信息
-            # 仅在状态="驳回等复审请求"时采集
-            falvzt = patent_data.get('falvzt')
-            if falvzt == '驳回等复审请求':
-                print(f"  [*] 状态为'驳回等复审请求'，开始采集发文信息...")
-                fwxx_data = navigate_to_fwxx(driver, application_no)
-                if fwxx_data:
-                    record.fwxx_list = fwxx_data.get('fwxx_list')
-                    record.bhsjtzs_xiazaisj = fwxx_data.get('bhsjtzs_xiazaisj')
-                    record.bhsjtzs_data = fwxx_data.get('bhsjtzs_data')
-                    print(f"  ✓ 发文信息已采集，驳回时间: {record.bhsjtzs_xiazaisj}")
-                else:
-                    print(f"  [!] 发文信息采集失败或未找到")
-            else:
-                print(f"  [→] 状态为'{falvzt}'，跳过发文信息采集")
         else:
             # ❌ 采集失败：未能在 8 秒内获得完整的专利字段
             record = DetectionRecord(

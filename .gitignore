@@ -8,10 +8,12 @@ data/search_list_retry.txt
 data/search_list.txt
 data/raw_responses/
 data/raw_searches/
-data/results/
+data/results/*
+!data/results/detection_log.json
 
 # ── 浏览器驱动（二进制，不入库）──────────────────────────
 chromedriver-win64/
+chromedriver-linux64/
 
 # ── Python ───────────────────────────────────────────────
 __pycache__/

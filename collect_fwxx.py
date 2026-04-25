@@ -44,7 +44,6 @@ import sys
 import time
 import random
 import argparse
-import select
 from datetime import datetime
 from pathlib import Path
 
@@ -59,7 +58,10 @@ import undetected_chromedriver as uc
 # 导入现有模块
 sys.path.insert(0, os.path.dirname(__file__))
 from detection_logger import DetectionLogger
-from browser_utils import is_browser_alive, real_type, create_driver_with_retry
+from browser_utils import (
+    is_browser_alive, real_type, create_driver_with_retry,
+    auto_fill_login, load_credentials,
+)
 from cache_utils import read_json_cache, write_json_cache, poll_cache_for_key
 
 # ============================================================================
@@ -73,7 +75,7 @@ CONFIG_FWXX_FILE = "data/config_fwxx.json"
 PATENT_CACHE_FILE = "data/patent_cache.json"
 PATENT_FWXX_CACHE_FILE = "data/patent_fwxx_cache.json"
 MARKER_FILE = "data/current_fwxx_target.json"
-STANDALONE_RESULTS_FILE = "data/results/fwxx_standalone_results.json"
+FWXX_UNMATCHED_FILE = "data/fwxx_unmatched.json"
 
 # ============================================================================
 # Part 1: 工具函数（复用现有防爬虫逻辑）
@@ -209,133 +211,17 @@ def load_standalone_targets(input_file: str = None, app_nos: str = None) -> list
 
 
 def _load_standalone_collected() -> set:
-    """读取独立模式已采集的申请号集合"""
-    if not os.path.exists(STANDALONE_RESULTS_FILE):
+    """返回 detection_log 中已有 fwxx_list 的申请号（断点续传用）"""
+    if not os.path.exists(DETECTION_LOG_FILE):
         return set()
     try:
-        with open(STANDALONE_RESULTS_FILE, 'r', encoding='utf-8') as f:
+        with open(DETECTION_LOG_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        return {r['application_no'] for r in data.get('records', [])}
+        return {r['application_no'] for r in data.get('records', []) if r.get('fwxx_list') is not None}
     except:
         return set()
 
 
-def save_standalone_result(application_no: str, fwxx_data: dict) -> bool:
-    """
-    独立模式：将采集结果保存到独立的 JSON 文件
-
-    不修改 detection_log.json
-
-    Args:
-        application_no: 申请号
-        fwxx_data: 发文信息字典
-
-    Returns:
-        成功返回 True
-    """
-    try:
-        # 确保目录存在
-        os.makedirs(os.path.dirname(STANDALONE_RESULTS_FILE), exist_ok=True)
-
-        # 读取现有结果
-        if os.path.exists(STANDALONE_RESULTS_FILE):
-            with open(STANDALONE_RESULTS_FILE, 'r', encoding='utf-8') as f:
-                results = json.load(f)
-        else:
-            results = {'records': []}
-
-        # 添加新记录
-        record = {
-            'application_no': application_no,
-            'fwxx_list': fwxx_data.get('fwxx_list'),
-            'bhsjtzs_xiazaisj': fwxx_data.get('bhsjtzs_xiazaisj'),
-            'bhsjtzs_data': fwxx_data.get('bhsjtzs_data'),
-            'collected_at': datetime.now().isoformat(),
-        }
-        results['records'].append(record)
-
-        # 保存
-        with open(STANDALONE_RESULTS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
-
-        return True
-    except Exception as e:
-        print(f"    [!] 保存结果失败: {e}")
-        return False
-
-
-def export_standalone_excel() -> bool:
-    """
-    独立模式：将结果导出为 Excel
-
-    Returns:
-        成功返回 True
-    """
-    try:
-        import pandas as pd
-    except ImportError:
-        print("[!] pandas 未安装，无法导出 Excel")
-        return False
-
-    if not os.path.exists(STANDALONE_RESULTS_FILE):
-        print("[!] 无结果文件可导出")
-        return False
-
-    try:
-        with open(STANDALONE_RESULTS_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-
-        records = data.get('records', [])
-        if not records:
-            print("[!] 无记录可导出")
-            return False
-
-        # Sheet1: 汇总（申请号 + 驳回时间）
-        summary_rows = []
-        # Sheet2: 发文详情（展开）
-        detail_rows = []
-
-        fwxx_column_mapping = {
-            'tongzhismc': '通知书名称',
-            'fawenr': '发文日',
-            'shoujianrxm': '收件人姓名',
-            'shoujianryb': '收件人邮编',
-            'fawenfs': '发文方式',
-            'xiazaisj': '下载时间',
-            'xiazaiip': '下载IP',
-        }
-
-        for record in records:
-            app_no = record.get('application_no')
-            summary_rows.append({
-                '专利申请号': app_no,
-                '驳回决定时间': record.get('bhsjtzs_xiazaisj', ''),
-                '采集时间': record.get('collected_at', ''),
-            })
-
-            fwxx_list = record.get('fwxx_list', [])
-            if fwxx_list:
-                for item in fwxx_list:
-                    row = {'专利申请号': app_no}
-                    for key, col_name in fwxx_column_mapping.items():
-                        row[col_name] = item.get(key, '')
-                    detail_rows.append(row)
-
-        excel_file = STANDALONE_RESULTS_FILE.replace('.json', '.xlsx')
-        with pd.ExcelWriter(excel_file, engine='openpyxl') as writer:
-            pd.DataFrame(summary_rows).to_excel(writer, sheet_name='驳回汇总', index=False)
-            if detail_rows:
-                pd.DataFrame(detail_rows).to_excel(writer, sheet_name='发文详情', index=False)
-
-        print(f"[✓] Excel 导出成功: {excel_file}")
-        print(f"    Sheet1: 驳回汇总 ({len(summary_rows)} 条)")
-        if detail_rows:
-            print(f"    Sheet2: 发文详情 ({len(detail_rows)} 条)")
-        return True
-
-    except Exception as e:
-        print(f"[!] Excel 导出失败: {e}")
-        return False
 
 
 # ============================================================================
@@ -616,29 +502,57 @@ def update_detection_log(application_no: str, fwxx_data: dict) -> bool:
         fwxx_data: 发文信息字典
 
     Returns:
-        成功返回 True，否则 False
+        成功返回 True；申请号不在 detection_log 中返回 False。
     """
     try:
-        # 读取现有日志
         with open(DETECTION_LOG_FILE, 'r', encoding='utf-8') as f:
             log_data = json.load(f)
 
-        # 查找对应记录并更新
+        found = False
         for record in log_data['records']:
             if record['application_no'] == application_no:
                 record['fwxx_list'] = fwxx_data.get('fwxx_list')
                 record['bhsjtzs_xiazaisj'] = fwxx_data.get('bhsjtzs_xiazaisj')
                 record['bhsjtzs_data'] = fwxx_data.get('bhsjtzs_data')
+                found = True
                 break
 
-        # 保存回文件
-        with open(DETECTION_LOG_FILE, 'w', encoding='utf-8') as f:
+        if not found:
+            print(f"    [!] {application_no} 不在 detection_log 中，写入 {FWXX_UNMATCHED_FILE}")
+            _append_unmatched(application_no, fwxx_data)
+            return False
+
+        tmp_file = DETECTION_LOG_FILE + '.tmp'
+        with open(tmp_file, 'w', encoding='utf-8') as f:
             json.dump(log_data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_file, DETECTION_LOG_FILE)
 
         return True
     except Exception as e:
         print(f"    [!] 日志更新失败: {e}")
         return False
+
+
+def _append_unmatched(application_no: str, fwxx_data: dict) -> None:
+    """将无法匹配到 detection_log 的游离 fwxx 数据追加到 unmatched 文件"""
+    try:
+        if os.path.exists(FWXX_UNMATCHED_FILE):
+            with open(FWXX_UNMATCHED_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        else:
+            data = {'records': []}
+        data['records'].append({
+            'application_no': application_no,
+            'fwxx_list': fwxx_data.get('fwxx_list'),
+            'bhsjtzs_xiazaisj': fwxx_data.get('bhsjtzs_xiazaisj'),
+            'bhsjtzs_data': fwxx_data.get('bhsjtzs_data'),
+        })
+        tmp = FWXX_UNMATCHED_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, FWXX_UNMATCHED_FILE)
+    except Exception as e:
+        print(f"    [!] 写入 unmatched 失败: {e}")
 
 
 # ============================================================================
@@ -702,21 +616,24 @@ def run_fwxx_collection(args) -> None:
 
         print(f"\n[*] 打开搜索页: {args.url}")
         driver.get(args.url)
+        time.sleep(3)
 
-        print("\n[*] 请手动登录到 CNIPA 系统")
-        print("[*] 登录完成后按 Enter 继续（或等待 30 秒自动继续）")
-
-        # 等待用户按 Enter，或在 30 秒后自动继续
-        if sys.platform == 'win32':
-            # Windows 不支持 select，直接等待 30 秒
-            time.sleep(30)
-        else:
-            # Linux/Mac 使用 select 支持超时等待
-            rlist, _, _ = select.select([sys.stdin], [], [], 30)
-            if not rlist:
-                print("[*] 超时，自动继续采集...")
+        # 自动填写账密
+        username, password = load_credentials()
+        if username and password:
+            filled = auto_fill_login(driver, username, password)
+            if filled:
+                print("\n" + "="*60)
+                print("请在浏览器中完成验证码，然后点击【登录】按钮")
+                print("登录成功后，回到这里按 Enter 继续...")
+                print("="*60)
             else:
-                input()  # 用户按了 Enter，继续读取一行
+                print("[!] 自动填写失败，请手动登录后按 Enter 继续...")
+        else:
+            print("[!] 未找到登录凭证，请手动登录后按 Enter 继续...")
+            print("    提示：在 .env 中填写 CNIPA_USERNAME / CNIPA_PASSWORD 可自动填写")
+
+        input()
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 步骤 4：加载坐标配置
@@ -822,24 +739,14 @@ def run_fwxx_collection(args) -> None:
                 fwxx_menu_y=fwxx_menu_y,
             )
 
-            # 更新日志
+            # 更新日志（统一写入 detection_log）
             if fwxx_data:
-                if standalone_mode:
-                    # 独立模式：保存到独立文件
-                    if save_standalone_result(application_no, fwxx_data):
-                        print(f"  ✅ 已成功采集并保存")
-                        success_count += 1
-                    else:
-                        print(f"  ⚠️  保存失败")
-                        failed_count += 1
+                if update_detection_log(application_no, fwxx_data):
+                    print(f"  ✅ 已成功采集并更新日志")
+                    success_count += 1
                 else:
-                    # 原有模式：更新 detection_log.json
-                    if update_detection_log(application_no, fwxx_data):
-                        print(f"  ✅ 已成功采集并更新日志")
-                        success_count += 1
-                    else:
-                        print(f"  ⚠️  日志更新失败")
-                        failed_count += 1
+                    print(f"  ⚠️  申请号不在 detection_log 中，已写入 {FWXX_UNMATCHED_FILE}")
+                    failed_count += 1
             else:
                 print(f"  ❌ 未采集到数据")
                 failed_count += 1
@@ -859,18 +766,9 @@ def run_fwxx_collection(args) -> None:
         print("="*70)
 
         print("\n[*] 导出 Excel...")
-        if standalone_mode:
-            # 独立模式：导出独立的 Excel
-            if export_standalone_excel():
-                print("[✓] Excel 导出成功!")
-            print(f"\n📁 结果文件:")
-            print(f"   JSON: {STANDALONE_RESULTS_FILE}")
-            print(f"   Excel: {STANDALONE_RESULTS_FILE.replace('.json', '.xlsx')}")
-        else:
-            # 原有模式：用 DetectionLogger 导出
-            logger = DetectionLogger()
-            if logger.export_to_excel():
-                print("[✓] Excel 导出成功!")
+        logger = DetectionLogger()
+        if logger.export_to_excel():
+            print("[✓] Excel 导出成功!")
 
     except Exception as e:
         print(f"\n[!] 采集过程出错: {e}")

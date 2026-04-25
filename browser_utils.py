@@ -18,6 +18,9 @@ import socket
 
 import pyautogui
 import undetected_chromedriver as uc
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 
 def load_credentials() -> tuple[str, str]:
@@ -61,6 +64,40 @@ def check_mitm_proxy(host: str = "127.0.0.1", port: int = 8080) -> bool:
         sock.close()
         return result == 0
     except Exception:
+        return False
+
+
+def auto_fill_login(driver, username: str, password: str) -> bool:
+    """
+    自动填写代理机构代码和密码。
+
+    Vue.js 需要通过 JS 触发 input 事件才能响应式更新，
+    所以不能直接用 send_keys，而是通过 fill_vue_input 触发。
+
+    Returns:
+        True: 填写成功，等待用户完成验证码后按 Enter
+        False: 填写失败，需用户手动登录
+    """
+    try:
+        wait = WebDriverWait(driver, 15)
+
+        print("\n[*] 等待登录页面加载...")
+        username_input = wait.until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, 'input[placeholder="代理机构代码"]'))
+        )
+
+        fill_vue_input(driver, username_input, username)
+        print(f"[✓] 已填写代理机构代码: {username}")
+        time.sleep(0.3)
+
+        password_input = driver.find_element(By.CSS_SELECTOR, 'input[placeholder="请输入密码"]')
+        fill_vue_input(driver, password_input, password)
+        print("[✓] 已填写密码")
+
+        return True
+
+    except Exception as e:
+        print(f"[!] 自动填写失败: {e}")
         return False
 
 
@@ -112,6 +149,7 @@ def create_driver_with_retry(max_retries: int = 3, use_mitm: bool = None) -> uc.
             options = uc.ChromeOptions()
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-gpu")
 
             if use_mitm:
                 print("[*] 启用 MITM 代理: 127.0.0.1:8080")
