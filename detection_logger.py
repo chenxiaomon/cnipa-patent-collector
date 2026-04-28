@@ -14,6 +14,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+def _normalize_app_no(app_no: str) -> str:
+    """移除 CN 前缀和点号，统一申请号格式。"""
+    return str(app_no).upper().replace('CN', '').replace('.', '') if app_no else app_no
+
 try:
     import pandas as pd
 except ImportError:
@@ -166,7 +170,21 @@ class DetectionLogger:
 
     def add_record(self, record: DetectionRecord) -> None:
         """添加一条记录并立即保存"""
-        self.data['records'].append(record.to_dict())
+        d = record.to_dict()
+        d['application_no'] = _normalize_app_no(d['application_no'])
+        self.data['records'].append(d)
+        self._save()
+
+    def upsert_record(self, record: DetectionRecord) -> None:
+        """更新已有记录（按 application_no 匹配），不存在则追加。用于强制重查模式。"""
+        new = record.to_dict()
+        new['application_no'] = _normalize_app_no(new['application_no'])
+        for i, r in enumerate(self.data['records']):
+            if r.get('application_no') == new['application_no']:
+                self.data['records'][i] = new
+                self._save()
+                return
+        self.data['records'].append(new)
         self._save()
 
     def _save(self) -> None:

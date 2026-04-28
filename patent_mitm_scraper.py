@@ -16,7 +16,9 @@ from mitmproxy import http
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from detection_logger import DetectionLogger, DetectionRecord
-from cache_utils import read_json_cache, write_json_cache
+from cache_utils import normalize_app_no, read_json_cache, write_json_cache
+
+FORCE_UPDATE_FLAG = os.path.join(os.path.dirname(__file__), 'data', 'force_update.flag')
 
 
 class PatentMITMScraper:
@@ -118,14 +120,15 @@ class PatentMITMScraper:
             api_record: API 返回的原始记录
         """
         try:
-            # 提取申请号（作为唯一标识）
-            application_no = api_record.get('zhuanlisqh', '')
+            # 提取申请号（作为唯一标识）并规范化
+            application_no = normalize_app_no(api_record.get('zhuanlisqh', ''))
             if not application_no:
                 print("  [!] 跳过：未找到申请号")
                 return
 
-            # 检查是否已处理
-            if application_no in self.logger.get_processed_applications():
+            # 检查是否已处理（强制更新模式下跳过此检查）
+            if not os.path.exists(FORCE_UPDATE_FLAG) and \
+                    application_no in self.logger.get_processed_applications():
                 print(f"  [→] 跳过已处理: {application_no}")
                 return
 

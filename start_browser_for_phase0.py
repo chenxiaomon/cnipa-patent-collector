@@ -13,7 +13,7 @@ Phase 0 浏览器启动脚本
   # 终端 2：启动配置好代理的浏览器
   python start_browser_for_phase0.py
 
-然后浏览器会自动打开，配置好代理 127.0.0.1:8080
+然后浏览器会自动打开，配置好代理 127.0.0.1:8082
 
 使用场景：
   1. 打开后，浏览器会自动忽略 HTTPS 证书错误
@@ -33,7 +33,7 @@ from browser_utils import check_mitm_proxy, create_driver_with_retry, auto_fill_
 
 
 def launch_browser_with_proxy(
-    proxy_url: str = "http://127.0.0.1:8080",
+    proxy_url: str = "http://127.0.0.1:8082",
     target_url: str = "https://cpquery.cponline.cnipa.gov.cn",
     max_retries: int = 3
 ) -> uc.Chrome:
@@ -105,7 +105,7 @@ def main():
         print("[⚠️ ] MITM 代理未响应")
         print("请先在另一个终端运行：python start_mitm_proxy.py")
         sys.exit(1)
-    print("[✓] MITM 代理 (127.0.0.1:8080) 已启动")
+    print("[✓] MITM 代理 (127.0.0.1:8082) 已启动")
 
     # 启动浏览器
     print("\n[*] 启动浏览器...")

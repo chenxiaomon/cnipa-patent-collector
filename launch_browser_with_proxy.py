@@ -24,7 +24,7 @@ except ImportError:
 from browser_utils import check_mitm_proxy
 
 
-def launch_chrome_with_proxy(proxy_url: str = "http://127.0.0.1:8080"):
+def launch_chrome_with_proxy(proxy_url: str = "http://127.0.0.1:8082"):
     """
     启动 Chrome 浏览器并配置代理
 
@@ -144,7 +144,7 @@ def main():
         print("然后在另一个终端运行此脚本。")
         sys.exit(1)
 
-    print("[✓] MITM 代理已在运行（127.0.0.1:8080）")
+    print("[✓] MITM 代理已在运行（127.0.0.1:8082）")
     print()
 
     # 启动浏览器

@@ -56,7 +56,7 @@ def is_browser_alive(driver) -> bool:
         return False
 
 
-def check_mitm_proxy(host: str = "127.0.0.1", port: int = 8080) -> bool:
+def check_mitm_proxy(host: str = "127.0.0.1", port: int = 8082) -> bool:
     """检查 MITM 代理是否在运行"""
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -152,8 +152,8 @@ def create_driver_with_retry(max_retries: int = 3, use_mitm: bool = None) -> uc.
             options.add_argument("--disable-gpu")
 
             if use_mitm:
-                print("[*] 启用 MITM 代理: 127.0.0.1:8080")
-                options.add_argument("--proxy-server=http://127.0.0.1:8080")
+                print("[*] 启用 MITM 代理: 127.0.0.1:8082")
+                options.add_argument("--proxy-server=http://127.0.0.1:8082")
                 options.add_argument("--ignore-certificate-errors")
 
             kwargs = dict(headless=False, options=options)
