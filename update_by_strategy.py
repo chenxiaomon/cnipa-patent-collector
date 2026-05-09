@@ -243,6 +243,34 @@ def get_status_change_type(prev_status: Optional[str], curr_status: Optional[str
     return 'OTHER'  # 其他变化
 
 
+def prepare_for_update():
+    """在执行采集前，保存当前状态到 previous_status，用于采集后的对比分析。"""
+    detection_log = load_detection_log()
+    records = detection_log.get('records', [])
+
+    count = 0
+    for record in records:
+        current_status = record.get('anjianywzt')
+        if current_status:
+            record['previous_status'] = current_status
+            count += 1
+
+    # 保存
+    save_detection_log_with_previous_status(detection_log)
+
+    print("\n" + "=" * 100)
+    print("🔄 采集前准备 - 状态快照已保存")
+    print("=" * 100)
+    print(f"\n已保存 {count} 条记录的当前状态到 previous_status")
+    print(f"\n下一步：")
+    print(f"  1. 执行采集更新:")
+    print(f"     USE_MITM_PROXY=true python main_automation.py --update-list data/update_list_dynamic.txt")
+    print(f"  2. 采集完成后，运行:")
+    print(f"     python update_by_strategy.py diff      # 查看状态变化")
+    print(f"     python update_by_strategy.py report    # 查看统计数据")
+    print("\n" + "=" * 100)
+
+
 def show_status_changes():
     """显示自上次生成清单后，所有申请的状态变化。"""
     detection_log = load_detection_log()
@@ -441,13 +469,18 @@ def do_generate(frequency_days: int = None):
         print("\n" + "=" * 100)
         return
 
-    print(f"\n【更新命令】")
-    print(f"  # 先启动 MITM 代理（终端 1）")
+    print(f"\n【完整更新流程】")
+    print(f"  # 第1步：保存采集前的状态快照（重要！用于后续对比）")
+    print(f"  python update_by_strategy.py prepare")
+    print(f"\n  # 第2步：启动 MITM 代理（终端 1）")
     print(f"  source venv/bin/activate")
     print(f"  python start_mitm_proxy.py")
-    print(f"\n  # 然后在另一个终端（终端 2）运行：")
+    print(f"\n  # 第3步：执行采集更新（终端 2）")
     print(f"  source venv/bin/activate")
     print(f"  USE_MITM_PROXY=true python main_automation.py --update-list {filename}")
+    print(f"\n  # 第4步：采集完成后查看结果")
+    print(f"  python update_by_strategy.py diff      # 查看状态变化 ⭐")
+    print(f"  python update_by_strategy.py report    # 查看统计数据")
     print("\n" + "=" * 100)
     print(f"✅ 更新列表已保存")
     print("=" * 100)
@@ -682,10 +715,13 @@ if __name__ == '__main__':
         print(f"  check <申请号>     - 判断单个申请号现在是否需要检查状态")
         print(f"  generate           - 生成所有现在需要检查状态的申请号列表")
         print(f"  generate 7/14/30/45- 生成指定周期的申请号列表")
+        print(f"\n【采集更新流程】")
+        print(f"  prepare            - 采集前：保存当前状态到 previous_status ⭐")
+        print(f"  # 然后执行 MITM 采集")
+        print(f"  diff               - 采集后：显示申请号的状态变化（before/after）")
         print(f"\n【验证与分析命令】")
         print(f"  validate           - 验证 focus_strategy 计数与 detection_log 一致性")
         print(f"  report             - 生成详细的多维度统计报告")
-        print(f"  diff               - 显示申请号的状态变化（before/after）")
         sys.exit(1)
 
     command = sys.argv[1]
@@ -704,6 +740,8 @@ if __name__ == '__main__':
             show_update_status()
     elif command == 'validate':
         validate_focus_strategy()
+    elif command == 'prepare':
+        prepare_for_update()
     elif command == 'report':
         show_detailed_report()
     elif command == 'diff':
