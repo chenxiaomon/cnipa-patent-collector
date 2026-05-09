@@ -207,6 +207,117 @@ def sort_by_update_time(items: List[Dict], ascending: bool = True) -> List[Dict]
     )
 
 
+def ensure_previous_status(detection_log: Dict) -> Dict:
+    """确保所有记录都有 previous_status 字段。初始化为当前状态的副本。"""
+    records = detection_log.get('records', [])
+    for record in records:
+        if 'previous_status' not in record:
+            record['previous_status'] = record.get('anjianywzt')
+    return detection_log
+
+
+def save_detection_log_with_previous_status(detection_log: Dict):
+    """保存包含 previous_status 字段的 detection_log。"""
+    log_file = 'data/results/detection_log.json'
+    with open(log_file, 'w', encoding='utf-8') as f:
+        json.dump(detection_log, f, ensure_ascii=False, indent=2)
+
+
+def get_status_change_type(prev_status: Optional[str], curr_status: Optional[str]) -> Optional[str]:
+    """判断状态变化类型。"""
+    if not prev_status or not curr_status:
+        return None
+    if prev_status == curr_status:
+        return None
+
+    # 关键变化
+    if curr_status == '驳回等复审请求':
+        return 'REJECTION'  # 进入驳回
+    if curr_status in ['专利权维持', '等年登印费', '准备颁证公告']:
+        return 'GRANTED'  # 进入授权
+    if curr_status in ['驳回失效', '逾期视撤失效', '撤回专利申请']:
+        return 'INVALID'  # 失效/撤回
+    if '复审' in curr_status:
+        return 'REEXAMINATION'  # 进入复审
+
+    return 'OTHER'  # 其他变化
+
+
+def show_status_changes():
+    """显示自上次生成清单后，所有申请的状态变化。"""
+    detection_log = load_detection_log()
+    records = detection_log.get('records', [])
+
+    # 确保有 previous_status 字段
+    ensure_previous_status(detection_log)
+
+    print("\n" + "=" * 100)
+    print("📊 申请号状态变化分析")
+    print("=" * 100)
+    print(f"\n当前时间: {utc_now().strftime('%Y-%m-%d %H:%M:%S')} UTC\n")
+
+    # 统计各类变化
+    changes_by_type = {
+        'REJECTION': [],
+        'GRANTED': [],
+        'INVALID': [],
+        'REEXAMINATION': [],
+        'OTHER': [],
+        'NO_CHANGE': []
+    }
+
+    for record in records:
+        app_no = record.get('application_no')
+        curr_status = record.get('anjianywzt')
+        prev_status = record.get('previous_status')
+
+        change_type = get_status_change_type(prev_status, curr_status)
+
+        change_info = {
+            'app_no': app_no,
+            'prev_status': prev_status or 'N/A',
+            'curr_status': curr_status or 'N/A',
+            'timestamp': record.get('timestamp')
+        }
+
+        if change_type:
+            changes_by_type[change_type].append(change_info)
+        else:
+            changes_by_type['NO_CHANGE'].append(change_info)
+
+    # 显示结果
+    type_names = {
+        'REJECTION': ('🚨 进入驳回（驳回等复审请求）', 'REJECTION'),
+        'GRANTED': ('✅ 进入授权', 'GRANTED'),
+        'INVALID': ('❌ 失效/撤回', 'INVALID'),
+        'REEXAMINATION': ('🔄 进入复审程序', 'REEXAMINATION'),
+        'OTHER': ('⚠️  其他状态变化', 'OTHER'),
+        'NO_CHANGE': ('➡️  状态无变化', 'NO_CHANGE')
+    }
+
+    total_changed = 0
+    for change_type, (display_name, _) in type_names.items():
+        items = changes_by_type[change_type]
+        if not items:
+            continue
+
+        print(f"\n{display_name}: {len(items)} 件")
+
+        if change_type in ['REJECTION', 'GRANTED', 'INVALID']:
+            total_changed += len(items)
+            # 显示前5个
+            for i, info in enumerate(items[:5], 1):
+                print(f"  {i}. {info['app_no']:15s} | {info['prev_status'][:10]:10s} → {info['curr_status'][:10]:10s}")
+            if len(items) > 5:
+                print(f"  ... 还有 {len(items) - 5} 件")
+
+    print("\n" + "=" * 100)
+    print(f"🎯 总计发现状态变化: {total_changed} 件")
+    if changes_by_type['REJECTION']:
+        print(f"   ⚠️  其中进入驳回的: {len(changes_by_type['REJECTION'])} 件 ⭐ 【重点关注】")
+    print("=" * 100)
+
+
 def show_update_status(frequency_days: int = None):
     """
     显示各申请号的更新状态
@@ -341,6 +452,101 @@ def do_generate(frequency_days: int = None):
     print(f"✅ 更新列表已保存")
     print("=" * 100)
 
+def show_detailed_report():
+    """生成详细的多维度统计报告。"""
+    detection_log = load_detection_log()
+    records = detection_log.get('records', [])
+    focus_strategy = load_focus_strategy()
+    status_breakdown = focus_strategy.get('status_breakdown', {})
+
+    print("\n" + "=" * 100)
+    print("📈 详细统计报告 - 多维度分析")
+    print("=" * 100)
+    print(f"\n当前时间: {utc_now().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    print(f"总记录数: {len(records)}\n")
+
+    # 1. 申请年份分布（监控范围内）
+    print("\n【1️⃣  申请年份分布】（驳回前监控范围）")
+    year_distribution = {}
+    for record in records:
+        status = record.get('anjianywzt')
+        if status not in status_breakdown:
+            continue
+        app_no = record.get('application_no')
+        # 提取申请年份（通常是申请号前4位）
+        year = app_no[:4] if len(app_no) >= 4 else 'UNKNOWN'
+        year_distribution[year] = year_distribution.get(year, 0) + 1
+
+    for year in sorted(year_distribution.keys()):
+        count = year_distribution[year]
+        bar = '█' * (count // 10) if count >= 10 else '▌'
+        print(f"  20{year[2:]}: {count:3d} 件 {bar}")
+
+    # 2. 驳回前各状态分布
+    print("\n【2️⃣  驳回前各状态分布】")
+    status_distribution = {}
+    for record in records:
+        status = record.get('anjianywzt')
+        if status not in status_breakdown:
+            continue
+        status_distribution[status] = status_distribution.get(status, 0) + 1
+
+    for status in sorted(status_distribution.keys(),
+                          key=lambda s: status_distribution[s],
+                          reverse=True):
+        count = status_distribution[status]
+        freq = status_breakdown[status].get('frequency_days')
+        percent = round(count / sum(status_distribution.values()) * 100, 1)
+        print(f"  {status:15s}: {count:3d} 件 ({percent:5.1f}%) | {freq}天检查周期")
+
+    # 3. 检查周期超期统计
+    print("\n【3️⃣  检查周期超期统计】")
+    overdue_stats = {}
+    for record in records:
+        status = record.get('anjianywzt')
+        if status not in status_breakdown:
+            continue
+        timestamp_str = record.get('timestamp')
+        last_update = parse_timestamp(timestamp_str)
+        if not last_update:
+            continue
+        freq_days = status_breakdown[status].get('frequency_days')
+        needs_update, _, _ = calculate_needs_update(last_update, freq_days)
+
+        if freq_days not in overdue_stats:
+            overdue_stats[freq_days] = {'total': 0, 'overdue': 0}
+        overdue_stats[freq_days]['total'] += 1
+        if needs_update:
+            overdue_stats[freq_days]['overdue'] += 1
+
+    for freq_days in sorted(overdue_stats.keys()):
+        stat = overdue_stats[freq_days]
+        total = stat['total']
+        overdue = stat['overdue']
+        percent = round(overdue / total * 100, 1) if total > 0 else 0
+        status_list = [s for s, info in status_breakdown.items()
+                       if info.get('frequency_days') == freq_days]
+        print(f"  {freq_days}天周期: {overdue:3d}/{total:3d} 件超期 ({percent:5.1f}%) | {', '.join(status_list)}")
+
+    # 4. 申请人 TOP10
+    print("\n【4️⃣  申请人 TOP10】（驳回前监控范围）")
+    applicant_dist = {}
+    for record in records:
+        status = record.get('anjianywzt')
+        if status not in status_breakdown:
+            continue
+        applicant = record.get('shenqingrxm', 'UNKNOWN')
+        applicant_dist[applicant] = applicant_dist.get(applicant, 0) + 1
+
+    top10_applicants = sorted(applicant_dist.items(),
+                             key=lambda x: x[1],
+                             reverse=True)[:10]
+    for i, (applicant, count) in enumerate(top10_applicants, 1):
+        print(f"  {i:2d}. {applicant[:20]:20s} | {count:3d} 件")
+
+    print("\n" + "=" * 100)
+
+
 def validate_focus_strategy():
     """验证 focus_strategy.json 中的计数是否与 detection_log.json 一致"""
     focus_strategy = load_focus_strategy()
@@ -469,20 +675,17 @@ if __name__ == '__main__':
     if len(sys.argv) < 2:
         print("用法:")
         print(f"  python {sys.argv[0]} <命令> [选项]")
-        print(f"\n可选的命令:")
+        print(f"\n【基础命令】")
         print(f"  stats              - 显示策略统计信息")
         print(f"  status             - 显示所有申请号的更新状态")
-        print(f"  status 7           - 显示 7 天周期的申请号状态")
-        print(f"  status 14          - 显示 14 天周期的申请号状态")
-        print(f"  status 30          - 显示 30 天周期的申请号状态")
-        print(f"  status 45          - 显示 45 天周期的申请号状态")
-        print(f"  validate           - 验证 focus_strategy 中的计数是否与 detection_log 一致")
+        print(f"  status 7/14/30/45  - 显示指定周期的申请号状态")
         print(f"  check <申请号>     - 判断单个申请号现在是否需要检查状态")
         print(f"  generate           - 生成所有现在需要检查状态的申请号列表")
-        print(f"  generate 7         - 生成 7 天内部规则下现在需要检查的申请号列表")
-        print(f"  generate 14        - 生成 14 天内部规则下现在需要检查的申请号列表")
-        print(f"  generate 30        - 生成 30 天内部规则下现在需要检查的申请号列表")
-        print(f"  generate 45        - 生成 45 天内部规则下现在需要检查的申请号列表")
+        print(f"  generate 7/14/30/45- 生成指定周期的申请号列表")
+        print(f"\n【验证与分析命令】")
+        print(f"  validate           - 验证 focus_strategy 计数与 detection_log 一致性")
+        print(f"  report             - 生成详细的多维度统计报告")
+        print(f"  diff               - 显示申请号的状态变化（before/after）")
         sys.exit(1)
 
     command = sys.argv[1]
@@ -501,6 +704,10 @@ if __name__ == '__main__':
             show_update_status()
     elif command == 'validate':
         validate_focus_strategy()
+    elif command == 'report':
+        show_detailed_report()
+    elif command == 'diff':
+        show_status_changes()
     elif command == 'generate':
         if len(sys.argv) > 2:
             try:
