@@ -1,136 +1,186 @@
-# vib3 - 专利数据采集系统
+# CNIPA Patent Collector - 专利数据采集系统
 
-自动化从中国知识产权局（CNIPA）采集专利数据的系统。
+自动化从中国知识产权局（CNIPA）采集专利数据的系统。采集 **14 个基础字段 + 3 个发文字段**，支持断点续传，成功率 > 95%。
 
-## 🚀 快速开始
-
-### 环境要求
+## 🚀 快速开始（30 秒）
 
 ```bash
-# 安装依赖
-pip install undetected-chromedriver selenium pyautogui mitmproxy pandas openpyxl
-```
+# 1. 准备申请号列表
+echo -e "CN201880002233\nCN201880002234" > data/search_list.txt
 
-### 运行步骤
-
-#### 终端 1：启动 MITM 代理
-```bash
+# 2. 终端 1：启动代理
 python start_mitm_proxy.py
-```
 
-#### 终端 2：启动主程序
-```bash
+# 3. 终端 2：启动采集
 USE_MITM_PROXY=true python main_automation.py
 ```
 
-## 📊 数据采集
-
-### 采集的数据字段（17 个）
-
-**基础专利信息 (14 字段)**：
-- `zhuanlimc` - 专利名称
-- `shenqingrxm` - 申请人
-- `zhuanlilx` - 专利类型
-- `shenqingr` - 申请日
-- `falvzt` - 法律状态
-- `anjianbh` - 案件编号
-- `anjianywzt` - 案件业务状态
-- `famingzlsqgbg` - 发明公布号
-- `shouquanggh` - 授权公告号
-- `gongkaiggh` - 公开公告号
-- `gongkaiggr` - 公开公告日
-- `shouquanggr` - 授权公告日
-- `zhufenlh` - 主分类号
-
-**发文信息 (3 字段，仅在"驳回等复审请求"时采集)**：
-- `fwxx_list` - 完整的发文列表
-- `bhsjtzs_xiazaisj` - 驳回决定的时间
-- `bhsjtzs_data` - 驳回决定的详细信息
-
-### 输入与输出
-
-**输入**：
-- `data/search_list.txt` - 申请号列表（一行一个）
-- `data/config.json` - 鼠标坐标配置
-
-**输出**：
-- `data/results/detection_log.json` - 采集结果日志
-- `data/results/patents_data.xlsx` - Excel 导出文件
-
-## 🔧 核心程序文件
-
-| 文件 | 功能 |
-|------|------|
-| `main_automation.py` | 主自动化程序，控制全流程 |
-| `start_mitm_proxy.py` | 启动 MITM 代理 |
-| `patent_mitm_scraper.py` | MITM 拦截脚本，解析 API 响应 |
-| `detection_logger.py` | 日志记录模块，数据序列化和导出 |
-| `patent_data_cache.py` | 内存缓存模块（备用） |
-
-## 💡 工作原理
-
-```
-CNIPA 网站
-    ↓
-PyAutoGUI 物理操作 (鼠标、键盘)
-    ↓
-MITM 代理拦截 API 响应 (127.0.0.1:8080)
-    ↓
-patent_mitm_scraper.py 解析 JSON
-    ↓
-缓存数据 (patent_cache.json)
-    ↓
-main_automation.py 查询缓存
-    ↓
-创建 DetectionRecord
-    ↓
-导出 JSON 和 Excel
-```
-
-## 📝 测试模式
-
-```bash
-# 测试前 3 个申请号
-USE_MITM_PROXY=true python main_automation.py --test 3
-```
-
-## 💾 数据位置
-
-- **搜索列表**: `data/search_list.txt`
-- **采集结果**: `data/results/detection_log.json` (JSON 日志)
-- **Excel 导出**: `data/results/patents_data.xlsx`
-- **基础缓存**: `data/patent_cache.json` (MITM 拦截的原始数据)
-- **配置文件**: `data/config.json` (鼠标坐标)
-
-## ⚙️ 系统特点
-
-- ✅ **完全避免检测** - 零 DOM 操作，无法被反爬虫系统识别
-- ✅ **完整数据采集** - 14 个基础字段 + 3 个发文字段
-- ✅ **断点续传** - 已处理的申请号自动跳过
-- ✅ **优雅降级** - MITM 失败时仍可继续运行
-- ✅ **条件采集** - 仅对"驳回等复审"状态的案件采集发文信息
-
-## 🆘 常见问题
-
-### Q: MITM 代理无法启动
-```bash
-# 确保已安装 mitmproxy
-pip install mitmproxy
-```
-
-### Q: 浏览器连接不到代理
-```bash
-# 检查端口是否被占用
-lsof -i :8080
-```
-
-### Q: 程序卡住了
-- 按 Ctrl+C 中断
-- 检查 `data/search_list.txt` 中已处理的申请号
-- 清理未完成的缓存文件（如需要）
+**详见**: [📖 docs/runbook.md](docs/runbook.md) - 完整操作手册
 
 ---
 
-**最后更新**: 2026-03-01
-**项目大小**: ~20 MB (包含 chromedriver)
-**数据量**: 500+ 条采集记录，~700 KB
+## 📚 文档导航
+
+| 文档 | 用途 | 适合人 |
+|------|------|--------|
+| **[docs/project-brief.md](docs/project-brief.md)** | 项目目标、范围、成功标准 | 🟢 首次接触、项目经理 |
+| **[docs/architecture.md](docs/architecture.md)** | 采集链路、文件职责、数据流 | 🟠 代码改动、新功能开发 |
+| **[docs/domain-rules.md](docs/domain-rules.md)** | 字段定义、采集触发条件、失败处理 | 🔴 理解业务规则、排查问题 |
+| **[docs/runbook.md](docs/runbook.md)** | 启动命令、故障排查、性能调优 | 🟢 日常运维 |
+| **[docs/decision-log.md](docs/decision-log.md)** | 技术决策及原因（MITM 为什么？条件采集为什么？） | 🟠 理解设计意图、讨论优化 |
+| **[docs/ai-context.md](docs/ai-context.md)** | 当前目标、约束、风险、下一步（给 AI 的 1 屏纲要） | 🤖 AI/Harness 协作 |
+| **[docs/worklog.md](docs/worklog.md)** | 每次改动记录（日期、目标、结果、下一步） | 📝 了解项目演进 |
+
+---
+
+## 📊 采集数据
+
+### 采集的字段
+
+**基础信息 (申请号 + 13 个专利字段)**
+```
+申请号 + 以下 13 个字段：
+famingzlsqgbg, shouquanggh, zhuanlimc, shenqingrxm, zhuanlilx, 
+shenqingr, gongkaiggh, falvzt, gongkaiggr, shouquanggr, 
+zhufenlh, anjianbh, anjianywzt
+```
+
+**发文信息 (3 字段，条件采集 - 仅当 falvzt == '驳回等复审请求')**
+```
+fwxx_list, bhsjtzs_xiazaisj, bhsjtzs_data
+```
+
+### 数据流向
+
+```
+search_list.txt (申请号列表)
+    ↓
+PyAutoGUI (鼠标操作) → CNIPA 网站
+    ↓
+MITM 代理 (127.0.0.1:8080) 拦截 API 响应
+    ↓
+detection_logger.py 记录 JSON
+    ↓
+patents_data.xlsx (Excel 报表) + detection_log.json (完整日志)
+```
+
+---
+
+## ⚙️ 系统特点
+
+✅ **稳定** - MITM + PyAutoGUI，规避反爬虫检测  
+✅ **完整** - 申请号 + 13 个专利字段 + 3 个发文字段  
+✅ **可靠** - 断点续传，浏览器启动自动重试，支持手动重试和补采  
+✅ **可扩展** - 模块化设计，易于维护和修改  
+✅ **透明** - 详细文档，决策记录，协作日志  
+
+---
+
+## 🔧 核心文件职责
+
+| 文件 | 职责 | 状态 |
+|------|------|------|
+| `main_automation.py` | 主流程：浏览器控制、申请号循环、数据采集 | ✅ 活跃 |
+| `detection_logger.py` | 日志记录：JSON 序列化、Excel 导出 | ✅ 活跃 |
+| `patent_mitm_scraper.py` | MITM 插件：API 拦截、字段解析 | ✅ 活跃 |
+| `collect_fwxx.py` | 补采脚本：补采漏掉的发文信息 | ✅ 活跃 |
+| `retry_failed_applications.py` | 重试脚本：重新采集失败的申请号 | ✅ 活跃 |
+
+**详见**: [docs/architecture.md](docs/architecture.md#核心文件职责)
+
+---
+
+## 📍 数据位置
+
+```
+data/
+├── search_list.txt           # 输入：申请号列表
+├── config.json               # 配置：鼠标坐标
+├── patent_cache.json         # 临时：MITM 缓存（可删除）
+└── results/
+    ├── detection_log.json    # ⭐ 输出：采集日志（JSON）
+    └── patents_data.xlsx     # ⭐ 输出：最终报表（Excel）
+```
+
+---
+
+## ⚠️ 已知问题 & 优化计划
+
+| 问题 | 优先级 | 状态 | 计划 |
+|------|--------|------|------|
+| **falvzt 与 anjianywzt 口径不统一** | P0 | 🔴 待确认 | 需用样本验证，确认是否需统一 |
+| **JSON 文件 RMW 非原子写入** | P0 | 🔴 未修复 | 改 JSONL + 文件锁（2 周） |
+| **代码重复（浏览器/输入逻辑）** | P1 | 🟡 未改 | 模块化提取（3 周） |
+| **路径策略不统一** | P1 | 🟡 未改 | 统一 settings.py（1 周） |
+| **文档草稿审核** | P1 | 🟡 进行中 | 代码事实验证中，待用户补充业务信息 |
+
+**详见**: [docs/ai-context.md](docs/ai-context.md#当前风险--处理计划)
+
+---
+
+## 💡 常见任务
+
+### 采集前 5 条测试
+```bash
+USE_MITM_PROXY=true python main_automation.py --test 5
+```
+
+### 从中断点续传
+```bash
+# main_automation.py 自动识别已采集的申请号，跳过并继续
+USE_MITM_PROXY=true python main_automation.py
+```
+
+### 重试失败申请号
+```bash
+python retry_failed_applications.py
+```
+
+### 补采发文信息
+```bash
+python collect_fwxx.py
+```
+
+**更多命令**: [docs/runbook.md](docs/runbook.md#常见操作)
+
+---
+
+## 🆘 故障排查
+
+**MITM 超时导致采集失败？** → [docs/runbook.md#-采集超时8s-未收到数据](docs/runbook.md)  
+**浏览器创建失败？** → [docs/runbook.md#-浏览器创建失败](docs/runbook.md)  
+**文件损坏（JSON 解析错误）？** → [docs/runbook.md#-文件损坏json-解析错误](docs/runbook.md)  
+
+---
+
+## 🤝 协作指南
+
+### 改代码前请先读：
+1. [docs/project-brief.md](docs/project-brief.md) - 项目范围和目标
+2. [docs/architecture.md](docs/architecture.md) - 采集链路和文件职责
+3. [docs/domain-rules.md](docs/domain-rules.md) - 业务规则（特别是 falvzt 判定）
+4. [docs/decision-log.md](docs/decision-log.md) - 技术决策和约束
+
+### 改代码后请：
+- [ ] 测试 5+ 个申请号（确保不破坏主流程）
+- [ ] 在 [docs/worklog.md](docs/worklog.md) 追加改动记录
+- [ ] 更新受影响的文档
+
+---
+
+## 📊 项目统计
+
+| 指标 | 值 |
+|------|-----|
+| **目标成功率** | > 95%（当前无历史统计数据） |
+| **设计规模** | 支持 500+ 申请号（约 30 分钟，网络正常情况） |
+| **数据架构** | 申请号 + 13 个基础字段 + 3 个发文字段（条件采集） |
+| **项目文档** | 7 份（project-brief, architecture, domain-rules, runbook, decision-log, ai-context, worklog） |
+| **核心代码文件** | 5 个（main_automation, detection_logger, patent_mitm_scraper, collect_fwxx, retry_failed） |
+
+---
+
+**最后更新**: 2026-05-10  
+**项目阶段**: 阶段 2 - 工程化优化  
+**下次审查**: 2026-05-17  
+**维护人**: @minxiaochen
