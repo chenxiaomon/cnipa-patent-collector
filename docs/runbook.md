@@ -285,14 +285,23 @@ cp data/results/detection_log.json.bak data/results/detection_log.json
 
 ## 性能优化建议
 
-### 调整超时时间
+### 调整超时时间 [📋 待实现]
 
 **文件**: `main_automation.py`
 
+当前超时硬编码为 8 秒（line 402）。若需调整，建议改造：
+
 ```python
-# 增加 MITM 超时
-MITM_TIMEOUT = 12  # 原为 8s
+# 建议改造：使用环境变量或配置文件
+MITM_TIMEOUT = int(os.getenv('MITM_TIMEOUT', 8))  # 默认 8s
 ```
+
+然后可通过环境变量调整：
+```bash
+MITM_TIMEOUT=12 USE_MITM_PROXY=true python main_automation.py
+```
+
+> 注：此功能当前代码中不存在，列为建议改进项
 
 ### 并发采集（未来版本）
 

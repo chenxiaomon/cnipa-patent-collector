@@ -109,7 +109,7 @@ if len(collected_fields) < 14 or timeout:
 
 **触发条件**:
 ```
-if falvzt == '驳回等复审请求':
+if anjianywzt == '驳回等复审请求':  # 以 anjianywzt 为准
     采集发文信息
 else:
     跳过
@@ -124,7 +124,7 @@ else:
 - 从 `detection_log.json` 中筛选 `anjianywzt == '驳回等复审请求'` 且 `fwxx_list == null` 的记录
 - 补采发文信息
 
-**风险**: ⚠️ 补采脚本使用 `anjianywzt` 而非 `falvzt`，可能导致漏采或误采
+**注**: 主流程和补采脚本都统一使用 `anjianywzt` 作为判定条件
 
 ---
 

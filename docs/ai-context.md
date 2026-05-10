@@ -33,9 +33,9 @@
 
 - **采集方式**: MITM 代理 + PyAutoGUI（不能改为纯 DOM）
 - **采集对象**: CNIPA 官网 (https://cpquery.cponline.cnipa.gov.cn/)
-- **触发条件**: falvzt == '驳回等复审请求' 时才采集发文
+- **触发条件**: anjianywzt == '驳回等复审请求' 时才采集发文（以 anjianywzt 为准）
 - **性能目标**: 500 条目 < 30 分钟（单线程）
-- **成功率**: ≥ 95%（允许重试补采）
+- **成功率目标**: ≥ 95%（允许重试补采，当前无历史统计数据）
 
 ### 代码约束
 
@@ -44,10 +44,11 @@
   - 其他脚本硬编码 `data/` 路径（如 collect_fwxx.py line 68）
   - 建议：统一 paths.py 或 settings.py
 
-- **业务规则分叉** ⚠️
-  - main_automation.py 用 `falvzt` 判定（line 455）
-  - collect_fwxx.py 用 `anjianywzt` 筛选（line 206）
-  - 需要确认两个字段是否等价，统一逻辑
+- **业务规则统一** ✅
+  - 已确认：falvzt 和 anjianywzt 一般相同，以 **anjianywzt** 为准
+  - main_automation.py 宜改为 `anjianywzt` 判定（当前为 falvzt，line 455）
+  - collect_fwxx.py 已使用 `anjianywzt` 筛选（line 232）
+  - 建议：统一主流程也改为 anjianywzt，保持逻辑一致
 
 - **状态存储 RMW 问题** ⚠️
   - detection_log.json 每次 add_record 都整文件重写（detection_logger.py line 148）
