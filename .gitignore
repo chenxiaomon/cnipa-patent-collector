@@ -1,6 +1,6 @@
 # ── 采集数据（保留关键数据）────────────────────────────────
 # 上传关键采集数据
-# !data/results/detection_log.json  # 采集日志，需要上传
+!data/results/detection_log.json  # 采集日志，需要上传
 
 # 忽略中间缓存（不需要上传）
 data/patent_cache.json

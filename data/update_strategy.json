@@ -1,0 +1,66 @@
+{
+  "timestamp": "2026-05-08T13:35:27.507469",
+  "total_records": 9422,
+  "strategy": {
+    "immediately": {
+      "statuses": [
+        "驳回等复审请求",
+        "复审程序中",
+        "一通出案待答复",
+        "中通出案待答复",
+        "进入审查"
+      ],
+      "priority": "🔴 高 (高风险)",
+      "reason": "状态可能快速变化，可能有重要的法律文件需要处理"
+    },
+    "weekly": {
+      "statuses": [
+        "等待实审提案",
+        "一通回案实审",
+        "中通回案实审",
+        "等年登印费"
+      ],
+      "priority": "🟡 中 (中等风险)",
+      "reason": "审查程序中，可能出现新的文件或办登进展"
+    },
+    "monthly": {
+      "statuses": [
+        "专利权维持",
+        "公告封卷",
+        "准备颁证公告",
+        "待发授权办登通知书"
+      ],
+      "priority": "🟢 低 (低风险)",
+      "reason": "状态相对稳定，不需频繁更新"
+    },
+    "no_update": {
+      "statuses": [
+        "驳回失效",
+        "未缴年费终止失效",
+        "逾期视撤失效",
+        "届满终止失效",
+        "撤回专利申请"
+      ],
+      "priority": "⚪ 无 (已失效)",
+      "reason": "申请已被驳回或失效，不再需要更新"
+    }
+  },
+  "statistics": {
+    "immediately": {
+      "count": 2272,
+      "percentage": 24.1
+    },
+    "weekly": {
+      "count": 5479,
+      "percentage": 58.2
+    },
+    "monthly": {
+      "count": 1054,
+      "percentage": 11.2
+    },
+    "no_update": {
+      "count": 617,
+      "percentage": 6.5
+    }
+  }
+}
