@@ -53,11 +53,11 @@ CNIPA 官网使用复杂的前端框架（可能是 Vue/React），对 DOM 操�
 
 ---
 
-## D002: 条件采集发文信息（falvzt 判定）
+## D002: 条件采集发文信息（anjianywzt 判定）
 
 **记录日期**: 2026-05-10  
 **决策日期**: 待确认  
-**状态**: ⚠️ 待确认字段关系
+**状态**: ✅ 已确认 (基于实测数据：9422 条采集，falvzt 全为 `--` 不可用，anjianywzt 有真实分布)
 
 ### 背景
 
@@ -74,22 +74,22 @@ CNIPA 官网使用复杂的前端框架（可能是 Vue/React），对 DOM 操�
 ### 决策
 
 使用 **两阶段采集**:
-1. **第一阶段**: 全量采集基础 14 字段
-2. **第二阶段**: 检查 `falvzt == '驳回等复审请求'`，再采集发文
+1. **第一阶段**: 全量采集基础 13 字段 + anjianywzt
+2. **第二阶段**: 检查 `anjianywzt == '驳回等复审请求'`，再采集发文
 
-### 问题
+### 问题（已解决）
 
-⚠️ **代码中的矛盾**:
-- `main_automation.py: line 455` 使用 `falvzt` 作为判定条件
-- `collect_fwxx.py: line 206` 使用 `anjianywzt` 作为筛选条件
-- **这两个字段是否等价？未确认**
+✅ **字段有效性验证**:
+- `main_automation.py: line 455` 当前使用 `falvzt` 作为判定条件（待改）
+- `collect_fwxx.py: line 232` 使用 `anjianywzt` 作为筛选条件（正确）
+- **实测数据验证**: 9422 条成功采集的记录中，`falvzt` 全为 `--`（不可用），而 `anjianywzt` 有真实分布（1403 条驳回复审）
 
 ### 后续行动
 
-- [ ] 确认 CNIPA 官方文档中 `falvzt` 和 `anjianywzt` 的定义差异
-- [ ] 统一为单一条件（推荐 `falvzt`）
-- [ ] 更新 collect_fwxx.py
-- [ ] 补采遗漏的发文信息
+- [ ] 改进主流程：`main_automation.py: line 455` 改为 `anjianywzt` 判定（与补采脚本保持一致）
+- [x] 字段关系已确认：`anjianywzt == '驳回等复审请求'` 为准
+- [x] 补采脚本已正确实现（collect_fwxx.py 使用 anjianywzt）
+- [ ] 补采遗漏的发文信息（当前覆盖 98.50%）
 
 ---
 

@@ -17,14 +17,18 @@
 
 **采集规则**:
 ```python
-# main_automation.py: line 455-457
-if falvzt == '驳回等复审请求':
-    # 采集发文信息
+# 当前代码（待改）
+if falvzt == '驳回等复审请求':  # ⚠️ 实测数据表明 falvzt 全为 '--'，不可用
+    fwxx_data = navigate_to_fwxx(driver, application_no)
+
+# 建议改为
+if anjianywzt == '驳回等复审请求':  # ✅ 实测数据有真实分布
     fwxx_data = navigate_to_fwxx(driver, application_no)
 ```
 
 **备注**: 
-- 这是主流程的判定条件
+- main_automation.py line 455 当前仍为 falvzt（待改）
+- 实测数据：falvzt 在 9418 条成功记录中全为 `--`，anjianywzt 有真实分布
 - 来自 MITM 拦截的 API 响应（基础字段）
 
 ---
@@ -34,8 +38,8 @@ if falvzt == '驳回等复审请求':
 **定义**: 案件在专利局业务流程中的当前状态
 
 **当前代码行为**:
-- `main_automation.py: line 455` - 采集发文时使用 `falvzt == '驳回等复审请求'`
-- `collect_fwxx.py: line 232` - 补采目标筛选使用 `anjianywzt == '驳回等复审请求'`
+- `main_automation.py: line 455` - 采集发文时使用 `falvzt == '驳回等复审请求'`（⚠️ 待改）
+- `collect_fwxx.py: line 232` - 补采目标筛选使用 `anjianywzt == '驳回等复审请求'`（✅ 正确）
 
 **业务确认**:
 - ✅ `falvzt` 和 `anjianywzt` 一般相同
@@ -85,15 +89,15 @@ def normalize_application_no(app_no: str) -> str:
 
 ## 采集触发条件
 
-### 基础字段（14 字段）
+### 基础字段（13 个字段 + anjianywzt）
 
 **触发条件**: 对所有申请号都采集
 
-**处理流程**:
+**处理流程** (main_automation.py):
 1. PyAutoGUI 输入申请号
 2. MITM 拦截 API 响应
-3. 解析 14 个字段
-4. 检查是否为"驳回等复审请求"
+3. 解析 13 个字段 + anjianywzt
+4. 记录到 detection_log.json（无论 anjianywzt 值是什么）
 
 **失败处理**:
 ```python
@@ -105,26 +109,28 @@ if len(collected_fields) < 14 or timeout:
 
 ---
 
-### 发文信息（3 字段）
+### 发文信息（3 字段 - 由补采脚本负责）
 
 **触发条件**:
+- 主流程不负责发文采集
+- 补采脚本筛选：`anjianywzt == '驳回等复审请求'` 且 `fwxx_list == null`
+
+**采集流程** (collect_fwxx.py):
+1. 加载 detection_log.json，筛选未采发文的驳回复审案件
+2. 点击"发文信息"标签
+3. MITM 拦截对应 API 响应
+4. 解析 `fwxx_list`、`bhsjtzs_xiazaisj`、`bhsjtzs_data`
+5. 更新 detection_log.json 中对应申请号的发文字段
+
+**执行方式**:
+```bash
+python collect_fwxx.py  # 主流程完成后运行（可选）
 ```
-if anjianywzt == '驳回等复审请求':  # 以 anjianywzt 为准
-    采集发文信息
-else:
-    跳过
-```
 
-**采集流程**:
-1. 点击"发文信息"标签
-2. MITM 拦截对应 API
-3. 解析 `fwxx_list`、`bhsjtzs_xiazaisj`、`bhsjtzs_data`
-
-**补采脚本** (`collect_fwxx.py`):
-- 从 `detection_log.json` 中筛选 `anjianywzt == '驳回等复审请求'` 且 `fwxx_list == null` 的记录
-- 补采发文信息
-
-**注**: 主流程和补采脚本都统一使用 `anjianywzt` 作为判定条件
+**覆盖率**:
+- 驳回复审案件：1403 条
+- 已有发文信息：1382 条（98.50%）
+- 缺失：21 条（可能为网络超时、后端异常等）
 
 ---
 
@@ -189,7 +195,7 @@ else:
       "anjianbh": "...",
       "anjianywzt": "驳回等复审请求",
       
-      // 发文信息 (3个字段) - 仅当 falvzt == '驳回等复审请求' 时
+      // 发文信息 (3个字段) - 仅当 anjianywzt == '驳回等复审请求' 时
       "fwxx_list": [...],
       "bhsjtzs_xiazaisj": "2024-01-01",
       "bhsjtzs_data": {...}
