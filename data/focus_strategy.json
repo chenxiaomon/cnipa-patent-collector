@@ -1,0 +1,34 @@
+{
+  "timestamp": "2026-05-08T13:49:22.865519",
+  "description": "Patents before rejection - different update frequencies based on status",
+  "total_count": 918,
+  "total_percentage": 9.7,
+  "status_breakdown": {
+    "中通回案实审": {
+      "count": 155,
+      "frequency_days": 7,
+      "frequency_name": "7天更新"
+    },
+    "中通出案待答复": {
+      "count": 185,
+      "frequency_days": 14,
+      "frequency_name": "14天更新"
+    },
+    "一通出案待答复": {
+      "count": 203,
+      "frequency_days": 30,
+      "frequency_name": "一个月更新"
+    },
+    "一通回案实审": {
+      "count": 301,
+      "frequency_days": 30,
+      "frequency_name": "一个月更新"
+    },
+    "进入审查": {
+      "count": 74,
+      "frequency_days": 45,
+      "frequency_name": "一个半月更新"
+    }
+  },
+  "priority": "HIGH - Patents in active examination process"
+}

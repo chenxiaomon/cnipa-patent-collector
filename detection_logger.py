@@ -6,11 +6,17 @@
 - 支持断点续传（跳过已处理的申请号）
 """
 
+import glob
 import json
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
+
+def _normalize_app_no(app_no: str) -> str:
+    """移除 CN 前缀和点号，统一申请号格式。"""
+    return str(app_no).upper().replace('CN', '').replace('.', '') if app_no else app_no
 
 try:
     import pandas as pd
@@ -133,27 +139,92 @@ class DetectionLogger:
         self._init_log()
 
     def _init_log(self):
-        """初始化日志文件"""
+        """初始化日志文件，主文件损坏时自动从备份恢复"""
         if os.path.exists(self.log_file):
-            try:
-                with open(self.log_file, 'r', encoding='utf-8') as f:
-                    self.data = json.load(f)
-                    if 'records' not in self.data:
-                        self.data = {'records': []}
-            except json.JSONDecodeError:
-                self.data = {'records': []}
-        else:
-            self.data = {'records': []}
+            data = self._try_load(self.log_file)
+            if data is not None:
+                self.data = data
+                return
+            # 主文件损坏，尝试备份恢复
+            print("[!] 主日志文件损坏，尝试从备份恢复...")
+            recovered = self._recover_from_backup()
+            if recovered is not None:
+                self.data = recovered
+                self._save()  # 将恢复的数据写回主文件
+                print(f"[✓] 恢复成功，共 {len(self.data['records'])} 条记录")
+                return
+            print("[!] 无可用备份，从空数据开始")
+
+        self.data = {'records': []}
+
+    def _try_load(self, file_path: str) -> Optional[dict]:
+        """尝试加载 JSON 文件，失败返回 None"""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, dict) and 'records' in data:
+                return data
+            return {'records': []}
+        except (json.JSONDecodeError, OSError):
+            return None
 
     def add_record(self, record: DetectionRecord) -> None:
         """添加一条记录并立即保存"""
-        self.data['records'].append(record.to_dict())
+        d = record.to_dict()
+        d['application_no'] = _normalize_app_no(d['application_no'])
+        self.data['records'].append(d)
+        self._save()
+
+    def upsert_record(self, record: DetectionRecord) -> None:
+        """更新已有记录（按 application_no 匹配），不存在则追加。用于强制重查模式。"""
+        new = record.to_dict()
+        new['application_no'] = _normalize_app_no(new['application_no'])
+        for i, r in enumerate(self.data['records']):
+            if r.get('application_no') == new['application_no']:
+                self.data['records'][i] = new
+                self._save()
+                return
+        self.data['records'].append(new)
         self._save()
 
     def _save(self) -> None:
-        """保存日志到文件"""
-        with open(self.log_file, 'w', encoding='utf-8') as f:
+        """原子写入：先写临时文件再替换，防止写入中断导致数据损坏"""
+        tmp_file = self.log_file + '.tmp'
+        with open(tmp_file, 'w', encoding='utf-8') as f:
             json.dump(self.data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_file, self.log_file)  # POSIX 原子操作
+        self._auto_backup()
+
+    def _auto_backup(self, interval: int = 500) -> None:
+        """每累积 interval 条记录自动生成一个带时间戳的备份，并只保留最近 5 个"""
+        count = len(self.data['records'])
+        if count > 0 and count % interval == 0:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_file = self.log_file.replace('.json', f'_backup_{timestamp}.json')
+            shutil.copy2(self.log_file, backup_file)
+            print(f"[✓] 自动备份: {os.path.basename(backup_file)} ({count} 条)")
+            self._prune_backups(keep=5)
+
+    def _prune_backups(self, keep: int = 5) -> None:
+        """只保留最近 keep 个自动备份，删除更早的"""
+        pattern = self.log_file.replace('.json', '_backup_*.json')
+        backups = sorted(glob.glob(pattern))
+        for old in backups[:-keep]:
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+
+    def _recover_from_backup(self) -> Optional[dict]:
+        """从最新的有效备份文件恢复数据"""
+        pattern = self.log_file.replace('.json', '_backup_*.json')
+        backups = sorted(glob.glob(pattern), reverse=True)
+        for backup in backups:
+            data = self._try_load(backup)
+            if data is not None:
+                print(f"[✓] 使用备份: {os.path.basename(backup)} ({len(data['records'])} 条)")
+                return data
+        return None
 
     def get_processed_applications(self) -> set:
         """获取已处理的申请号集合"""
@@ -328,26 +399,26 @@ class DetectionLogger:
 
 
 if __name__ == '__main__':
-    # 测试示例
-    logger = DetectionLogger()
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        logger = DetectionLogger(os.path.join(tmpdir, 'test_log.json'))
 
-    # 添加测试记录
-    record1 = DetectionRecord(
-        application_no='CN202310641887.1',
-        status_code=200,
-        response_time_ms=2345,
-        detected=False,
-        response_summary='Success - Record found',
-    )
-    logger.add_record(record1)
+        record1 = DetectionRecord(
+            application_no='CN202310641887.1',
+            status_code=200,
+            response_time_ms=2345,
+            detected=False,
+            response_summary='Success - Record found',
+        )
+        logger.add_record(record1)
 
-    record2 = DetectionRecord(
-        application_no='CN202310869634.X',
-        status_code=403,
-        detected=True,
-        error_message='Request blocked by anti-crawler system',
-    )
-    logger.add_record(record2)
+        record2 = DetectionRecord(
+            application_no='CN202310869634.X',
+            status_code=403,
+            detected=True,
+            error_message='Request blocked by anti-crawler system',
+        )
+        logger.add_record(record2)
 
-    logger.print_summary()
-    print(f"\n日志文件: {logger.log_file}")
+        logger.print_summary()
+        print("\n[测试完成，日志写入临时目录]")

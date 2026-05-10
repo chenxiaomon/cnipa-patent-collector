@@ -16,8 +16,9 @@ from mitmproxy import http
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from detection_logger import DetectionLogger, DetectionRecord
-# PatentDataCache 已弃用，改用文件系统共享
-# from patent_data_cache import PatentDataCache
+from cache_utils import normalize_app_no, read_json_cache, write_json_cache
+
+FORCE_UPDATE_FLAG = os.path.join(os.path.dirname(__file__), 'data', 'force_update.flag')
 
 
 class PatentMITMScraper:
@@ -25,7 +26,6 @@ class PatentMITMScraper:
 
     def __init__(self):
         self.logger = DetectionLogger()
-        # self.cache 已弃用，改用文件系统
         self.processed_count = 0
 
     def response(self, flow: http.HTTPFlow) -> None:
@@ -35,9 +35,6 @@ class PatentMITMScraper:
         # 首先，只关心 CNIPA 的请求
         if 'cponline.cnipa.gov.cn' not in flow.request.pretty_url:
             return
-
-        # 🔍 DEBUG: 打印所有 CNIPA 请求 URL，帮助识别真实的 API 端点
-        print(f"[DEBUG] CNIPA 请求: {flow.request.method} {flow.request.pretty_url[:120]}")
 
         # 跳过非 200 响应
         if flow.response.status_code != 200:
@@ -123,14 +120,15 @@ class PatentMITMScraper:
             api_record: API 返回的原始记录
         """
         try:
-            # 提取申请号（作为唯一标识）
-            application_no = api_record.get('zhuanlisqh', '')
+            # 提取申请号（作为唯一标识）并规范化
+            application_no = normalize_app_no(api_record.get('zhuanlisqh', ''))
             if not application_no:
                 print("  [!] 跳过：未找到申请号")
                 return
 
-            # 检查是否已处理
-            if application_no in self.logger.get_processed_applications():
+            # 检查是否已处理（强制更新模式下跳过此检查）
+            if not os.path.exists(FORCE_UPDATE_FLAG) and \
+                    application_no in self.logger.get_processed_applications():
                 print(f"  [→] 跳过已处理: {application_no}")
                 return
 
@@ -139,11 +137,7 @@ class PatentMITMScraper:
             cache_file = 'data/patent_cache.json'
 
             # 读取现有缓存文件
-            try:
-                with open(cache_file, 'r', encoding='utf-8') as f:
-                    cache_data = json.load(f)
-            except FileNotFoundError:
-                cache_data = {}
+            cache_data = read_json_cache(cache_file)
 
             # 准备新数据
             patent_data = {
@@ -165,10 +159,7 @@ class PatentMITMScraper:
 
             # 更新缓存
             cache_data[application_no] = patent_data
-
-            # 写回文件
-            with open(cache_file, 'w', encoding='utf-8') as f:
-                json.dump(cache_data, f, ensure_ascii=False, indent=2)
+            write_json_cache(cache_file, cache_data)
 
             self.processed_count += 1
             print(f"  [✓] 已缓存: {application_no} - {api_record.get('zhuanlimc', 'N/A')}")
@@ -221,11 +212,7 @@ class PatentMITMScraper:
             cache_file = 'data/patent_fwxx_cache.json'
 
             # 读取现有缓存
-            try:
-                with open(cache_file, 'r', encoding='utf-8') as f:
-                    cache_data = json.load(f)
-            except FileNotFoundError:
-                cache_data = {}
+            cache_data = read_json_cache(cache_file)
 
             # 准备数据
             fwxx_cache_data = {
@@ -236,10 +223,7 @@ class PatentMITMScraper:
 
             # 更新缓存
             cache_data[application_no] = fwxx_cache_data
-
-            # 写回文件
-            with open(cache_file, 'w', encoding='utf-8') as f:
-                json.dump(cache_data, f, ensure_ascii=False, indent=2)
+            write_json_cache(cache_file, cache_data)
 
             print(f"[✓] 发文信息已缓存: {application_no}")
 
@@ -269,15 +253,11 @@ class PatentMITMScraper:
             # 方案 0（最优先）：从标记文件读取
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             # collect_fwxx.py 在点击"发文信息"前会标记申请号
-            try:
-                with open('data/current_fwxx_target.json', 'r', encoding='utf-8') as f:
-                    marker = json.load(f)
-                    app_no = marker.get('application_no')
-                    if app_no:
-                        print(f"[✓] 从标记文件获取申请号: {app_no}")
-                        return app_no
-            except (FileNotFoundError, json.JSONDecodeError, KeyError):
-                pass
+            marker = read_json_cache('data/current_fwxx_target.json')
+            app_no = marker.get('application_no')
+            if app_no:
+                print(f"[✓] 从标记文件获取申请号: {app_no}")
+                return app_no
 
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             # 方案 1：从 Referer 中提取
@@ -290,16 +270,12 @@ class PatentMITMScraper:
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             # 方案 2：从最近修改的 patent_cache.json 推断
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            try:
-                with open('data/patent_cache.json', 'r', encoding='utf-8') as f:
-                    patent_cache = json.load(f)
-                    if patent_cache:
-                        # 取字典的最后一个键（最近添加的）
-                        application_no = list(patent_cache.keys())[-1]
-                        print(f"[*] 从 patent_cache 推断申请号: {application_no}")
-                        return application_no
-            except:
-                pass
+            patent_cache = read_json_cache('data/patent_cache.json')
+            if patent_cache:
+                # 取字典的最后一个键（最近添加的）
+                application_no = list(patent_cache.keys())[-1]
+                print(f"[*] 从 patent_cache 推断申请号: {application_no}")
+                return application_no
 
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             # 如果都失败，返回 None（不崩溃）

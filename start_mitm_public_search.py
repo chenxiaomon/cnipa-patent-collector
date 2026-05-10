@@ -25,13 +25,13 @@ try:
     os.makedirs('data/raw_searches', exist_ok=True)
 
     print("[+] 启动 mitmproxy 公开搜索模式...")
-    print("[*] 监听地址: 127.0.0.1:8080")
+    print("[*] 监听地址: 127.0.0.1:8082")
     print("[*] 脚本文件: mitm_addon_public_search.py")
     print("[*] 输出目录: data/raw_responses/")
     print()
     print("📝 配置浏览器代理:")
     print("  - 代理地址: 127.0.0.1")
-    print("  - 端口: 8080")
+    print("  - 端口: 8082")
     print("  - 协议: HTTP 和 HTTPS")
     print()
     print("⚠️  HTTPS 需要信任 mitmproxy 的 CA 证书:")
@@ -50,7 +50,7 @@ try:
     sys.argv = [
         "mitmdump",
         "-s", "mitm_addon_public_search.py",
-        "-p", "8080",
+        "-p", "8082",
         "--mode", "regular",
         "--ssl-insecure",  # 忽略上游证书错误
         "--listen-host", "127.0.0.1",

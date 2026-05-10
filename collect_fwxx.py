@@ -44,7 +44,6 @@ import sys
 import time
 import random
 import argparse
-import select
 from datetime import datetime
 from pathlib import Path
 
@@ -59,6 +58,11 @@ import undetected_chromedriver as uc
 # 导入现有模块
 sys.path.insert(0, os.path.dirname(__file__))
 from detection_logger import DetectionLogger
+from browser_utils import (
+    is_browser_alive, real_type, create_driver_with_retry,
+    auto_fill_login, load_credentials,
+)
+from cache_utils import read_json_cache, write_json_cache, poll_cache_for_key
 
 # ============================================================================
 # 常量和配置
@@ -71,98 +75,12 @@ CONFIG_FWXX_FILE = "data/config_fwxx.json"
 PATENT_CACHE_FILE = "data/patent_cache.json"
 PATENT_FWXX_CACHE_FILE = "data/patent_fwxx_cache.json"
 MARKER_FILE = "data/current_fwxx_target.json"
-STANDALONE_RESULTS_FILE = "data/results/fwxx_standalone_results.json"
+FWXX_UNMATCHED_FILE = "data/fwxx_unmatched.json"
 
 # ============================================================================
 # Part 1: 工具函数（复用现有防爬虫逻辑）
 # ============================================================================
 
-def real_type(text: str, delay_range: tuple = (0.05, 0.18)) -> None:
-    """
-    逐字输入文本，模拟真人输入
-    - 每个字符之间有随机延迟 (50-180ms)
-    - 15% 概率注入 200-500ms 长延迟（反爬虫特征）
-
-    Args:
-        text: 要输入的文本
-        delay_range: 字符间延迟范围（秒）
-    """
-    for char in text:
-        # 随机插入长延迟
-        if random.random() < 0.15:
-            time.sleep(random.uniform(0.2, 0.5))
-
-        # 处理大写字母
-        if char.isupper():
-            pyautogui.hotkey('shift', char.lower())
-        elif char == '.':
-            pyautogui.press('.')
-        else:
-            pyautogui.press(char)
-
-        # 字符间延迟
-        time.sleep(random.uniform(*delay_range))
-
-
-def create_driver_with_retry(max_retries: int = 3):
-    """
-    创建浏览器驱动（带重试）
-
-    Args:
-        max_retries: 最大重试次数
-
-    Returns:
-        Chrome 驱动实例
-    """
-    for attempt in range(max_retries):
-        try:
-            print(f"\n[尝试 {attempt+1}/{max_retries}] 启动浏览器...")
-
-            options = uc.ChromeOptions()
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-
-            # 启用 MITM 代理（collect_fwxx 总是需要）
-            if os.getenv('USE_MITM_PROXY', '').lower() in ('true', '1', 'yes'):
-                print("[*] 启用 MITM 代理: 127.0.0.1:8080")
-                options.add_argument("--proxy-server=http://127.0.0.1:8080")
-                options.add_argument("--ignore-certificate-errors")
-
-            # 检测本地 ChromeDriver 路径
-            local_driver_path = None
-            if sys.platform == 'win32':
-                win_path = os.path.join(os.path.dirname(__file__), 'chromedriver-win64', 'chromedriver.exe')
-                if os.path.exists(win_path):
-                    local_driver_path = win_path
-            else:
-                linux_path = os.path.join(os.path.dirname(__file__), 'chromedriver-linux64', 'chromedriver')
-                if os.path.exists(linux_path):
-                    local_driver_path = linux_path
-
-            if local_driver_path:
-                print(f"[*] 使用本地 ChromeDriver: {local_driver_path}")
-                driver = uc.Chrome(
-                    headless=False,
-                    options=options,
-                    driver_executable_path=local_driver_path,
-                )
-            else:
-                print("[*] 使用自动下载的 ChromeDriver")
-                driver = uc.Chrome(
-                    headless=False,
-                    options=options,
-                )
-
-            print("[✓] 浏览器创建成功!")
-            return driver
-
-        except Exception as e:
-            print(f"[✗] 失败: {str(e)[:80]}")
-            if attempt < max_retries - 1:
-                wait_time = 2 ** attempt
-                time.sleep(wait_time)
-            else:
-                raise RuntimeError("浏览器初始化失败")
 
 
 def countdown(seconds: int, message: str = "请手动记录坐标，倒计时"):
@@ -172,26 +90,6 @@ def countdown(seconds: int, message: str = "请手动记录坐标，倒计时"):
         time.sleep(1)
     print(f"\r{message}: 0 秒...完成！    ")
 
-
-def is_browser_alive(driver) -> bool:
-    """
-    检测浏览器是否还在运行
-
-    通过访问 window_handles 属性来判断浏览器是否仍然连接
-    如果浏览器已关闭，会抛出异常
-
-    Args:
-        driver: Selenium WebDriver 实例
-
-    Returns:
-        True: 浏览器正常运行
-        False: 浏览器已关闭
-    """
-    try:
-        _ = driver.window_handles
-        return True
-    except:
-        return False
 
 
 # ============================================================================
@@ -313,133 +211,17 @@ def load_standalone_targets(input_file: str = None, app_nos: str = None) -> list
 
 
 def _load_standalone_collected() -> set:
-    """读取独立模式已采集的申请号集合"""
-    if not os.path.exists(STANDALONE_RESULTS_FILE):
+    """返回 detection_log 中已有 fwxx_list 的申请号（断点续传用）"""
+    if not os.path.exists(DETECTION_LOG_FILE):
         return set()
     try:
-        with open(STANDALONE_RESULTS_FILE, 'r', encoding='utf-8') as f:
+        with open(DETECTION_LOG_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        return {r['application_no'] for r in data.get('records', [])}
+        return {r['application_no'] for r in data.get('records', []) if r.get('fwxx_list') is not None}
     except:
         return set()
 
 
-def save_standalone_result(application_no: str, fwxx_data: dict) -> bool:
-    """
-    独立模式：将采集结果保存到独立的 JSON 文件
-
-    不修改 detection_log.json
-
-    Args:
-        application_no: 申请号
-        fwxx_data: 发文信息字典
-
-    Returns:
-        成功返回 True
-    """
-    try:
-        # 确保目录存在
-        os.makedirs(os.path.dirname(STANDALONE_RESULTS_FILE), exist_ok=True)
-
-        # 读取现有结果
-        if os.path.exists(STANDALONE_RESULTS_FILE):
-            with open(STANDALONE_RESULTS_FILE, 'r', encoding='utf-8') as f:
-                results = json.load(f)
-        else:
-            results = {'records': []}
-
-        # 添加新记录
-        record = {
-            'application_no': application_no,
-            'fwxx_list': fwxx_data.get('fwxx_list'),
-            'bhsjtzs_xiazaisj': fwxx_data.get('bhsjtzs_xiazaisj'),
-            'bhsjtzs_data': fwxx_data.get('bhsjtzs_data'),
-            'collected_at': datetime.now().isoformat(),
-        }
-        results['records'].append(record)
-
-        # 保存
-        with open(STANDALONE_RESULTS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
-
-        return True
-    except Exception as e:
-        print(f"    [!] 保存结果失败: {e}")
-        return False
-
-
-def export_standalone_excel() -> bool:
-    """
-    独立模式：将结果导出为 Excel
-
-    Returns:
-        成功返回 True
-    """
-    try:
-        import pandas as pd
-    except ImportError:
-        print("[!] pandas 未安装，无法导出 Excel")
-        return False
-
-    if not os.path.exists(STANDALONE_RESULTS_FILE):
-        print("[!] 无结果文件可导出")
-        return False
-
-    try:
-        with open(STANDALONE_RESULTS_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-
-        records = data.get('records', [])
-        if not records:
-            print("[!] 无记录可导出")
-            return False
-
-        # Sheet1: 汇总（申请号 + 驳回时间）
-        summary_rows = []
-        # Sheet2: 发文详情（展开）
-        detail_rows = []
-
-        fwxx_column_mapping = {
-            'tongzhismc': '通知书名称',
-            'fawenr': '发文日',
-            'shoujianrxm': '收件人姓名',
-            'shoujianryb': '收件人邮编',
-            'fawenfs': '发文方式',
-            'xiazaisj': '下载时间',
-            'xiazaiip': '下载IP',
-        }
-
-        for record in records:
-            app_no = record.get('application_no')
-            summary_rows.append({
-                '专利申请号': app_no,
-                '驳回决定时间': record.get('bhsjtzs_xiazaisj', ''),
-                '采集时间': record.get('collected_at', ''),
-            })
-
-            fwxx_list = record.get('fwxx_list', [])
-            if fwxx_list:
-                for item in fwxx_list:
-                    row = {'专利申请号': app_no}
-                    for key, col_name in fwxx_column_mapping.items():
-                        row[col_name] = item.get(key, '')
-                    detail_rows.append(row)
-
-        excel_file = STANDALONE_RESULTS_FILE.replace('.json', '.xlsx')
-        with pd.ExcelWriter(excel_file, engine='openpyxl') as writer:
-            pd.DataFrame(summary_rows).to_excel(writer, sheet_name='驳回汇总', index=False)
-            if detail_rows:
-                pd.DataFrame(detail_rows).to_excel(writer, sheet_name='发文详情', index=False)
-
-        print(f"[✓] Excel 导出成功: {excel_file}")
-        print(f"    Sheet1: 驳回汇总 ({len(summary_rows)} 条)")
-        if detail_rows:
-            print(f"    Sheet2: 发文详情 ({len(detail_rows)} 条)")
-        return True
-
-    except Exception as e:
-        print(f"[!] Excel 导出失败: {e}")
-        return False
 
 
 # ============================================================================
@@ -556,7 +338,7 @@ def collect_one_fwxx(
         发文信息字典，或 None 失败
     """
     try:
-        # 检测浏览器是否还活着（改动 3）
+        # 检测浏览器是否还活着
         if not is_browser_alive(driver):
             print(f"    [!] 浏览器已关闭，无法采集")
             return None
@@ -565,14 +347,11 @@ def collect_one_fwxx(
 
         # 清理缓存中的旧数据（防止脏数据干扰）
         try:
-            if os.path.exists(PATENT_FWXX_CACHE_FILE):
-                with open(PATENT_FWXX_CACHE_FILE, 'r', encoding='utf-8') as f:
-                    cache = json.load(f)
-                if application_no in cache:
-                    del cache[application_no]
-                    with open(PATENT_FWXX_CACHE_FILE, 'w', encoding='utf-8') as f:
-                        json.dump(cache, f)
-        except:
+            cache = read_json_cache(PATENT_FWXX_CACHE_FILE)
+            if application_no in cache:
+                del cache[application_no]
+                write_json_cache(PATENT_FWXX_CACHE_FILE, cache)
+        except Exception:
             pass
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -594,7 +373,7 @@ def collect_one_fwxx(
         time.sleep(0.3)
 
         # 输入申请号（保持原始防爬虫延迟）
-        real_type(application_no)
+        real_type(application_no, delay_range=(0.05, 0.18), pause_prob=0.15)
         time.sleep(random.uniform(0.5, 1))
 
         # 自动点击查询按钮
@@ -604,8 +383,7 @@ def collect_one_fwxx(
         pyautogui.click()
         time.sleep(3)  # 等待搜索结果
 
-        # ✨ 改动 3（建议）：验证搜索结果是否正常
-        # 尝试检查页面是否有异常提示（"无搜索结果"、"请输入查询条件"等）
+        # 验证搜索结果是否正常（检查页面是否有异常提示）
         try:
             # 检查页面上是否存在常见的"无结果"提示
             page_text = driver.page_source.lower()
@@ -614,7 +392,6 @@ def collect_one_fwxx(
                 print(f"    [*] 跳过此申请号，继续下一个...")
                 return None
         except:
-            # 如果 Selenium 检查失败，继续用标签数量的方式检测（改动1）
             pass
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -624,7 +401,7 @@ def collect_one_fwxx(
         # 自动点击申请号链接
         print(f"    [*] 点击申请号链接进入详情页...")
 
-        # 记录点击前的标签数量（✨ 改动 1：检测新标签）
+        # 记录点击前的标签数量（用于检测是否成功打开新标签）
         tabs_before = len(driver.window_handles)
 
         pyautogui.moveTo(link_x, link_y, duration=random.uniform(0.3, 0.5))
@@ -632,7 +409,7 @@ def collect_one_fwxx(
         pyautogui.click()
         time.sleep(4)  # 详情页加载较慢
 
-        # ✨ 改动 1：检查是否打开了新标签页
+        # 检查是否打开了新标签页
         tabs_after = len(driver.window_handles)
         if tabs_after <= tabs_before:
             # 没有打开新标签 → 搜索失败、无结果或点击无效
@@ -669,28 +446,10 @@ def collect_one_fwxx(
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
         print(f"    [*] 从 MITM 缓存读取发文信息...")
-        fwxx_data = None
-        max_wait = 10  # 最多等 10 秒
-        elapsed = 0
-
-        while elapsed < max_wait:
-            try:
-                if os.path.exists(PATENT_FWXX_CACHE_FILE):
-                    with open(PATENT_FWXX_CACHE_FILE, 'r', encoding='utf-8') as f:
-                        cache = json.load(f)
-
-                    # 使用原始申请号格式查询（与 MITM 脚本保持一致）
-                    if application_no in cache:
-                        fwxx_data = cache[application_no]
-                        break
-            except (FileNotFoundError, json.JSONDecodeError):
-                pass
-
-            time.sleep(0.5)
-            elapsed += 0.5
+        fwxx_data = poll_cache_for_key(PATENT_FWXX_CACHE_FILE, application_no, max_wait=10)
 
         if not fwxx_data:
-            print(f"    [!] 未从缓存中获得发文信息（已等待 {elapsed:.1f}s）")
+            print(f"    [!] 未从缓存中获得发文信息")
             # 降级处理：关闭标签但继续
         else:
             print(f"    [✓] 成功读取发文信息")
@@ -699,7 +458,7 @@ def collect_one_fwxx(
         # 步骤 6：关闭详情页标签，回到搜索页
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-        # ✨ 改动 2：只有在有多个标签时才关闭（守卫条件）
+        # 只有在有多个标签时才关闭
         if len(driver.window_handles) > 1:
             print(f"    [*] 关闭详情页标签...")
             pyautogui.hotkey('ctrl', 'w')
@@ -741,29 +500,57 @@ def update_detection_log(application_no: str, fwxx_data: dict) -> bool:
         fwxx_data: 发文信息字典
 
     Returns:
-        成功返回 True，否则 False
+        成功返回 True；申请号不在 detection_log 中返回 False。
     """
     try:
-        # 读取现有日志
         with open(DETECTION_LOG_FILE, 'r', encoding='utf-8') as f:
             log_data = json.load(f)
 
-        # 查找对应记录并更新
+        found = False
         for record in log_data['records']:
             if record['application_no'] == application_no:
                 record['fwxx_list'] = fwxx_data.get('fwxx_list')
                 record['bhsjtzs_xiazaisj'] = fwxx_data.get('bhsjtzs_xiazaisj')
                 record['bhsjtzs_data'] = fwxx_data.get('bhsjtzs_data')
+                found = True
                 break
 
-        # 保存回文件
-        with open(DETECTION_LOG_FILE, 'w', encoding='utf-8') as f:
+        if not found:
+            print(f"    [!] {application_no} 不在 detection_log 中，写入 {FWXX_UNMATCHED_FILE}")
+            _append_unmatched(application_no, fwxx_data)
+            return False
+
+        tmp_file = DETECTION_LOG_FILE + '.tmp'
+        with open(tmp_file, 'w', encoding='utf-8') as f:
             json.dump(log_data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_file, DETECTION_LOG_FILE)
 
         return True
     except Exception as e:
         print(f"    [!] 日志更新失败: {e}")
         return False
+
+
+def _append_unmatched(application_no: str, fwxx_data: dict) -> None:
+    """将无法匹配到 detection_log 的游离 fwxx 数据追加到 unmatched 文件"""
+    try:
+        if os.path.exists(FWXX_UNMATCHED_FILE):
+            with open(FWXX_UNMATCHED_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        else:
+            data = {'records': []}
+        data['records'].append({
+            'application_no': application_no,
+            'fwxx_list': fwxx_data.get('fwxx_list'),
+            'bhsjtzs_xiazaisj': fwxx_data.get('bhsjtzs_xiazaisj'),
+            'bhsjtzs_data': fwxx_data.get('bhsjtzs_data'),
+        })
+        tmp = FWXX_UNMATCHED_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, FWXX_UNMATCHED_FILE)
+    except Exception as e:
+        print(f"    [!] 写入 unmatched 失败: {e}")
 
 
 # ============================================================================
@@ -827,21 +614,24 @@ def run_fwxx_collection(args) -> None:
 
         print(f"\n[*] 打开搜索页: {args.url}")
         driver.get(args.url)
+        time.sleep(3)
 
-        print("\n[*] 请手动登录到 CNIPA 系统")
-        print("[*] 登录完成后按 Enter 继续（或等待 30 秒自动继续）")
-
-        # 等待用户按 Enter，或在 30 秒后自动继续
-        if sys.platform == 'win32':
-            # Windows 不支持 select，直接等待 30 秒
-            time.sleep(30)
-        else:
-            # Linux/Mac 使用 select 支持超时等待
-            rlist, _, _ = select.select([sys.stdin], [], [], 30)
-            if not rlist:
-                print("[*] 超时，自动继续采集...")
+        # 自动填写账密
+        username, password = load_credentials()
+        if username and password:
+            filled = auto_fill_login(driver, username, password)
+            if filled:
+                print("\n" + "="*60)
+                print("请在浏览器中完成验证码，然后点击【登录】按钮")
+                print("登录成功后，回到这里按 Enter 继续...")
+                print("="*60)
             else:
-                input()  # 用户按了 Enter，继续读取一行
+                print("[!] 自动填写失败，请手动登录后按 Enter 继续...")
+        else:
+            print("[!] 未找到登录凭证，请手动登录后按 Enter 继续...")
+            print("    提示：在 .env 中填写 CNIPA_USERNAME / CNIPA_PASSWORD 可自动填写")
+
+        input()
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 步骤 4：加载坐标配置
@@ -925,7 +715,7 @@ def run_fwxx_collection(args) -> None:
         failed_count = 0
 
         for idx, application_no in enumerate(targets, 1):
-            # 检测浏览器是否还活着（改动 2）
+            # 检测浏览器是否还活着
             if not is_browser_alive(driver):
                 print("\n⚠️  浏览器已关闭，停止采集")
                 print(f"\n已采集 {success_count} 条，失败 {failed_count} 条，还有 {len(targets) - idx + 1} 条未采集")
@@ -947,24 +737,14 @@ def run_fwxx_collection(args) -> None:
                 fwxx_menu_y=fwxx_menu_y,
             )
 
-            # 更新日志
+            # 更新日志（统一写入 detection_log）
             if fwxx_data:
-                if standalone_mode:
-                    # 独立模式：保存到独立文件
-                    if save_standalone_result(application_no, fwxx_data):
-                        print(f"  ✅ 已成功采集并保存")
-                        success_count += 1
-                    else:
-                        print(f"  ⚠️  保存失败")
-                        failed_count += 1
+                if update_detection_log(application_no, fwxx_data):
+                    print(f"  ✅ 已成功采集并更新日志")
+                    success_count += 1
                 else:
-                    # 原有模式：更新 detection_log.json
-                    if update_detection_log(application_no, fwxx_data):
-                        print(f"  ✅ 已成功采集并更新日志")
-                        success_count += 1
-                    else:
-                        print(f"  ⚠️  日志更新失败")
-                        failed_count += 1
+                    print(f"  ⚠️  申请号不在 detection_log 中，已写入 {FWXX_UNMATCHED_FILE}")
+                    failed_count += 1
             else:
                 print(f"  ❌ 未采集到数据")
                 failed_count += 1
@@ -984,18 +764,9 @@ def run_fwxx_collection(args) -> None:
         print("="*70)
 
         print("\n[*] 导出 Excel...")
-        if standalone_mode:
-            # 独立模式：导出独立的 Excel
-            if export_standalone_excel():
-                print("[✓] Excel 导出成功!")
-            print(f"\n📁 结果文件:")
-            print(f"   JSON: {STANDALONE_RESULTS_FILE}")
-            print(f"   Excel: {STANDALONE_RESULTS_FILE.replace('.json', '.xlsx')}")
-        else:
-            # 原有模式：用 DetectionLogger 导出
-            logger = DetectionLogger()
-            if logger.export_to_excel():
-                print("[✓] Excel 导出成功!")
+        logger = DetectionLogger()
+        if logger.export_to_excel():
+            print("[✓] Excel 导出成功!")
 
     except Exception as e:
         print(f"\n[!] 采集过程出错: {e}")

@@ -21,12 +21,12 @@ try:
     from mitmproxy.tools import main
 
     print("[+] 启动 mitmproxy...")
-    print("[*] 监听地址: 127.0.0.1:8080")
+    print("[*] 监听地址: 127.0.0.1:8082")
     print("[*] 脚本文件: patent_mitm_scraper.py")
     print()
     print("📝 配置浏览器代理:")
     print("  - 代理地址: 127.0.0.1")
-    print("  - 端口: 8080")
+    print("  - 端口: 8082")
     print("  - 协议: HTTP 和 HTTPS")
     print()
     print("⚠️  HTTPS 需要信任 mitmproxy 的 CA 证书:")
@@ -40,7 +40,7 @@ try:
     sys.argv = [
         "mitmdump",
         "-s", "patent_mitm_scraper.py",
-        "-p", "8080",
+        "-p", "8082",
         "--mode", "regular",
     ]
 

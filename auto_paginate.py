@@ -30,8 +30,8 @@ def create_driver():
         options.add_argument("--disable-dev-shm-usage")
 
         # 配置 MITM 代理
-        print("[*] 配置代理: 127.0.0.1:8080")
-        options.add_argument("--proxy-server=http://127.0.0.1:8080")
+        print("[*] 配置代理: 127.0.0.1:8082")
+        options.add_argument("--proxy-server=http://127.0.0.1:8082")
         options.add_argument("--ignore-certificate-errors")
 
         driver = uc.Chrome(

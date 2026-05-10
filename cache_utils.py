@@ -1,0 +1,71 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+JSON 缓存工具函数（跨脚本复用）
+- 申请号规范化
+- JSON 文件读写（统一容错）
+- 轮询等待缓存就绪
+"""
+
+import json
+import time
+from typing import Any, Callable, Optional
+
+
+def normalize_app_no(app_no: str) -> Optional[str]:
+    """
+    将申请号规范化为 API 标准格式（移除 CN 前缀和点号）
+
+    示例：CN202310869634.X → 202310869634X
+    """
+    if not app_no:
+        return None
+    normalized = str(app_no).upper().replace('CN', '').replace('.', '')
+    return normalized if normalized else None
+
+
+def read_json_cache(cache_file: str) -> dict:
+    """读取 JSON 缓存文件，文件不存在或格式错误时返回空字典"""
+    try:
+        with open(cache_file, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def write_json_cache(cache_file: str, data: dict) -> None:
+    """写入 JSON 缓存文件"""
+    with open(cache_file, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def poll_cache_for_key(
+    cache_file: str,
+    key: str,
+    max_wait: float = 8.0,
+    interval: float = 0.5,
+    validate: Callable[[Any], bool] = None,
+) -> Optional[Any]:
+    """
+    轮询缓存文件，直到找到指定 key 且通过校验函数
+
+    Args:
+        cache_file: 缓存文件路径
+        key: 要查找的键（申请号）
+        max_wait: 最长等待秒数
+        interval: 轮询间隔秒数
+        validate: 可选校验函数，返回 True 表示数据有效；为 None 时只要 key 存在即返回
+
+    Returns:
+        找到的数据；超时返回 None
+    """
+    elapsed = 0.0
+    while elapsed < max_wait:
+        data = read_json_cache(cache_file)
+        value = data.get(key)
+        if value is not None:
+            if validate is None or validate(value):
+                return value
+        time.sleep(interval)
+        elapsed += interval
+    return None
