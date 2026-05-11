@@ -311,9 +311,9 @@ def run_automation():
 
 ## D008: 配置管理
 
-**决策日期**: 待确认  
+**决策日期**: 2026-05-11（实现）  
 **决策人**: @minxiaochen  
-**状态**: 🟡  待优化
+**状态**: ✓ 已实现
 
 ### 背景
 
@@ -330,36 +330,41 @@ def run_automation():
 
 ### 决策
 
-统一配置管理 (待实现):
+统一配置管理 (已实现):
 
 ```python
-# 新增 config.py 或 settings.py
-class Settings:
-    # 路径
-    BASE_DIR = Path(__file__).parent
-    DATA_DIR = BASE_DIR / 'data'
-    CACHE_DIR = DATA_DIR / 'cache'
-    
-    # MITM 和超时
-    USE_MITM_PROXY = os.getenv('USE_MITM_PROXY', 'false').lower() == 'true'
-    MITM_TIMEOUT = int(os.getenv('MITM_TIMEOUT', 8))
-    
-    # 坐标配置
-    @property
-    def config(self):
-        with open(self.DATA_DIR / 'config.json') as f:
-            return json.load(f)
+# settings.py - 65 行，集中管理所有配置
+from pathlib import Path
+import os
 
-# 使用
-from config import settings
-MITM_TIMEOUT = settings.MITM_TIMEOUT
+BASE_DIR = Path(__file__).parent.absolute()
+DATA_DIR = BASE_DIR / 'data'
+RESULTS_DIR = DATA_DIR / 'results'
+
+# 所有路径和文件都通过 settings 导入
+DETECTION_LOG_FILE = RESULTS_DIR / 'detection_log.json'
+PATENTS_EXCEL_FILE = RESULTS_DIR / 'patents_data.xlsx'
+
+# MITM 配置（支持环境变量覆盖）
+MITM_HOST = os.getenv('MITM_HOST', '127.0.0.1')
+MITM_PORT = int(os.getenv('MITM_PORT', '8082'))
+MITM_TIMEOUT = float(os.getenv('MITM_TIMEOUT', '8'))
+USE_MITM_PROXY = os.getenv('USE_MITM_PROXY', '').lower() in ('true', '1', 'yes')
 ```
 
-### 实现计划
+### 实现
 
-- 优先级: 🟡 中等（非阻塞）
-- 时间: 2-3 天
-- 关键: 向后兼容，不破坏现有脚本
+- ✅ 新增 `settings.py`（单文件，无额外依赖）
+- ✅ 迁移 5 个主要脚本（validate_results.py, detection_logger.py, main_automation.py, collect_fwxx.py, patent_mitm_scraper.py）
+- ✅ 路径现在相对于 settings.py 位置计算，不依赖当前工作目录
+- ✅ 支持环境变量覆盖（MITM_HOST, MITM_PORT, MITM_TIMEOUT, USE_MITM_PROXY）
+- ✅ 后向兼容：已有的 config.json（坐标）继续使用，不做改变
+
+### 验证
+
+- ✅ `python3 -m py_compile *.py` 通过
+- ✅ `python3 validate_results.py` 从项目根目录和 /tmp 目录均成功运行
+- ✅ 所有文件路径正确定位，不受启动目录影响
 
 ---
 
@@ -395,8 +400,9 @@ MITM_TIMEOUT = settings.MITM_TIMEOUT
 
 | 项 | 值 |
 |-----|-----|
-| **记录日期** | 2026-05-10 |
-| **属性** | 基于当前代码推导的架构备忘，非正式历史记录 |
-| **决策日期** | 待用户补充 |
-| **最高优先级待完成** | D003 (JSONL 迁移), D008 (配置管理) - D002 已完成 |
-| **更新方式** | 每次用户补充真实日期后同步更新 |
+| **记录日期** | 2026-05-10 起 |
+| **属性** | 基于当前代码推导的架构备忘，及已实现的决策 |
+| **最后更新** | 2026-05-11 |
+| **已完成决策** | D001, D002, D004, D005, D006, D007, D008, D009 |
+| **待完成决策** | D003 (JSONL 迁移, 计划中) |
+| **更新方式** | 每次完成新决策后同步更新 |

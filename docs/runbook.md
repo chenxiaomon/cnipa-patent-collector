@@ -62,24 +62,58 @@ python -c "import pyautogui; pyautogui.locateOnScreen"
 
 注：实际坐标值需根据你的屏幕分辨率和浏览器位置调整。上面的是示例坐标。
 
+### 3.5 配置管理（可选，高级）
+
+所有项目配置已集中到 `settings.py`，包括：
+- **路径**: 数据目录、日志文件、缓存文件位置
+- **MITM 参数**: 主机、端口、超时时间
+- **环境开关**: USE_MITM_PROXY 等
+
+**查看当前配置**:
+```bash
+python settings.py
+```
+
+**通过环境变量调整**（可选）:
+```bash
+# 自定义 MITM 端口
+MITM_PORT=9090 python main_automation.py
+
+# 自定义超时时间（秒）
+MITM_TIMEOUT=10 USE_MITM_PROXY=true python main_automation.py
+
+# 自定义数据目录（不推荐，默认即可）
+# 注：DATA_DIR 由 settings.py 自动计算，无需手动设置
+```
+
+**常见配置调整**:
+
+| 需求 | 做法 |
+|------|------|
+| 改变数据存储位置 | 编辑 `settings.py` 的 `DATA_DIR` |
+| 改变 MITM 端口 | `MITM_PORT=8888 python start_mitm_proxy.py` |
+| 增加 MITM 超时 | `MITM_TIMEOUT=12 USE_MITM_PROXY=true python main_automation.py` |
+| 从不同目录运行 | 无需改动，`settings.py` 自动定位 |
+
 ### 4. 启动 MITM 代理（终端 1）
 
 ```bash
 # 进入项目目录
 cd ~/Desktop/vibe/cnipa-patent-collector
 
-# 启动 mitmproxy（监听 127.0.0.1:8080）
+# 启动 mitmproxy（监听 127.0.0.1:8082）
 python start_mitm_proxy.py
 ```
 
 **预期输出**:
 ```
-[*] Starting mitmproxy on 127.0.0.1:8080
-[*] Listening for connections...
+[+] 启动 mitmproxy...
+[*] 监听地址: 127.0.0.1:8082
+[*] 脚本文件: patent_mitm_scraper.py
 ```
 
 **故障排查**:
-- 端口被占用: `lsof -i :8080 | kill -9 <PID>`
+- 端口被占用: `lsof -i :8082 | kill -9 <PID>`
 - mitmproxy 未安装: `pip install mitmproxy`
 
 ### 5. 启动主程序（终端 2）

@@ -17,8 +17,10 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from detection_logger import DetectionLogger, DetectionRecord
 from cache_utils import normalize_app_no, read_json_cache, write_json_cache
+from settings import FORCE_UPDATE_FLAG, PATENT_CACHE_FILE, PATENT_FWXX_CACHE_FILE, MARKER_FILE
 
-FORCE_UPDATE_FLAG = os.path.join(os.path.dirname(__file__), 'data', 'force_update.flag')
+# 将 Path 对象转换为字符串（用于文件操作）
+FORCE_UPDATE_FLAG = str(FORCE_UPDATE_FLAG)
 
 
 class PatentMITMScraper:
@@ -134,7 +136,7 @@ class PatentMITMScraper:
 
             # ⭐ 关键改进：写入文件系统而非内存缓存
             # 原因：两个不同进程，内存无法共享，但文件可以
-            cache_file = 'data/patent_cache.json'
+            cache_file = str(PATENT_CACHE_FILE)
 
             # 读取现有缓存文件
             cache_data = read_json_cache(cache_file)
@@ -209,7 +211,7 @@ class PatentMITMScraper:
                 return
 
             # 写入缓存
-            cache_file = 'data/patent_fwxx_cache.json'
+            cache_file = str(PATENT_FWXX_CACHE_FILE)
 
             # 读取现有缓存
             cache_data = read_json_cache(cache_file)
@@ -253,7 +255,7 @@ class PatentMITMScraper:
             # 方案 0（最优先）：从标记文件读取
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             # collect_fwxx.py 在点击"发文信息"前会标记申请号
-            marker = read_json_cache('data/current_fwxx_target.json')
+            marker = read_json_cache(str(MARKER_FILE))
             app_no = marker.get('application_no')
             if app_no:
                 print(f"[✓] 从标记文件获取申请号: {app_no}")
@@ -270,7 +272,7 @@ class PatentMITMScraper:
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             # 方案 2：从最近修改的 patent_cache.json 推断
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            patent_cache = read_json_cache('data/patent_cache.json')
+            patent_cache = read_json_cache(str(PATENT_CACHE_FILE))
             if patent_cache:
                 # 取字典的最后一个键（最近添加的）
                 application_no = list(patent_cache.keys())[-1]

@@ -23,8 +23,10 @@ from pathlib import Path
 from collections import defaultdict
 
 # 配置
-DETECTION_LOG = Path('data/results/detection_log.json')
-PATENTS_EXCEL = Path('data/results/patents_data.xlsx')
+from settings import DETECTION_LOG_FILE, PATENTS_EXCEL_FILE
+
+DETECTION_LOG = DETECTION_LOG_FILE
+PATENTS_EXCEL = PATENTS_EXCEL_FILE
 
 
 def load_json_log():

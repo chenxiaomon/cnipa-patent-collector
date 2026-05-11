@@ -33,17 +33,15 @@ from browser_utils import (
     is_browser_alive, real_type, create_driver_with_retry,
 )
 from cache_utils import normalize_app_no, poll_cache_for_key
-
-# 配置
-URL = "https://cpquery.cponline.cnipa.gov.cn/"
-DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
-SEARCH_LIST_FILE = os.path.join(DATA_DIR, 'search_list.txt')
-CONFIG_FILE = os.path.join(DATA_DIR, 'config.json')
-FORCE_UPDATE_FLAG = os.path.join(DATA_DIR, 'force_update.flag')
+from settings import (
+    CNIPA_URL, SEARCH_LIST_FILE, CONFIG_FILE, FORCE_UPDATE_FLAG,
+    PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE, MITM_TIMEOUT, MITM_POLL_INTERVAL,
+    PATENT_CACHE_FILE, USE_MITM_PROXY
+)
 
 # PyAutoGUI 配置
-pyautogui.PAUSE = 0.03
-pyautogui.FAILSAFE = False
+pyautogui.PAUSE = PYAUTOGUI_PAUSE
+pyautogui.FAILSAFE = PYAUTOGUI_FAILSAFE
 
 
 def load_search_list() -> list:
@@ -199,14 +197,14 @@ def search_application(
         time.sleep(random.uniform(0.1, 0.3))
         pyautogui.click()
 
-        # 等待并轮询缓存，最多 8 秒
+        # 等待并轮询缓存，最多 MITM_TIMEOUT 秒
         # ⭐ 核心原则：宁可不采集，也不要采集错误的数据
-        cache_file = 'data/patent_cache.json'
         normalized_app_no = normalize_app_no(application_no)
         patent_data = poll_cache_for_key(
-            cache_file,
+            str(PATENT_CACHE_FILE),
             normalized_app_no,
-            max_wait=8,
+            max_wait=MITM_TIMEOUT,
+            interval=MITM_POLL_INTERVAL,
             validate=_is_patent_data_complete,
         )
 
@@ -279,8 +277,7 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
     print("="*60)
 
     # 关键检查：验证 MITM 代理是否启用
-    mitm_enabled = os.getenv('USE_MITM_PROXY', '').lower() in ('true', '1', 'yes')
-    if not mitm_enabled:
+    if not USE_MITM_PROXY:
         print("\n⚠️  警告：MITM 代理未启用")
         print("如果要采集完整的 14 个专利字段，请：")
         print("  1. 在另一个终端运行：python start_mitm_proxy.py")
@@ -323,7 +320,7 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
 
         # 创建浏览器
         driver = create_driver_with_retry()
-        driver.get(URL)
+        driver.get(CNIPA_URL)
         time.sleep(5)
 
         print("\n✓ 浏览器已打开")

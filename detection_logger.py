@@ -14,6 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+from settings import DETECTION_LOG_FILE, RESULTS_DIR
+
 def _normalize_app_no(app_no: str) -> str:
     """移除 CN 前缀和点号，统一申请号格式。"""
     return str(app_no).upper().replace('CN', '').replace('.', '') if app_no else app_no
@@ -121,13 +123,10 @@ class DetectionLogger:
         初始化日志记录器
 
         Args:
-            log_file: 日志文件路径，默认为 data/results/detection_log.json
+            log_file: 日志文件路径，默认为 DETECTION_LOG_FILE (from settings.py)
         """
         if log_file is None:
-            log_file = os.path.join(
-                os.path.dirname(__file__),
-                'data', 'results', 'detection_log.json'
-            )
+            log_file = str(DETECTION_LOG_FILE)
 
         self.log_file = log_file
         self.log_dir = os.path.dirname(log_file)

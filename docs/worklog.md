@@ -30,6 +30,28 @@
 
 ---
 
+## 2026-05-11：配置集中化（settings.py）
+
+**目标**: 统一项目配置管理，减少硬编码路径，支持从任意目录运行脚本
+
+**改动**:
+- ✅ 新增 settings.py（65 行）：集中管理所有路径、MITM 参数、环境变量
+- ✅ 迁移 5 个主要脚本：validate_results.py, detection_logger.py, main_automation.py, collect_fwxx.py, patent_mitm_scraper.py
+- ✅ 移除硬编码 data/ 路径，改用 settings 导入
+
+**结果**:
+- `python3 -m py_compile *.py` 通过（所有脚本语法检查合格）
+- `python3 validate_results.py` 通过（从项目根目录和 /tmp 目录均成功运行）
+- 路径现在相对于 settings.py 位置计算，不依赖当前工作目录
+- 支持通过环境变量覆盖 MITM 地址、端口、超时等参数
+
+**下一步**:
+- [ ] JSONL 日志存储升级（MITM_TIMEOUT 完全配置化后实施）
+- [ ] 代码模块化：提取 browser_service, input_service, cache_service
+- [ ] 考虑对补充脚本（export_public_search.py 等）进行迁移
+
+---
+
 ## [待填] 
 
 **目标**:  

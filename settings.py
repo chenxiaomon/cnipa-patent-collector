@@ -1,0 +1,161 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+集中化配置管理模块
+
+管理所有项目配置：路径、MITM 参数、超时时间、环境变量。
+支持通过环境变量覆盖默认值。
+
+使用方法：
+    from settings import DATA_DIR, CONFIG_FILE, MITM_TIMEOUT
+"""
+
+import os
+from pathlib import Path
+
+# ============================================================================
+# 基础路径
+# ============================================================================
+
+# 项目根目录（settings.py 所在的目录）
+BASE_DIR = Path(__file__).parent.absolute()
+
+# 数据目录
+DATA_DIR = BASE_DIR / 'data'
+RESULTS_DIR = DATA_DIR / 'results'
+RAW_RESPONSES_DIR = DATA_DIR / 'raw_responses'
+RAW_SEARCHES_DIR = DATA_DIR / 'raw_searches'
+
+# 确保目录存在
+for directory in [DATA_DIR, RESULTS_DIR, RAW_RESPONSES_DIR, RAW_SEARCHES_DIR]:
+    directory.mkdir(parents=True, exist_ok=True)
+
+# ============================================================================
+# 输入数据文件
+# ============================================================================
+
+SEARCH_LIST_FILE = DATA_DIR / 'search_list.txt'
+FWXX_LIST_FILE = DATA_DIR / 'fwxx_list.txt'
+
+# ============================================================================
+# 配置文件（鼠标坐标等）
+# ============================================================================
+
+CONFIG_FILE = DATA_DIR / 'config.json'
+CONFIG_FWXX_FILE = DATA_DIR / 'config_fwxx.json'
+FORCE_UPDATE_FLAG = DATA_DIR / 'force_update.flag'
+
+# ============================================================================
+# 结果文件
+# ============================================================================
+
+# 检测日志（主要输出）
+DETECTION_LOG_FILE = RESULTS_DIR / 'detection_log.json'
+DETECTION_LOG_JSONL_FILE = RESULTS_DIR / 'detection_log.jsonl'
+
+# Excel 导出文件
+PATENTS_EXCEL_FILE = RESULTS_DIR / 'patents_data.xlsx'
+
+# ============================================================================
+# 缓存文件
+# ============================================================================
+
+# 专利数据缓存（MITM 代理写入）
+PATENT_CACHE_FILE = DATA_DIR / 'patent_cache.json'
+PATENT_FWXX_CACHE_FILE = DATA_DIR / 'patent_fwxx_cache.json'
+
+# 断点续传和状态标记
+MARKER_FILE = DATA_DIR / 'current_fwxx_target.json'
+FWXX_UNMATCHED_FILE = DATA_DIR / 'fwxx_unmatched.json'
+
+# 补采独立模式的结果
+FWXX_STANDALONE_RESULTS_FILE = RESULTS_DIR / 'fwxx_standalone_results.json'
+
+# ============================================================================
+# MITM 代理配置
+# ============================================================================
+
+MITM_HOST = os.getenv('MITM_HOST', '127.0.0.1')
+MITM_PORT = int(os.getenv('MITM_PORT', '8082'))
+
+# MITM 轮询超时（秒）：等待 MITM 代理返回数据的最长时间
+MITM_TIMEOUT = float(os.getenv('MITM_TIMEOUT', '8'))
+
+# MITM 轮询间隔（秒）：两次检查缓存之间的等待时间
+MITM_POLL_INTERVAL = float(os.getenv('MITM_POLL_INTERVAL', '0.5'))
+
+# ============================================================================
+# PyAutoGUI 配置
+# ============================================================================
+
+PYAUTOGUI_PAUSE = float(os.getenv('PYAUTOGUI_PAUSE', '0.03'))
+PYAUTOGUI_FAILSAFE = os.getenv('PYAUTOGUI_FAILSAFE', 'false').lower() in ('true', '1', 'yes')
+
+# ============================================================================
+# 功能开关
+# ============================================================================
+
+# 是否启用 MITM 代理（生产采集必须启用）
+USE_MITM_PROXY = os.getenv('USE_MITM_PROXY', '').lower() in ('true', '1', 'yes')
+
+# ============================================================================
+# URL 和端点
+# ============================================================================
+
+CNIPA_URL = 'https://cpquery.cponline.cnipa.gov.cn/'
+CNIPA_QUERY_API = 'https://cpquery.cponline.cnipa.gov.cn/txtSearch'
+
+# ============================================================================
+# 业务规则
+# ============================================================================
+
+# 采集发文的触发条件（案件业务状态）
+FWXX_TRIGGER_ANJIANYWZT = '驳回等复审请求'
+
+# ============================================================================
+# 验证工具函数
+# ============================================================================
+
+def verify_paths() -> dict:
+    """验证所有关键路径是否存在或可创建"""
+    paths_status = {
+        'DATA_DIR': DATA_DIR.exists(),
+        'RESULTS_DIR': RESULTS_DIR.exists(),
+        'SEARCH_LIST_FILE': SEARCH_LIST_FILE.exists(),
+        'CONFIG_FILE': CONFIG_FILE.exists(),
+    }
+    return paths_status
+
+
+def get_config_summary() -> str:
+    """获取配置摘要（用于调试）"""
+    return f"""
+╔════════════════════════════════════════════════════════════════╗
+║                     项目配置摘要                               ║
+╠════════════════════════════════════════════════════════════════╣
+║ 基础路径                                                       ║
+║   BASE_DIR: {BASE_DIR}
+║   DATA_DIR: {DATA_DIR}
+║   RESULTS_DIR: {RESULTS_DIR}
+║                                                                ║
+║ MITM 代理                                                      ║
+║   地址: {MITM_HOST}:{MITM_PORT}
+║   超时: {MITM_TIMEOUT}s
+║   轮询间隔: {MITM_POLL_INTERVAL}s
+║   启用: {USE_MITM_PROXY}
+║                                                                ║
+║ 关键文件                                                       ║
+║   搜索列表: {SEARCH_LIST_FILE}
+║   检测日志: {DETECTION_LOG_FILE}
+║   Excel 报表: {PATENTS_EXCEL_FILE}
+║   专利缓存: {PATENT_CACHE_FILE}
+╚════════════════════════════════════════════════════════════════╝
+"""
+
+
+if __name__ == '__main__':
+    print(get_config_summary())
+    print("路径验证:")
+    for path, exists in verify_paths().items():
+        status = "✓" if exists else "✗"
+        print(f"  {status} {path}")

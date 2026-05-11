@@ -63,19 +63,32 @@ from browser_utils import (
     auto_fill_login, load_credentials,
 )
 from cache_utils import read_json_cache, write_json_cache, poll_cache_for_key
+from settings import (
+    CNIPA_URL, DETECTION_LOG_FILE, CONFIG_FILE, CONFIG_FWXX_FILE,
+    PATENT_CACHE_FILE, PATENT_FWXX_CACHE_FILE, MARKER_FILE,
+    FWXX_UNMATCHED_FILE, PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE,
+    MITM_TIMEOUT, MITM_POLL_INTERVAL, USE_MITM_PROXY,
+    FWXX_TRIGGER_ANJIANYWZT
+)
+
+# PyAutoGUI 配置
+pyautogui.PAUSE = PYAUTOGUI_PAUSE
+pyautogui.FAILSAFE = PYAUTOGUI_FAILSAFE
 
 # ============================================================================
 # 常量和配置
 # ============================================================================
 
-SEARCH_PAGE_URL = "https://cpquery.cponline.cnipa.gov.cn"
-DETECTION_LOG_FILE = "data/results/detection_log.json"
-CONFIG_FILE = "data/config.json"
-CONFIG_FWXX_FILE = "data/config_fwxx.json"
-PATENT_CACHE_FILE = "data/patent_cache.json"
-PATENT_FWXX_CACHE_FILE = "data/patent_fwxx_cache.json"
-MARKER_FILE = "data/current_fwxx_target.json"
-FWXX_UNMATCHED_FILE = "data/fwxx_unmatched.json"
+SEARCH_PAGE_URL = CNIPA_URL
+
+# 将 Path 对象转换为字符串（用于文件操作）
+DETECTION_LOG_FILE = str(DETECTION_LOG_FILE)
+CONFIG_FILE = str(CONFIG_FILE)
+CONFIG_FWXX_FILE = str(CONFIG_FWXX_FILE)
+PATENT_CACHE_FILE = str(PATENT_CACHE_FILE)
+PATENT_FWXX_CACHE_FILE = str(PATENT_FWXX_CACHE_FILE)
+MARKER_FILE = str(MARKER_FILE)
+FWXX_UNMATCHED_FILE = str(FWXX_UNMATCHED_FILE)
 
 # ============================================================================
 # Part 1: 工具函数（复用现有防爬虫逻辑）
