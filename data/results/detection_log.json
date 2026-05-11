@@ -342810,5 +342810,16 @@
       "merged": 490,
       "has_fwxx_in_merged": 3
     }
+  },
+  "metadata": {
+    "total_records": 9422,
+    "successful": 9418,
+    "failed": 4,
+    "success_rate_percent": 99.96,
+    "fwxx_collected": 1382,
+    "huihe_cases": 1403,
+    "fwxx_coverage_percent": 98.5,
+    "last_updated": "2026-05-11T22:03:31.435323",
+    "export_time": "2026-05-11T22:03:31.435341"
   }
 }
