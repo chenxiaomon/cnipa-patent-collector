@@ -4,32 +4,14 @@
 
 ### 核心判定字段
 
-#### 1. `falvzt` (法律状态) - ⭐ 关键
+#### 1. `falvzt` (法律状态) - ⚠️ 不可用
 
-**定义**: 专利的当前法律状态，由 CNIPA 官方定义
+**定义**: 专利的当前法律状态（由 CNIPA 官方定义）
 
-**可能值** (常见):
-- `授权公告` - 已授权
-- `驳回等复审请求` - ⭐ **发文信息采集触发条件**
-- `失效` - 已失效
-- `审查中` - 审查进行中
-- 其他法律状态...
-
-**采集规则**:
-```python
-# 当前代码（待改）
-if falvzt == '驳回等复审请求':  # ⚠️ 实测数据表明 falvzt 全为 '--'，不可用
-    fwxx_data = navigate_to_fwxx(driver, application_no)
-
-# 建议改为
-if anjianywzt == '驳回等复审请求':  # ✅ 实测数据有真实分布
-    fwxx_data = navigate_to_fwxx(driver, application_no)
-```
-
-**备注**: 
-- main_automation.py line 455 当前仍为 falvzt（待改）
-- 实测数据：falvzt 在 9418 条成功记录中全为 `--`，anjianywzt 有真实分布
-- 来自 MITM 拦截的 API 响应（基础字段）
+**实测结论**:
+- ❌ **不可用**：9418 条成功采集记录中 100% 为 `--`（空值）
+- 虽然字段存在于 API 响应中，但无业务价值
+- 不应用于任何业务逻辑判定
 
 ---
 
@@ -37,17 +19,22 @@ if anjianywzt == '驳回等复审请求':  # ✅ 实测数据有真实分布
 
 **定义**: 案件在专利局业务流程中的当前状态
 
-**当前代码行为**:
-- `main_automation.py: line 455` - 采集发文时使用 `falvzt == '驳回等复审请求'`（⚠️ 待改）
-- `collect_fwxx.py: line 232` - 补采目标筛选使用 `anjianywzt == '驳回等复审请求'`（✅ 正确）
+**特点**:
+- ✅ 有真实分布：1403 条驳回复审，4859 条等待实审等
+- ✅ 用于发文采集判定条件
+- ✅ 主流程和补采脚本都使用此字段
 
-**业务确认**:
-- ✅ `falvzt` 和 `anjianywzt` 一般相同
-- ✅ **采集发文的判定条件应以 `anjianywzt` 为准**
+**采集规则**:
+```python
+# 补采脚本 (collect_fwxx.py: line 232)
+if anjianywzt == '驳回等复审请求':
+    采集发文信息
+```
 
-**改进方向**:
-1. 建议将主流程 (`main_automation.py: line 455`) 的判定条件也改为 `anjianywzt`（与补采脚本一致）
-2. 这样可以避免主流程和补采脚本的逻辑分歧
+**说明**:
+- 主流程 (main_automation.py) 只采基础字段，不触发发文采集
+- 发文信息完全由补采脚本负责，统一使用 anjianywzt 判定
+- 当前已验证：1382/1403 (98.50%) 发文覆盖率
 
 ---
 
@@ -216,12 +203,10 @@ python collect_fwxx.py  # 主流程完成后运行（可选）
 
 ### Q: 主流程已采但补采脚本认为需采
 
-**原因**: `falvzt` vs `anjianywzt` 口径不统一
-
-**解决**:
-1. 确认两个字段的业务含义
-2. 统一为单一条件（推荐用 `falvzt`）
-3. 更新 collect_fwxx.py
+**已解决**:
+- 实测数据确认：falvzt 全为 `--`，不可用
+- anjianywzt 为准，已在代码和文档中统一
+- 补采脚本正确使用 anjianywzt
 
 ### Q: 某条记录的发文信息为空（fwxx_list=null）
 
@@ -243,5 +228,5 @@ python collect_fwxx.py  # 补采脚本
 
 ---
 
-*更新时间*: 2026-05-10  
-*待确认项*: falvzt vs anjianywzt 的定义与关系
+*更新时间*: 2026-05-11  
+*验证完成*: falvzt vs anjianywzt - 已确认 falvzt 不可用，anjianywzt 为准

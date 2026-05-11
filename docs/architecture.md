@@ -102,7 +102,7 @@ data/
 - `shouquanggr` - 授权公告日
 - `zhufenlh` - 主分类号
 - `anjianbh` - 案件编号
-- **`anjianywzt`** - 案件业务状态 ⭐ (补采脚本筛选条件，待确认与 falvzt 关系)
+- **`anjianywzt`** - 案件业务状态 ⭐ (采集发文判定条件，以此为准)
 
 ### 2. 发文信息采集（条件触发）
 
@@ -115,7 +115,7 @@ data/
 - `bhsjtzs_xiazaisj` - 驳回决定的下载时间
 - `bhsjtzs_data` - 驳回决定详细信息
 
-**问题**: collect_fwxx.py 使用 `anjianywzt` 而不是 `falvzt` 作为筛选条件，存在口径不统一风险 ⚠️
+**说明**: collect_fwxx.py 使用 `anjianywzt == '驳回等复审请求'` 作为筛选条件（已验证为准，falvzt 全为 `--` 不可用）
 
 ## 依赖关系
 

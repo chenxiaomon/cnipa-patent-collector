@@ -44,11 +44,11 @@
   - 其他脚本硬编码 `data/` 路径（如 collect_fwxx.py line 68）
   - 建议：统一 paths.py 或 settings.py
 
-- **业务规则统一** ✅
-  - 已确认：falvzt 和 anjianywzt 一般相同，以 **anjianywzt** 为准
-  - main_automation.py 宜改为 `anjianywzt` 判定（当前为 falvzt，line 455）
-  - collect_fwxx.py 已使用 `anjianywzt` 筛选（line 232）
-  - 建议：统一主流程也改为 anjianywzt，保持逻辑一致
+- **业务规则统一** ✅ 已验证
+  - 已确认：falvzt 100% 为 `--`（不可用），anjianywzt 为准
+  - 主流程 (main_automation.py) 只采基础字段，不负责发文采集（无需改动）
+  - 补采脚本 (collect_fwxx.py line 232) 正确使用 anjianywzt 判定
+  - 数据验证：9422 条采集，falvzt 全为 `--`，anjianywzt 有真实分布
 
 - **状态存储 RMW 问题** ⚠️
   - detection_log.json 每次 add_record 都整文件重写（detection_logger.py line 148）
@@ -77,7 +77,7 @@
 
 | 风险 | 症状 | 优先级 | 处理 |
 |------|------|--------|------|
-| **falvzt vs anjianywzt** | 实测：anjianywzt 有真实分布，falvzt 全为 `--` | 🟡 P1 | 改主流程为 anjianywzt |
+| **falvzt vs anjianywzt** | 实测：falvzt 全为 `--`（不可用），anjianywzt 为准 | ✅ 完成 | 已验证，代码逻辑一致 |
 | **JSON 文件 RMW 非原子** | 中断会损坏日志 | 🔴 P0 | 改 JSONL + 文件锁（2 周） |
 | **采集成功率已验证** | 99.96%（9418/9422），文档已更新 | ✅ 完成 | 后续关注缺失的 21 条发文 |
 | **代码重复（browser/input 逻辑）** | 维护成本高；bug 修复需多处改 | 🟡 P1 | 模块化（3 周） |
@@ -92,7 +92,7 @@
 
 | 文件 | 行数 | 关键行 | 改动频率 |
 |------|------|--------|---------|
-| main_automation.py | 550+ | 40(路径), 62(浏览器), 455(falvzt判定), 398(MITM超时) | 🔴 高 |
+| main_automation.py | 550+ | 40(路径), 62(浏览器), 398(MITM超时) | 🟡 中 |
 | detection_logger.py | 350+ | 148(RMW问题), 250(导出) | 🟡 中 |
 | patent_mitm_scraper.py | 380+ | 139(缓存写入), 221(缓存写入) | 🟡 中 |
 
@@ -100,7 +100,7 @@
 
 | 文件 | 作用 | 关键问题 |
 |------|------|---------|
-| collect_fwxx.py | 补采发文信息 | 使用 anjianywzt（与主流程 falvzt 不同） ⚠️ |
+| collect_fwxx.py | 补采发文信息 | 正确使用 anjianywzt 判定 ✓ |
 | retry_failed_applications.py | 重试失败申请号 | 正常 ✓ |
 
 ### 辅助脚本
@@ -115,11 +115,11 @@
 
 ## 下一步建议
 
-### 本周（2026-05-10 ~ 2026-05-17）
+### 已完成（2026-05-10 ~ 2026-05-11）
 
-1. **确认业务规则** (1 天)
-   - 验证 CNIPA 文档：falvzt vs anjianywzt 是否等价
-   - 对应关系：是 1:1 还是 1:n？
+1. ✅ **确认业务规则** 
+   - 实测数据验证：falvzt 全为 `--`（不可用），anjianywzt 为准
+   - 数据样本：9422 条采集记录
 
 2. **改进状态存储** (3-4 天)
    - 新增 DetectionLoggerV2（JSONL 格式）
@@ -189,7 +189,7 @@ data/
 |------|------|--------|---------|
 | MITM_TIMEOUT | main_automation.py:398 | 8s | 环境变量 MITM_TIMEOUT |
 | DATA_DIR | main_automation.py:40 | ./data | settings.py |
-| falvzt 判定 | main_automation.py:455 | '驳回等复审请求' | domain-rules.md |
+| anjianywzt 判定 | collect_fwxx.py:232 | '驳回等复审请求' | domain-rules.md |
 
 ---
 
@@ -199,7 +199,7 @@ data/
 
 1. **docs/project-brief.md** - 项目目标
 2. **docs/architecture.md** - 整体流程和文件职责
-3. **docs/domain-rules.md** - 业务规则（特别注意 falvzt vs anjianywzt）
+3. **docs/domain-rules.md** - 业务规则（anjianywzt 为判定条件，falvzt 已弃用）
 4. **main_automation.py** - 主流程实现
 
 ### 改代码时应该
