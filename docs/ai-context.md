@@ -14,7 +14,6 @@
   - ✅ 已确认：以 anjianywzt 为采集发文判定条件
   - ✅ 已补充：真实采集数据 9422 条，成功率 99.96%
   - ℹ️ 待完成：决策日期与采集时间/案件状态的关系
-- [ ] 代码改进：将主流程改为统一使用 anjianywzt（与补采脚本一致）
 - [ ] 状态存储升级：从 JSON 改为 JSONL + 原子写入
 
 **优先级 2 - 代码模块化**
@@ -110,6 +109,54 @@
 | merge_detection_logs.py | 合并多个日志 | 可用 ✓ |
 | export_public_search.py | 导出公开查询 | 可选 |
 | patent_data_cache.py | 内存缓存（已弃用） | 已弃用 ✓ |
+
+---
+
+## 可执行任务卡：settings.py 配置集中化
+
+**状态**: 待开始  
+**优先级**: P1  
+**目标**: 统一项目路径、代理端口、超时时间和结果文件位置，减少硬编码，避免从不同目录运行脚本时路径失效。
+
+### 背景
+
+当前多个脚本直接写 `data/...`，MITM 端口、缓存路径、结果路径、超时时间分散在不同文件中。后续维护、测试和迁移环境时容易漏改。
+
+### 范围
+
+- 新增 `settings.py`
+- 集中定义 `BASE_DIR`, `DATA_DIR`, `RESULTS_DIR`
+- 集中定义 `DETECTION_LOG`, `PATENTS_EXCEL`
+- 集中定义 `CONFIG_FILE`, `CONFIG_FWXX_FILE`
+- 集中定义 `PATENT_CACHE_FILE`, `PATENT_FWXX_CACHE_FILE`
+- 集中定义 `MITM_HOST`, `MITM_PORT`, `MITM_TIMEOUT`
+- 优先迁移 `validate_results.py`, `detection_logger.py`, `main_automation.py`, `collect_fwxx.py`, `patent_mitm_scraper.py`
+
+### 不做
+
+- 不改采集业务逻辑
+- 不改 JSON 存储格式
+- 不引入 JSONL
+- 不调整发文采集策略
+- 不重构浏览器操作流程
+
+### 执行步骤
+
+1. 新增 `settings.py`，只放路径、端口、超时和环境变量读取。
+2. 先迁移 `validate_results.py`，验证结果文件路径由 settings 提供。
+3. 迁移 `detection_logger.py`，默认日志路径使用 settings。
+4. 迁移 `main_automation.py` 中的 `DATA_DIR`, `CONFIG_FILE`, cache 路径和 MITM 超时。
+5. 迁移 `collect_fwxx.py` 和 `patent_mitm_scraper.py` 的 `data/...` 路径。
+6. 更新 README/runbook 中关于配置项的说明。
+7. 在 worklog.md 追加本次改动记录。
+
+### 验收标准
+
+- `python3 -m py_compile *.py` 通过
+- `python3 validate_results.py` 通过
+- 从项目根目录运行验证脚本正常
+- 从项目外目录运行 `python3 /path/to/cnipa-patent-collector/validate_results.py` 也能找到正确数据
+- `rg "data/" *.py` 后，剩余硬编码路径都有明确理由
 
 ---
 
