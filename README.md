@@ -45,7 +45,7 @@ shenqingr, gongkaiggh, falvzt, gongkaiggr, shouquanggr,
 zhufenlh, anjianbh, anjianywzt
 ```
 
-**发文信息 (3 字段，条件采集 - 仅当 falvzt == '驳回等复审请求')**
+**发文信息 (3 字段，条件采集 - 仅当 anjianywzt == '驳回等复审请求')**
 ```
 fwxx_list, bhsjtzs_xiazaisj, bhsjtzs_data
 ```
@@ -108,7 +108,7 @@ data/
 
 | 问题 | 优先级 | 状态 | 计划 |
 |------|--------|------|------|
-| **falvzt 与 anjianywzt 口径不统一** | P0 | 🔴 待确认 | 需用样本验证，确认是否需统一 |
+| **falvzt 不可用（全为 `--`）** | P0 | ✅ 已确认 | 以 anjianywzt 为准（实测 9422 条采集数据验证） |
 | **JSON 文件 RMW 非原子写入** | P0 | 🔴 未修复 | 改 JSONL + 文件锁（2 周） |
 | **代码重复（浏览器/输入逻辑）** | P1 | 🟡 未改 | 模块化提取（3 周） |
 | **路径策略不统一** | P1 | 🟡 未改 | 统一 settings.py（1 周） |
@@ -158,7 +158,7 @@ python collect_fwxx.py
 ### 改代码前请先读：
 1. [docs/project-brief.md](docs/project-brief.md) - 项目范围和目标
 2. [docs/architecture.md](docs/architecture.md) - 采集链路和文件职责
-3. [docs/domain-rules.md](docs/domain-rules.md) - 业务规则（特别是 falvzt 判定）
+3. [docs/domain-rules.md](docs/domain-rules.md) - 业务规则（特别是 anjianywzt 判定）
 4. [docs/decision-log.md](docs/decision-log.md) - 技术决策和约束
 
 ### 改代码后请：
