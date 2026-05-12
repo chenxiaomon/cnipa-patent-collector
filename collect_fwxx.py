@@ -230,12 +230,9 @@ def load_standalone_targets(input_file: str = None, app_nos: str = None) -> list
 
 def _load_standalone_collected() -> set:
     """返回 detection_log 中已有 fwxx_list 的申请号（断点续传用）"""
-    if not os.path.exists(DETECTION_LOG_FILE):
-        return set()
     try:
-        with open(DETECTION_LOG_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        return {r['application_no'] for r in data.get('records', []) if r.get('fwxx_list') is not None}
+        logger = DetectionLogger()
+        return {r['application_no'] for r in logger._load_records() if r.get('fwxx_list') is not None}
     except:
         return set()
 
@@ -508,7 +505,7 @@ def collect_one_fwxx(
 
 def update_detection_log(application_no: str, fwxx_data: dict) -> bool:
     """
-    更新 detection_log.json，填充发文信息字段
+    更新 detection_log.jsonl，填充发文信息字段
 
     Args:
         application_no: 申请号
@@ -518,12 +515,12 @@ def update_detection_log(application_no: str, fwxx_data: dict) -> bool:
         成功返回 True；申请号不在 detection_log 中返回 False。
     """
     try:
-        with open(DETECTION_LOG_FILE, 'r', encoding='utf-8') as f:
-            log_data = json.load(f)
+        logger = DetectionLogger()
+        records = logger._load_records()
 
         found = False
-        for record in log_data['records']:
-            if record['application_no'] == application_no:
+        for record in records:
+            if record.get('application_no') == application_no:
                 record['fwxx_list'] = fwxx_data.get('fwxx_list')
                 record['bhsjtzs_xiazaisj'] = fwxx_data.get('bhsjtzs_xiazaisj')
                 record['bhsjtzs_data'] = fwxx_data.get('bhsjtzs_data')
@@ -535,11 +532,7 @@ def update_detection_log(application_no: str, fwxx_data: dict) -> bool:
             _append_unmatched(application_no, fwxx_data)
             return False
 
-        tmp_file = DETECTION_LOG_FILE + '.tmp'
-        with open(tmp_file, 'w', encoding='utf-8') as f:
-            json.dump(log_data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_file, DETECTION_LOG_FILE)
-
+        logger._rewrite(records)
         return True
     except Exception as e:
         print(f"    [!] 日志更新失败: {e}")
