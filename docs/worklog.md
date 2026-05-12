@@ -143,6 +143,28 @@
 
 ---
 
+## 2026-05-13：数据补采收口
+
+**目标**: 补采基础失败记录和缺发文记录，修复 collect_fwxx.py JSONL 兼容问题
+
+**改动**:
+- ✅ 补采基础失败：2021105729516 成功，2025116556932 持续超时（2025年申请，CNIPA 暂未公开）
+- ✅ 修复 `collect_fwxx.py` 的 `update_detection_log()` 和 `_load_standalone_collected()`：由 `json.load()` 改为 `DetectionLogger` JSONL API
+- ✅ 修复输入框清空：改为 click → command+a/ctrl+a → backspace
+- ✅ 补采 21 条缺发文，成功写入 16 条（5 条仍缺失，接受现状）
+
+**结果**:
+- 成功率：99.99%（9421/9422，1 条 2025 年申请暂不可采）
+- 发文覆盖率：98.50% → **99.64%**（1398/1403）
+- JSON/Excel 一致 ✅，commit `dbe15c7`
+
+**下一步**:
+- [ ] 模块化重构（browser_service, input_service, cache_service）
+- [ ] 一键启动脚本 run.sh
+- [ ] 补充脚本路径迁移（update_by_strategy.py, sync.py, import_from_cache.py）
+
+---
+
 ## [待填] 
 
 **目标**:  
