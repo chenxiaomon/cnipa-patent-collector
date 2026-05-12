@@ -83,6 +83,7 @@
 | **falvzt vs anjianywzt** | 实测：falvzt 全为 `--`（不可用），anjianywzt 为准 | ✅ 完成 | 已验证，代码逻辑一致 |
 | **JSON 文件 RMW 非原子** | 中断会损坏日志 | 🔴 P0 | 改 JSONL + 文件锁（2 周） |
 | **采集成功率已验证** | 99.96%（9418/9422），文档已更新 | ✅ 完成 | 后续关注缺失的 21 条发文 |
+| **输入框清空跨平台不兼容** | macOS 下连续输入申请号时可能残留上次内容 | ✅ 完成 | browser_utils.clear_input_field()，macOS 用 command+a（2026-05-12） |
 | **代码重复（browser/input 逻辑）** | 维护成本高；bug 修复需多处改 | 🟡 P1 | 模块化（3 周） |
 | **路径策略不统一** | 从不同目录启动脚本会失败 | 🟡 P1 | 统一 settings.py（1 周） |
 | **缺少单元测试** | 规则变化时易出现回归 | 🟡 P2 | 补充测试（2 周） |
@@ -113,6 +114,47 @@
 | merge_detection_logs.py | 合并多个日志 | 可用 ✓ |
 | export_public_search.py | 导出公开查询 | 可选 |
 | patent_data_cache.py | 内存缓存（已弃用） | 已弃用 ✓ |
+
+---
+
+## 已完成任务卡：输入框清空跨平台修复
+
+**状态**: ✅ 已完成（2026-05-12，commit 5eb2b37）  
+**优先级**: P1  
+**发现时间**: 2026-05-12  
+**来源**: 实际运行 `USE_MITM_PROXY=true uv run python main_automation.py --update-list data/retry_failed.txt`
+
+### 问题描述
+
+连续查询多个专利申请号时，第二次输入前可能没有清空上一次输入内容，导致新申请号与旧内容拼接，进而查询错误申请号。
+
+### 已知原因
+
+- `main_automation.py` 当前使用 `pyautogui.hotkey('ctrl', 'a')` + `pyautogui.press('delete')` 清空输入框。
+- 在 macOS 上，`ctrl+a` 通常不是“全选”，更可能是把光标移动到行首；macOS 全选应使用 `command+a`。
+- `collect_fwxx.py` 中也存在同类清空逻辑，修复时需要同步处理。
+
+### 影响范围
+
+- 主采集流程：`main_automation.py`
+- 重试/更新列表流程：`main_automation.py --update-list ...`
+- 发文补采流程：`collect_fwxx.py`
+
+### 建议方案
+
+- 抽出统一的输入框清空函数，例如 `clear_input_field()`。
+- 根据系统平台选择快捷键：
+  - macOS: `command+a`
+  - Windows/Linux: `ctrl+a`
+- 优先保持 PyAutoGUI 输入策略，不引入大量 DOM 操作。
+- 可作为 `input_service.py` 模块化任务的第一步，也可先做小范围 bugfix。
+
+### 验收标准
+
+- 连续采集两个不同申请号时，第二个申请号不会拼接第一个申请号。
+- `--update-list data/retry_failed.txt` 流程可正常连续输入多个申请号。
+- `collect_fwxx.py` 中同类输入清空逻辑同步处理。
+- 修复后在 `docs/worklog.md` 追加执行记录，写明修改文件、验证命令和实际结果。
 
 ---
 
