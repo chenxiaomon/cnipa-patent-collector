@@ -96,6 +96,27 @@
 
 ---
 
+## 2026-05-12：修复 macOS 输入框清空 bug
+
+**目标**: 修复连续采集时 `ctrl+a` 在 macOS 不全选导致申请号拼接的问题
+
+**改动**:
+- ✅ `browser_utils.py`：新增 `clear_input_field()`，macOS 用 `command+a`，其他平台用 `ctrl+a`
+- ✅ `main_automation.py`：替换 3 行清空逻辑 → 调用 `clear_input_field()`
+- ✅ `collect_fwxx.py`：同上
+
+**结果**:
+- `python -m py_compile` 三个文件全部通过
+- 无残留 `ctrl+a` 硬编码
+- 补采前置条件满足，可安全执行连续多条采集
+
+**下一步**:
+- [ ] 运行补采：`USE_MITM_PROXY=true uv run python main_automation.py --update-list data/retry_failed.txt`
+- [ ] 运行发文补采：`USE_MITM_PROXY=true uv run python collect_fwxx.py --input data/retry_fwxx.txt`
+- [ ] 补采完成后 validate_results.py 验证
+
+---
+
 ## [待填] 
 
 **目标**:  

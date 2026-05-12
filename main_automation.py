@@ -31,6 +31,7 @@ from detection_logger import DetectionLogger, DetectionRecord
 from browser_utils import (
     load_credentials, fill_vue_input, auto_fill_login,
     is_browser_alive, real_type, create_driver_with_retry,
+    clear_input_field,
 )
 from cache_utils import normalize_app_no, poll_cache_for_key
 from settings import (
@@ -183,10 +184,7 @@ def search_application(
         time.sleep(0.5)
 
         # 清空输入框
-        pyautogui.hotkey('ctrl', 'a')
-        time.sleep(0.1)
-        pyautogui.press('delete')
-        time.sleep(0.3)
+        clear_input_field()
 
         # 输入申请号
         real_type(application_no)

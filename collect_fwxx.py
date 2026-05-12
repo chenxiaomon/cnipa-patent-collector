@@ -60,7 +60,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from detection_logger import DetectionLogger
 from browser_utils import (
     is_browser_alive, real_type, create_driver_with_retry,
-    auto_fill_login, load_credentials,
+    auto_fill_login, load_credentials, clear_input_field,
 )
 from cache_utils import read_json_cache, write_json_cache, poll_cache_for_key
 from settings import (
@@ -380,10 +380,7 @@ def collect_one_fwxx(
         time.sleep(0.5)
 
         # 清空输入框
-        pyautogui.hotkey('ctrl', 'a')
-        time.sleep(0.1)
-        pyautogui.press('delete')
-        time.sleep(0.3)
+        clear_input_field()
 
         # 输入申请号（保持原始防爬虫延迟）
         real_type(application_no, delay_range=(0.05, 0.18), pause_prob=0.15)

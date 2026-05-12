@@ -37,6 +37,15 @@ def load_credentials() -> tuple[str, str]:
     return os.getenv('CNIPA_USERNAME', ''), os.getenv('CNIPA_PASSWORD', '')
 
 
+def clear_input_field() -> None:
+    """清空当前焦点输入框（跨平台：macOS 用 command+a，其他用 ctrl+a）"""
+    select_all = 'command' if sys.platform == 'darwin' else 'ctrl'
+    pyautogui.hotkey(select_all, 'a')
+    time.sleep(0.1)
+    pyautogui.press('delete')
+    time.sleep(0.3)
+
+
 def fill_vue_input(driver, element, value: str) -> None:
     """通过 JS 触发 Vue.js 的 input 事件，避免 send_keys 无法响应式更新的问题"""
     driver.execute_script(
