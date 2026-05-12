@@ -2,3 +2,5 @@ undetected-chromedriver>=3.5.3
 selenium>=4.0.0
 pyautogui>=0.9.53
 mitmproxy>=10.0.0
+pandas>=2.0.0
+openpyxl>=3.1.0
