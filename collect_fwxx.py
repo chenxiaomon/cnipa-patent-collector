@@ -378,12 +378,16 @@ def collect_one_fwxx(
 
         print(f"    [*] 输入申请号...")
 
-        # 三击输入框：定位 + 全选已有内容
+        # 点击输入框
         pyautogui.moveTo(input_x, input_y, duration=random.uniform(0.3, 0.5))
         time.sleep(random.uniform(0.1, 0.2))
-        clear_input_field(input_x, input_y)
+        pyautogui.click()
+        time.sleep(0.5)
 
-        # 输入申请号（直接覆盖选中内容，保持原始防爬虫延迟）
+        # 清空输入框
+        clear_input_field()
+
+        # 输入申请号（保持原始防爬虫延迟）
         real_type(application_no, delay_range=(0.05, 0.18), pause_prob=0.15)
         time.sleep(random.uniform(0.5, 1))
 

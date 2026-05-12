@@ -85,7 +85,7 @@
 | **falvzt vs anjianywzt** | 实测：falvzt 全为 `--`（不可用），anjianywzt 为准 | ✅ 完成 | 已验证，代码逻辑一致 |
 | **JSON 文件 RMW 非原子** | 中断会损坏日志 | ✅ 完成 | JSONL 追加写入，add_record() O_APPEND + fsync（2026-05-12） |
 | **采集成功率已验证** | 99.96%（9418/9422），文档已更新 | ✅ 完成 | 后续关注缺失的 21 条发文 |
-| **输入框清空跨平台不兼容** | macOS 下连续输入申请号时可能残留上次内容 | ✅ 完成 | browser_utils.clear_input_field()，三击全选 + backspace（2026-05-12） |
+| **输入框清空跨平台不兼容** | macOS 下连续输入申请号时可能残留上次内容 | ✅ 完成 | click → command+a/ctrl+a → backspace（2026-05-12） |
 | **代码重复（browser/input 逻辑）** | 维护成本高；bug 修复需多处改 | 🟡 P1 | 模块化重构（待做） |
 | **路径策略不统一** | 从不同目录启动脚本会失败 | ✅ 完成 | settings.py 集中管理（2026-05-11），残留 3 个非核心脚本 |
 | **缺少单元测试** | 规则变化时易出现回归 | ✅ 完成 | 35 个测试，uv run pytest 通过（2026-05-12） |
@@ -145,9 +145,9 @@
 
 ### 最终实现方案
 
-- `browser_utils.clear_input_field(x, y)`：三击坐标处（全选输入框内容）+ `backspace`（删除）
-- `command+a` / `ctrl+a` 快捷键在 Vue.js 输入框中不可靠（Vue 事件拦截），三击是跨平台最稳定方案
-- `main_automation.py` 和 `collect_fwxx.py` 均调用 `clear_input_field(input_x, input_y)`，无平台分支逻辑
+- 点击输入框获取焦点 → `command+a`（macOS）/ `ctrl+a`（Linux/Windows）全选 → `backspace` 删除 → 输入新号
+- `browser_utils.clear_input_field()`：无需传坐标，在已获焦点的输入框上直接执行
+- `main_automation.py` 和 `collect_fwxx.py` 均先 `click()` 再调用 `clear_input_field()`
 
 ### 验收标准
 

@@ -37,16 +37,13 @@ def load_credentials() -> tuple[str, str]:
     return os.getenv('CNIPA_USERNAME', ''), os.getenv('CNIPA_PASSWORD', '')
 
 
-def clear_input_field(x: int = None, y: int = None) -> None:
-    """三击全选输入框内容，再 backspace 删除，确保输入框为空"""
-    if x is not None and y is not None:
-        pyautogui.click(x, y, clicks=3, interval=0.1)
-    else:
-        pos = pyautogui.position()
-        pyautogui.click(pos.x, pos.y, clicks=3, interval=0.1)
-    time.sleep(0.2)
-    pyautogui.press('backspace')  # 删除选中内容，输入框清空
+def clear_input_field() -> None:
+    """全选输入框内容并删除：macOS 用 command+a，其他用 ctrl+a，再 backspace"""
+    select_all = 'command' if sys.platform == 'darwin' else 'ctrl'
+    pyautogui.hotkey(select_all, 'a')
     time.sleep(0.15)
+    pyautogui.press('backspace')
+    time.sleep(0.2)
 
 
 def fill_vue_input(driver, element, value: str) -> None:
