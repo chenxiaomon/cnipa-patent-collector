@@ -15,10 +15,10 @@
 - [x] 单元测试：35 个测试，`uv run pytest` 全部通过（Python 3.11）
 - [x] 环境统一：pyproject.toml + uv.lock，统一 Python 3.11 环境
 - [x] macOS 输入框 bug 修复：browser_utils.clear_input_field() 跨平台
-- [ ] **状态存储升级**：从 JSON 改为 JSONL + 原子写入（下一个 P0）
+- [x] **状态存储升级**：JSONL 追加写入完成，中断安全（commit ab68d5e）
 
 **优先级 2 - 数据完整性**（待补采）
-- [ ] 补采 4 条基础采集失败（data/retry_failed.txt 已准备）
+- [ ] 补采 2 条基础采集失败（2021105729516、2025116556932）
 - [ ] 补采 21 条驳回等复审缺发文（data/retry_fwxx.txt 已准备）
 
 **优先级 3 - 代码模块化**
@@ -75,6 +75,7 @@
 | 2026-05-12 | macOS 输入框清空 bug 修复 | browser_utils.py, main_automation.py, collect_fwxx.py | 跨平台 command+a/ctrl+a |
 | 2026-05-12 | README 状态修正 | README.md | 路径策略、JSON RMW 状态更新 |
 | 2026-05-12 | 补采列表生成 | data/retry_failed.txt, data/retry_fwxx.txt | 4 条失败 + 21 条缺发文 |
+| 2026-05-12 | JSONL 存储升级 | detection_logger.py, collect_fwxx.py, validate_results.py, tests/, migrate_to_jsonl.py | 中断安全，O_APPEND + fsync |
 
 ---
 
@@ -83,13 +84,13 @@
 | 风险 | 症状 | 优先级 | 处理 |
 |------|------|--------|------|
 | **falvzt vs anjianywzt** | 实测：falvzt 全为 `--`（不可用），anjianywzt 为准 | ✅ 完成 | 已验证，代码逻辑一致 |
-| **JSON 文件 RMW 非原子** | 中断会损坏日志 | 🔴 P0 | 改 JSONL + 文件锁（2 周） |
+| **JSON 文件 RMW 非原子** | 中断会损坏日志 | ✅ 完成 | JSONL 追加写入，add_record() O_APPEND + fsync（2026-05-12） |
 | **采集成功率已验证** | 99.96%（9418/9422），文档已更新 | ✅ 完成 | 后续关注缺失的 21 条发文 |
 | **输入框清空跨平台不兼容** | macOS 下连续输入申请号时可能残留上次内容 | ✅ 完成 | browser_utils.clear_input_field()，macOS 用 command+a（2026-05-12） |
 | **代码重复（browser/input 逻辑）** | 维护成本高；bug 修复需多处改 | 🟡 P1 | 模块化重构（待做） |
 | **路径策略不统一** | 从不同目录启动脚本会失败 | ✅ 完成 | settings.py 集中管理（2026-05-11），残留 3 个非核心脚本 |
 | **缺少单元测试** | 规则变化时易出现回归 | ✅ 完成 | 35 个测试，uv run pytest 通过（2026-05-12） |
-| **数据缺口** | 4 条采集失败 + 21 条缺发文 | 🔴 P0 | 补采列表已准备，待执行补采 |
+| **数据缺口** | 2 条采集失败 + 21 条缺发文 | 🔴 P0 | 补采列表已准备，待执行补采 |
 
 ---
 
@@ -203,13 +204,10 @@
 ### 当前优先（2026-05-12 起）
 
 1. **补采数据缺口**（最紧迫，列表已就绪）
-   - 4 条基础采集失败：`USE_MITM_PROXY=true uv run python main_automation.py --update-list data/retry_failed.txt`
+   - 2 条基础采集失败：`USE_MITM_PROXY=true uv run python main_automation.py --update-list data/retry_failed.txt`
    - 21 条缺发文：`USE_MITM_PROXY=true uv run python collect_fwxx.py --input data/retry_fwxx.txt`
 
-2. **JSONL 存储升级**（P0，3-4 天）
-   - 新增 DetectionLoggerV2（JSONL 追加写入）
-   - 保留导出 JSON / Excel 接口
-   - 迁移脚本：将旧 detection_log.json 转换为 JSONL
+2. ~~**JSONL 存储升级**~~ ✅ 已完成（2026-05-12，commit ab68d5e）
 
 ### 后续（2026-05-17 起）
 
@@ -301,6 +299,6 @@ data/
 ---
 
 *生成时间*: 2026-05-10  
-*最后更新*: 2026-05-12  
-*下次更新*: 补采完成后 / JSONL 升级后  
+*最后更新*: 2026-05-12（JSONL 升级完成）  
+*下次更新*: 补采完成后  
 *维护人*: @minxiaochen

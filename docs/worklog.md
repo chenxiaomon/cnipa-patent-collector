@@ -117,6 +117,32 @@
 
 ---
 
+## 2026-05-12：JSONL 存储升级
+
+**目标**: 解决 detection_logger.py 的 RMW 非原子写入问题，改为 JSONL 追加写入，中断安全
+
+**改动**:
+- ✅ `detection_logger.py` 核心改写：JSONL 追加写入，`add_record()` O_APPEND + fsync
+- ✅ `upsert_record()`：读全量 → 更新 → 原子重写（强制更新专用，频率低）
+- ✅ 新增 `export_to_json()`：按需生成 JSON 快照（兼容旧格式）
+- ✅ `collect_fwxx.py` / `validate_results.py`：改读 JSONL
+- ✅ `tests/test_validation.py`：改用 `DetectionLogger` API 加载数据
+- ✅ 新增 `migrate_to_jsonl.py`：一次性迁移脚本
+- ✅ 执行迁移：`detection_log.jsonl` 9422 条，JSON 保留为备份
+
+**结果**:
+- `uv run pytest` → 35/35 passed
+- `uv run python validate_results.py` → 成功率 99.98%（9420/9422），发文覆盖 98.50%
+- 较上次验证：失败记录从 4 条降至 2 条（2022111108974 / 2022114225683 已成功）
+- JSON/Excel 一致性 ✅，commit `ab68d5e`
+
+**下一步**:
+- [ ] 补采 2 条基础失败（2021105729516、2025116556932）
+- [ ] 补采 21 条缺发文（data/retry_fwxx.txt）
+- [ ] 删除旧备份：`rm data/results/detection_log.json`（确认无误后）
+
+---
+
 ## [待填] 
 
 **目标**:  
