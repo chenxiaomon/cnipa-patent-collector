@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 检测数据记录模块
-- 实时写入检测结果到 JSON 日志
+- 以 JSONL 格式追加写入，每条记录一行，中断安全
 - 支持断点续传（跳过已处理的申请号）
+- upsert_record 原子重写整文件（强制更新模式专用，调用频率低）
 """
 
 import glob
@@ -14,11 +15,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from settings import DETECTION_LOG_FILE, RESULTS_DIR
+from settings import DETECTION_LOG_JSONL_FILE, RESULTS_DIR
+
 
 def _normalize_app_no(app_no: str) -> str:
     """移除 CN 前缀和点号，统一申请号格式。"""
     return str(app_no).upper().replace('CN', '').replace('.', '') if app_no else app_no
+
 
 try:
     import pandas as pd
@@ -38,23 +41,23 @@ class DetectionRecord:
         response_summary: Optional[str] = None,
         error_message: Optional[str] = None,
         # 14 个专利信息字段
-        famingzlsqgbg: Optional[str] = None,  # 发明公布号
-        shouquanggh: Optional[str] = None,    # 授权公告号
-        zhuanlimc: Optional[str] = None,      # 专利名称
-        shenqingrxm: Optional[str] = None,    # 申请人
-        zhuanlilx: Optional[str] = None,      # 专利类型
-        shenqingr: Optional[str] = None,      # 申请日
-        gongkaiggh: Optional[str] = None,     # 公开公告号
-        falvzt: Optional[str] = None,         # 法律状态
-        gongkaiggr: Optional[str] = None,     # 公开公告日
-        shouquanggr: Optional[str] = None,    # 授权公告日
-        zhufenlh: Optional[str] = None,       # 主分类号
-        anjianbh: Optional[str] = None,       # 案件编号
-        anjianywzt: Optional[str] = None,     # 案件业务状态
+        famingzlsqgbg: Optional[str] = None,
+        shouquanggh: Optional[str] = None,
+        zhuanlimc: Optional[str] = None,
+        shenqingrxm: Optional[str] = None,
+        zhuanlilx: Optional[str] = None,
+        shenqingr: Optional[str] = None,
+        gongkaiggh: Optional[str] = None,
+        falvzt: Optional[str] = None,
+        gongkaiggr: Optional[str] = None,
+        shouquanggr: Optional[str] = None,
+        zhufenlh: Optional[str] = None,
+        anjianbh: Optional[str] = None,
+        anjianywzt: Optional[str] = None,
         # 发文信息字段（仅在状态="驳回等复审请求"时填充）
-        fwxx_list: Optional[list] = None,     # 完整的发文列表
-        bhsjtzs_xiazaisj: Optional[str] = None,  # 驳回决定的时间
-        bhsjtzs_data: Optional[dict] = None,     # 驳回决定的完整对象
+        fwxx_list: Optional[list] = None,
+        bhsjtzs_xiazaisj: Optional[str] = None,
+        bhsjtzs_data: Optional[dict] = None,
     ):
         self.application_no = application_no
         self.status_code = status_code
@@ -64,7 +67,6 @@ class DetectionRecord:
         self.error_message = error_message
         self.timestamp = datetime.utcnow().isoformat() + 'Z'
 
-        # 专利字段
         self.famingzlsqgbg = famingzlsqgbg
         self.shouquanggh = shouquanggh
         self.zhuanlimc = zhuanlimc
@@ -79,13 +81,11 @@ class DetectionRecord:
         self.anjianbh = anjianbh
         self.anjianywzt = anjianywzt
 
-        # 发文信息字段
         self.fwxx_list = fwxx_list
         self.bhsjtzs_xiazaisj = bhsjtzs_xiazaisj
         self.bhsjtzs_data = bhsjtzs_data
 
     def to_dict(self) -> Dict[str, Any]:
-        """转换为字典"""
         return {
             'application_no': self.application_no,
             'status_code': self.status_code,
@@ -94,7 +94,6 @@ class DetectionRecord:
             'response_summary': self.response_summary,
             'timestamp': self.timestamp,
             'error_message': self.error_message,
-            # 14 个专利字段
             'famingzlsqgbg': self.famingzlsqgbg,
             'shouquanggh': self.shouquanggh,
             'zhuanlimc': self.zhuanlimc,
@@ -108,7 +107,6 @@ class DetectionRecord:
             'zhufenlh': self.zhufenlh,
             'anjianbh': self.anjianbh,
             'anjianywzt': self.anjianywzt,
-            # 发文信息字段
             'fwxx_list': self.fwxx_list,
             'bhsjtzs_xiazaisj': self.bhsjtzs_xiazaisj,
             'bhsjtzs_data': self.bhsjtzs_data,
@@ -116,163 +114,139 @@ class DetectionRecord:
 
 
 class DetectionLogger:
-    """检测数据日志记录器"""
+    """检测数据日志记录器（JSONL 存储，追加写入，中断安全）"""
 
     def __init__(self, log_file: str = None):
-        """
-        初始化日志记录器
-
-        Args:
-            log_file: 日志文件路径，默认为 DETECTION_LOG_FILE (from settings.py)
-        """
         if log_file is None:
-            log_file = str(DETECTION_LOG_FILE)
+            log_file = str(DETECTION_LOG_JSONL_FILE)
+
+        # 兼容旧调用：若传入 .json 路径，自动转为 .jsonl
+        if log_file.endswith('.json') and not log_file.endswith('.jsonl'):
+            log_file = log_file[:-5] + '.jsonl'
 
         self.log_file = log_file
         self.log_dir = os.path.dirname(log_file)
-
-        # 确保目录存在
         os.makedirs(self.log_dir, exist_ok=True)
 
-        # 初始化或加载日志
-        self._init_log()
+        if not os.path.exists(self.log_file):
+            open(self.log_file, 'a').close()
 
-    def _init_log(self):
-        """初始化日志文件，主文件损坏时自动从备份恢复"""
-        if os.path.exists(self.log_file):
-            data = self._try_load(self.log_file)
-            if data is not None:
-                self.data = data
-                return
-            # 主文件损坏，尝试备份恢复
-            print("[!] 主日志文件损坏，尝试从备份恢复...")
-            recovered = self._recover_from_backup()
-            if recovered is not None:
-                self.data = recovered
-                self._save()  # 将恢复的数据写回主文件
-                print(f"[✓] 恢复成功，共 {len(self.data['records'])} 条记录")
-                return
-            print("[!] 无可用备份，从空数据开始")
+    # ------------------------------------------------------------------
+    # 读
+    # ------------------------------------------------------------------
 
-        self.data = {'records': []}
-
-    def _try_load(self, file_path: str) -> Optional[dict]:
-        """尝试加载 JSON 文件，失败返回 None"""
+    def _load_records(self) -> list:
+        """读取全部记录；损坏行跳过并警告。"""
+        records = []
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            if isinstance(data, dict) and 'records' in data:
-                return data
-            return {'records': []}
-        except (json.JSONDecodeError, OSError):
-            return None
+            with open(self.log_file, 'r', encoding='utf-8') as f:
+                for line_no, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        records.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        print(f"[!] 第 {line_no} 行解析失败，跳过（可能是上次中断残留）")
+        except OSError:
+            pass
+        return records
+
+    # ------------------------------------------------------------------
+    # 写
+    # ------------------------------------------------------------------
 
     def add_record(self, record: DetectionRecord) -> None:
-        """添加一条记录并立即保存"""
+        """追加一条记录（O_APPEND + fsync，中断安全）"""
         d = record.to_dict()
         d['application_no'] = _normalize_app_no(d['application_no'])
-        self.data['records'].append(d)
-        self._save()
-
-    def upsert_record(self, record: DetectionRecord) -> None:
-        """更新已有记录（按 application_no 匹配），不存在则追加。用于强制重查模式。"""
-        new = record.to_dict()
-        new['application_no'] = _normalize_app_no(new['application_no'])
-        for i, r in enumerate(self.data['records']):
-            if r.get('application_no') == new['application_no']:
-                self.data['records'][i] = new
-                self._save()
-                return
-        self.data['records'].append(new)
-        self._save()
-
-    def _save(self) -> None:
-        """原子写入：先写临时文件再替换，防止写入中断导致数据损坏"""
-        tmp_file = self.log_file + '.tmp'
-        with open(tmp_file, 'w', encoding='utf-8') as f:
-            json.dump(self.data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_file, self.log_file)  # POSIX 原子操作
+        line = json.dumps(d, ensure_ascii=False) + '\n'
+        with open(self.log_file, 'a', encoding='utf-8') as f:
+            f.write(line)
+            f.flush()
+            os.fsync(f.fileno())
         self._auto_backup()
 
+    def upsert_record(self, record: DetectionRecord) -> None:
+        """更新已有记录（按 application_no），不存在则追加。用于强制重查模式（调用频率低）。"""
+        new = record.to_dict()
+        new['application_no'] = _normalize_app_no(new['application_no'])
+        records = self._load_records()
+        found = False
+        for i, r in enumerate(records):
+            if r.get('application_no') == new['application_no']:
+                records[i] = new
+                found = True
+                break
+        if not found:
+            records.append(new)
+        self._rewrite(records)
+        self._auto_backup()
+
+    def _rewrite(self, records: list) -> None:
+        """原子重写整个 JSONL 文件（tmp + os.replace）"""
+        tmp = self.log_file + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            for r in records:
+                f.write(json.dumps(r, ensure_ascii=False) + '\n')
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, self.log_file)
+
+    # ------------------------------------------------------------------
+    # 备份
+    # ------------------------------------------------------------------
+
     def _auto_backup(self, interval: int = 500) -> None:
-        """每累积 interval 条记录自动生成一个带时间戳的备份，并只保留最近 5 个"""
-        count = len(self.data['records'])
+        """每累积 interval 条记录自动生成带时间戳备份，保留最近 5 个"""
+        try:
+            with open(self.log_file, 'r', encoding='utf-8') as f:
+                count = sum(1 for line in f if line.strip())
+        except OSError:
+            return
         if count > 0 and count % interval == 0:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            backup_file = self.log_file.replace('.json', f'_backup_{timestamp}.json')
-            shutil.copy2(self.log_file, backup_file)
-            print(f"[✓] 自动备份: {os.path.basename(backup_file)} ({count} 条)")
-            self._prune_backups(keep=5)
+            backup = self.log_file.replace('.jsonl', f'_backup_{timestamp}.jsonl')
+            shutil.copy2(self.log_file, backup)
+            print(f"[✓] 自动备份: {os.path.basename(backup)} ({count} 条)")
+            self._prune_backups()
 
     def _prune_backups(self, keep: int = 5) -> None:
-        """只保留最近 keep 个自动备份，删除更早的"""
-        pattern = self.log_file.replace('.json', '_backup_*.json')
-        backups = sorted(glob.glob(pattern))
-        for old in backups[:-keep]:
+        pattern = self.log_file.replace('.jsonl', '_backup_*.jsonl')
+        for old in sorted(glob.glob(pattern))[:-keep]:
             try:
                 os.remove(old)
             except OSError:
                 pass
 
-    def _recover_from_backup(self) -> Optional[dict]:
-        """从最新的有效备份文件恢复数据"""
-        pattern = self.log_file.replace('.json', '_backup_*.json')
-        backups = sorted(glob.glob(pattern), reverse=True)
-        for backup in backups:
-            data = self._try_load(backup)
-            if data is not None:
-                print(f"[✓] 使用备份: {os.path.basename(backup)} ({len(data['records'])} 条)")
-                return data
-        return None
+    # ------------------------------------------------------------------
+    # 查询
+    # ------------------------------------------------------------------
 
     def get_processed_applications(self) -> set:
-        """获取已处理的申请号集合"""
-        return {record['application_no'] for record in self.data['records']}
+        return {r['application_no'] for r in self._load_records()}
 
     def get_pending_applications(self, all_applications: list) -> list:
-        """
-        获取未处理的申请号列表
-
-        Args:
-            all_applications: 所有申请号列表
-
-        Returns:
-            未处理的申请号列表
-        """
         processed = self.get_processed_applications()
-        return [app for app in all_applications if app not in processed]
+        return [a for a in all_applications if a not in processed]
 
     def get_stats(self) -> Dict[str, Any]:
-        """获取统计信息"""
-        records = self.data['records']
+        records = self._load_records()
         if not records:
-            return {
-                'total': 0,
-                'success': 0,
-                'failed': 0,
-                'detected': 0,
-                'average_response_time_ms': 0,
-            }
-
-        success_count = sum(1 for r in records if r['status_code'] == 200)
-        failed_count = len(records) - success_count
-        detected_count = sum(1 for r in records if r['detected'])
-
-        response_times = [r['response_time_ms'] for r in records if r['response_time_ms']]
-        avg_response_time = sum(response_times) / len(response_times) if response_times else 0
-
+            return {'total': 0, 'success': 0, 'failed': 0, 'detected': 0, 'average_response_time_ms': 0}
+        success = sum(1 for r in records if r.get('status_code') == 200)
+        detected = sum(1 for r in records if r.get('detected'))
+        times = [r['response_time_ms'] for r in records if r.get('response_time_ms')]
         return {
             'total': len(records),
-            'success': success_count,
-            'failed': failed_count,
-            'detected': detected_count,
-            'average_response_time_ms': round(avg_response_time, 2),
+            'success': success,
+            'failed': len(records) - success,
+            'detected': detected,
+            'average_response_time_ms': round(sum(times) / len(times), 2) if times else 0,
         }
 
     def print_summary(self) -> None:
-        """打印统计摘要"""
         stats = self.get_stats()
-
         print("\n" + "="*60)
         print("📊 检测数据统计")
         print("="*60)
@@ -283,33 +257,20 @@ class DetectionLogger:
         print(f"平均响应时间: {stats['average_response_time_ms']}ms")
         print("="*60 + "\n")
 
+    # ------------------------------------------------------------------
+    # 导出
+    # ------------------------------------------------------------------
+
     def export_to_excel(self, excel_file: str = None) -> bool:
-        """
-        导出记录到 Excel 文件（两个 Sheet）
-
-        Sheet1：专利主信息（所有记录）
-        Sheet2：发文信息（仅包含 fwxx_list 不为空的记录）
-
-        Args:
-            excel_file: 输出文件路径，默认为 data/results/patents_data.xlsx
-
-        Returns:
-            成功返回 True，否则 False
-        """
+        """导出到 Excel（Sheet1：专利主信息，Sheet2：发文信息）"""
         if pd is None:
             print("❌ pandas 未安装，无法导出 Excel")
             return False
-
         try:
             if excel_file is None:
-                excel_file = os.path.join(
-                    os.path.dirname(self.log_file),
-                    'patents_data.xlsx'
-                )
+                excel_file = os.path.join(os.path.dirname(self.log_file), 'patents_data.xlsx')
 
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # Sheet1：专利主信息
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            records = self._load_records()
 
             column_mapping = {
                 'application_no': '专利申请号',
@@ -334,67 +295,64 @@ class DetectionLogger:
                 'bhsjtzs_data': '驳回决定详情',
             }
 
-            # 转换为 DataFrame
-            df = pd.DataFrame(self.data['records'])
-
-            # 重命名列
+            df = pd.DataFrame(records)
             df = df.rename(columns=column_mapping)
-
-            # 只保留有用的列
             keep_cols = [v for v in column_mapping.values() if v in df.columns]
             df = df[keep_cols]
 
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # Sheet2：发文信息（展开）
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-            fwxx_rows = []
             fwxx_column_mapping = {
-                'tongzhismc': '通知书名称',
-                'fawenr': '发文日',
-                'shoujianrxm': '收件人姓名',
-                'shoujianryb': '收件人邮编',
-                'fawenfs': '发文方式',
-                'xiazaisj': '下载时间',
-                'xiazaiip': '下载IP',
+                'tongzhismc': '通知书名称', 'fawenr': '发文日',
+                'shoujianrxm': '收件人姓名', 'shoujianryb': '收件人邮编',
+                'fawenfs': '发文方式', 'xiazaisj': '下载时间', 'xiazaiip': '下载IP',
             }
-
-            for record in self.data['records']:
+            fwxx_rows = []
+            for record in records:
                 fwxx_list = record.get('fwxx_list')
                 if fwxx_list:
                     app_no = record.get('application_no')
-                    # 展开为多行
-                    for fwxx_item in fwxx_list:
+                    for item in fwxx_list:
                         row = {'专利申请号': app_no}
-                        for key, col_name in fwxx_column_mapping.items():
-                            row[col_name] = fwxx_item.get(key)
+                        for k, col in fwxx_column_mapping.items():
+                            row[col] = item.get(k)
                         fwxx_rows.append(row)
 
-            # 保存到 Excel（两个 Sheet）
             with pd.ExcelWriter(excel_file, engine='openpyxl') as writer:
-                # Sheet1：专利主信息
                 df.to_excel(writer, sheet_name='专利主信息', index=False)
-
-                # Sheet2：发文信息（仅当有数据时）
                 if fwxx_rows:
-                    df_fwxx = pd.DataFrame(fwxx_rows)
-                    df_fwxx.to_excel(writer, sheet_name='发文信息', index=False)
+                    pd.DataFrame(fwxx_rows).to_excel(writer, sheet_name='发文信息', index=False)
 
             print(f"✅ 数据已导出至: {excel_file}")
+            print(f"   Sheet1: 专利主信息 ({len(df)} 条)")
             if fwxx_rows:
-                print(f"   Sheet1: 专利主信息 ({len(df)} 条)")
                 print(f"   Sheet2: 发文信息 ({len(fwxx_rows)} 条)")
-            else:
-                print(f"   Sheet1: 专利主信息 ({len(df)} 条)")
-                print(f"   (无发文信息数据)")
-
             return True
-
         except Exception as e:
             print(f"❌ 导出 Excel 失败: {e}")
             import traceback
             traceback.print_exc()
             return False
+
+    def export_to_json(self, json_file: str = None) -> bool:
+        """导出为 JSON 格式（兼容旧格式，用于人工检查）"""
+        if json_file is None:
+            json_file = self.log_file.replace('.jsonl', '.json')
+        records = self._load_records()
+        success = sum(1 for r in records if r.get('status_code') == 200)
+        data = {
+            'metadata': {
+                'total_records': len(records),
+                'successful': success,
+                'failed': len(records) - success,
+                'exported_at': datetime.utcnow().isoformat() + 'Z',
+            },
+            'records': records,
+        }
+        tmp = json_file + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, json_file)
+        print(f"✅ JSON 已导出: {json_file} ({len(records)} 条)")
+        return True
 
 
 if __name__ == '__main__':
@@ -402,22 +360,19 @@ if __name__ == '__main__':
     with tempfile.TemporaryDirectory() as tmpdir:
         logger = DetectionLogger(os.path.join(tmpdir, 'test_log.json'))
 
-        record1 = DetectionRecord(
+        logger.add_record(DetectionRecord(
             application_no='CN202310641887.1',
             status_code=200,
             response_time_ms=2345,
             detected=False,
-            response_summary='Success - Record found',
-        )
-        logger.add_record(record1)
-
-        record2 = DetectionRecord(
+            response_summary='Success',
+        ))
+        logger.add_record(DetectionRecord(
             application_no='CN202310869634.X',
-            status_code=403,
-            detected=True,
-            error_message='Request blocked by anti-crawler system',
-        )
-        logger.add_record(record2)
+            status_code=0,
+            error_message='MITM timeout',
+        ))
 
         logger.print_summary()
-        print("\n[测试完成，日志写入临时目录]")
+        print(f"[✓] JSONL 文件: {logger.log_file}")
+        print(f"[✓] 记录数: {len(logger._load_records())}")

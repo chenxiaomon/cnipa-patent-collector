@@ -64,7 +64,7 @@ from browser_utils import (
 )
 from cache_utils import read_json_cache, write_json_cache, poll_cache_for_key
 from settings import (
-    CNIPA_URL, DETECTION_LOG_FILE, CONFIG_FILE, CONFIG_FWXX_FILE,
+    CNIPA_URL, DETECTION_LOG_JSONL_FILE, CONFIG_FILE, CONFIG_FWXX_FILE,
     PATENT_CACHE_FILE, PATENT_FWXX_CACHE_FILE, MARKER_FILE,
     FWXX_UNMATCHED_FILE, PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE,
     MITM_TIMEOUT, MITM_POLL_INTERVAL, USE_MITM_PROXY,
@@ -82,7 +82,7 @@ pyautogui.FAILSAFE = PYAUTOGUI_FAILSAFE
 SEARCH_PAGE_URL = CNIPA_URL
 
 # 将 Path 对象转换为字符串（用于文件操作）
-DETECTION_LOG_FILE = str(DETECTION_LOG_FILE)
+DETECTION_LOG_FILE = str(DETECTION_LOG_JSONL_FILE)
 CONFIG_FILE = str(CONFIG_FILE)
 CONFIG_FWXX_FILE = str(CONFIG_FWXX_FILE)
 PATENT_CACHE_FILE = str(PATENT_CACHE_FILE)
@@ -124,10 +124,15 @@ def load_target_applications() -> list:
         print(f"[!] 采集日志文件不存在: {DETECTION_LOG_FILE}")
         return []
 
+    records = []
     with open(DETECTION_LOG_FILE, 'r', encoding='utf-8') as f:
-        log_data = json.load(f)
-
-    records = log_data.get('records', [])
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
 
     # 统计各类型案件
     total_bhsj = 0  # "驳回等复审请求" 总数

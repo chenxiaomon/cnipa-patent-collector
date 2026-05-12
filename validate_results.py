@@ -23,20 +23,37 @@ from pathlib import Path
 from collections import defaultdict
 
 # 配置
-from settings import DETECTION_LOG_FILE, PATENTS_EXCEL_FILE
+from settings import DETECTION_LOG_JSONL_FILE, PATENTS_EXCEL_FILE
 
-DETECTION_LOG = DETECTION_LOG_FILE
+DETECTION_LOG = DETECTION_LOG_JSONL_FILE
 PATENTS_EXCEL = PATENTS_EXCEL_FILE
 
 
 def load_json_log():
-    """加载 detection_log.json"""
+    """加载 detection_log.jsonl，返回与旧 JSON 格式兼容的 dict"""
     if not DETECTION_LOG.exists():
         print(f"❌ 找不到日志文件: {DETECTION_LOG}")
         sys.exit(1)
 
+    records = []
     with open(DETECTION_LOG, 'r', encoding='utf-8') as f:
-        return json.load(f)
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+
+    success = sum(1 for r in records if r.get('status_code') == 200)
+    return {
+        'metadata': {
+            'total_records': len(records),
+            'successful': success,
+            'failed': len(records) - success,
+        },
+        'records': records,
+    }
 
 
 def load_excel():
