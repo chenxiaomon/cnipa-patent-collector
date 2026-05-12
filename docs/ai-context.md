@@ -36,7 +36,7 @@
 - **采集对象**: CNIPA 官网 (https://cpquery.cponline.cnipa.gov.cn/)
 - **触发条件**: anjianywzt == '驳回等复审请求' 时才采集发文（以 anjianywzt 为准）
 - **性能目标**: 500 条目 < 30 分钟（单线程）✅ 已验证
-- **成功率**: 99.96%（9418/9422，按 status_code=200 计）✅ 已验证
+- **成功率**: 99.98%（9420/9422，按 status_code=200 计）✅ 已验证（2026-05-12）
 
 ### 代码约束
 
@@ -50,10 +50,9 @@
   - 补采脚本 (collect_fwxx.py line 232) 正确使用 anjianywzt 判定
   - 数据验证：9422 条采集，falvzt 全为 `--`，anjianywzt 有真实分布
 
-- **状态存储 RMW 问题** ⚠️
-  - detection_log.json 每次 add_record 都整文件重写（detection_logger.py line 148）
-  - 中断会导致 JSON 损坏
-  - 建议：改为 JSONL + O_APPEND（原子写入）
+- **状态存储** ✅ 已升级（2026-05-12）
+  - detection_log.jsonl，JSONL 追加写入，O_APPEND + fsync，中断安全
+  - detection_log.json 保留为备份，可手动删除
 
 ### 依赖约束
 
@@ -100,8 +99,8 @@
 
 | 文件 | 行数 | 关键行 | 改动频率 |
 |------|------|--------|---------|
-| main_automation.py | 550+ | 40(路径), 62(浏览器), 398(MITM超时) | 🟡 中 |
-| detection_logger.py | 350+ | 148(RMW问题), 250(导出) | 🟡 中 |
+| main_automation.py | 550+ | 62(浏览器创建), 398(MITM超时) | 🟡 中 |
+| detection_logger.py | 280+ | add_record(JSONL追加), export_to_excel, export_to_json | 🟡 中 |
 | patent_mitm_scraper.py | 380+ | 139(缓存写入), 221(缓存写入) | 🟡 中 |
 
 ### 补采脚本
