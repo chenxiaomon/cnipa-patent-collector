@@ -7,26 +7,24 @@
 
 ---
 
-## 当前目标（2026-05-11）
+## 当前目标（2026-05-12 更新）
 
-**优先级 1 - 工程化基础** (进行中)
-- [x] 文档重构（保守版）：project-brief, architecture, domain-rules, runbook, decision-log, ai-context, worklog
-  - ✅ 已确认：以 anjianywzt 为采集发文判定条件
-  - ✅ 已补充：真实采集数据 9422 条，成功率 99.96%
-  - ℹ️ 待完成：决策日期与采集时间/案件状态的关系
-- [x] 配置集中化：新建 settings.py，迁移 5 个主要脚本
-  - ✅ 已创建 settings.py，统一管理路径、MITM 参数、环境变量
-  - ✅ 已迁移：validate_results.py, detection_logger.py, main_automation.py, collect_fwxx.py, patent_mitm_scraper.py
-  - ✅ 验证：从任意目录运行脚本均能正确定位数据文件
-- [ ] 状态存储升级：从 JSON 改为 JSONL + 原子写入
+**优先级 1 - 工程化基础** ✅ 基本完成
+- [x] 文档重构：project-brief, architecture, domain-rules, runbook, decision-log, ai-context, worklog
+- [x] 配置集中化：settings.py 完成，5 个主要脚本已迁移
+- [x] 单元测试：35 个测试，`uv run pytest` 全部通过（Python 3.11）
+- [x] 环境统一：pyproject.toml + uv.lock，统一 Python 3.11 环境
+- [x] macOS 输入框 bug 修复：browser_utils.clear_input_field() 跨平台
+- [ ] **状态存储升级**：从 JSON 改为 JSONL + 原子写入（下一个 P0）
 
-**优先级 2 - 代码模块化**
+**优先级 2 - 数据完整性**（待补采）
+- [ ] 补采 4 条基础采集失败（data/retry_failed.txt 已准备）
+- [ ] 补采 21 条驳回等复审缺发文（data/retry_fwxx.txt 已准备）
+
+**优先级 3 - 代码模块化**
 - [ ] 抽象公共模块：browser_service, input_service, cache_service, cnipa_rules
 - [ ] 减少 main_automation.py 和 collect_fwxx.py 的代码重复
-
-**优先级 3 - 可靠性**
-- [ ] 补充 unit tests（纯函数）：申请号规范化、API 解析、日志合并
-- [ ] 增强错误恢复机制
+- [ ] 补充脚本路径迁移：update_by_strategy.py, sync.py, import_from_cache.py
 
 ---
 
@@ -42,10 +40,9 @@
 
 ### 代码约束
 
-- **文件路径不统一** ⚠️
-  - main_automation.py 使用 `__file__` 计算（line 40）
-  - 其他脚本硬编码 `data/` 路径（如 collect_fwxx.py line 68）
-  - 建议：统一 paths.py 或 settings.py
+- **文件路径** ✅ 主要脚本已统一
+  - settings.py 集中管理所有路径，5 个主要脚本已迁移
+  - ⚠️ 残留：update_by_strategy.py, sync.py, import_from_cache.py 仍有硬编码（非核心，待迁移）
 
 - **业务规则统一** ✅ 已验证
   - 已确认：falvzt 100% 为 `--`（不可用），anjianywzt 为准
@@ -72,7 +69,12 @@
 | 日期 | 改动内容 | 文件 | 影响范围 |
 |------|---------|------|---------|
 | 2026-05-10 | 文档重构（本轮） | docs/ 新增 | 无代码改动 |
-| 2026-XX-XX | [待填] | | |
+| 2026-05-11 | settings.py 配置集中化 | settings.py 新增，5 个脚本迁移 | 路径、MITM 配置统一 |
+| 2026-05-11 | 单元测试补充 | tests/ 新增 | 35 个测试，pytest 通过 |
+| 2026-05-12 | 环境统一（pyproject.toml + uv.lock） | pyproject.toml, uv.lock 新增 | Python 3.11，pytest dev 依赖 |
+| 2026-05-12 | macOS 输入框清空 bug 修复 | browser_utils.py, main_automation.py, collect_fwxx.py | 跨平台 command+a/ctrl+a |
+| 2026-05-12 | README 状态修正 | README.md | 路径策略、JSON RMW 状态更新 |
+| 2026-05-12 | 补采列表生成 | data/retry_failed.txt, data/retry_fwxx.txt | 4 条失败 + 21 条缺发文 |
 
 ---
 
@@ -84,9 +86,10 @@
 | **JSON 文件 RMW 非原子** | 中断会损坏日志 | 🔴 P0 | 改 JSONL + 文件锁（2 周） |
 | **采集成功率已验证** | 99.96%（9418/9422），文档已更新 | ✅ 完成 | 后续关注缺失的 21 条发文 |
 | **输入框清空跨平台不兼容** | macOS 下连续输入申请号时可能残留上次内容 | ✅ 完成 | browser_utils.clear_input_field()，macOS 用 command+a（2026-05-12） |
-| **代码重复（browser/input 逻辑）** | 维护成本高；bug 修复需多处改 | 🟡 P1 | 模块化（3 周） |
-| **路径策略不统一** | 从不同目录启动脚本会失败 | 🟡 P1 | 统一 settings.py（1 周） |
-| **缺少单元测试** | 规则变化时易出现回归 | 🟡 P2 | 补充测试（2 周） |
+| **代码重复（browser/input 逻辑）** | 维护成本高；bug 修复需多处改 | 🟡 P1 | 模块化重构（待做） |
+| **路径策略不统一** | 从不同目录启动脚本会失败 | ✅ 完成 | settings.py 集中管理（2026-05-11），残留 3 个非核心脚本 |
+| **缺少单元测试** | 规则变化时易出现回归 | ✅ 完成 | 35 个测试，uv run pytest 通过（2026-05-12） |
+| **数据缺口** | 4 条采集失败 + 21 条缺发文 | 🔴 P0 | 补采列表已准备，待执行补采 |
 
 ---
 
@@ -189,38 +192,41 @@
 
 ## 下一步建议
 
-### 已完成（2026-05-10 ~ 2026-05-11）
+### 已完成（2026-05-10 ~ 2026-05-12）
 
-1. ✅ **确认业务规则** 
-   - 实测数据验证：falvzt 全为 `--`（不可用），anjianywzt 为准
-   - 数据样本：9422 条采集记录
+1. ✅ **确认业务规则**：falvzt 全为 `--`，anjianywzt 为准，9422 条验证
+2. ✅ **统一配置管理**：settings.py 完成，5 个主要脚本迁移
+3. ✅ **单元测试**：35 个测试，uv run pytest 全部通过
+4. ✅ **环境统一**：pyproject.toml + uv.lock，Python 3.11
+5. ✅ **macOS 输入框 bug**：clear_input_field() 跨平台修复
 
-2. **改进状态存储** (3-4 天)
-   - 新增 DetectionLoggerV2（JSONL 格式）
-   - 保留导出 JSON 的接口
-   - 迁移脚本：将旧 JSON 转换为 JSONL
+### 当前优先（2026-05-12 起）
 
-3. **统一配置管理** (1-2 天)
-   - 新建 `settings.py` 或 `config.py`
-   - 替换所有硬编码路径和超时时间
+1. **补采数据缺口**（最紧迫，列表已就绪）
+   - 4 条基础采集失败：`USE_MITM_PROXY=true uv run python main_automation.py --update-list data/retry_failed.txt`
+   - 21 条缺发文：`USE_MITM_PROXY=true uv run python collect_fwxx.py --input data/retry_fwxx.txt`
 
-### 下周（2026-05-17 ~ 2026-05-24）
+2. **JSONL 存储升级**（P0，3-4 天）
+   - 新增 DetectionLoggerV2（JSONL 追加写入）
+   - 保留导出 JSON / Excel 接口
+   - 迁移脚本：将旧 detection_log.json 转换为 JSONL
 
-4. **模块化重构** (5-7 天)
+### 后续（2026-05-17 起）
+
+3. **模块化重构**（P1，5-7 天）
    - 提取 `browser_service.py`：浏览器创建、销毁、健康检查
-   - 提取 `input_service.py`：坐标录制、鼠标操作、输入验证
+   - 提取 `input_service.py`：坐标录制、鼠标操作
    - 提取 `cache_service.py`：缓存读写、原子操作
-   - 提取 `cnipa_rules.py`：申请号规范化、字段判定逻辑
 
-5. **测试覆盖** (3-5 天)
-   - 单元测试：申请号规范化、API 解析、日志合并
-   - 集成测试：单个申请号完整流程
+4. **运维效率**（P1）
+   - 一键启动脚本 run.sh
+   - 采集结束自动检测缺口、自动 git push
 
 ### 关键决策点
 
-- [ ] 确认 falvzt & anjianywzt（本周）→ 影响 collect_fwxx.py 改动
-- [ ] SQLite 迁移 vs JSONL（中期评估）→ 影响数据结构设计
-- [ ] 坐标自动识别工具（可选）→ 影响用户体验
+- [x] ~~确认 falvzt & anjianywzt~~ → 已验证，anjianywzt 为准
+- [ ] SQLite 迁移 vs JSONL（超过 10K 条时评估）→ 影响数据结构设计
+- [ ] 坐标自动识别工具（可选）→ 换机器时不用手动录坐标
 
 ---
 
@@ -230,19 +236,22 @@
 
 ```bash
 # 终端 1：启动代理
-python start_mitm_proxy.py
+uv run python start_mitm_proxy.py
 
 # 终端 2：启动主程序
-USE_MITM_PROXY=true python main_automation.py
+USE_MITM_PROXY=true uv run python main_automation.py
 
 # 测试模式（前 5 条）
-USE_MITM_PROXY=true python main_automation.py --test 5
+USE_MITM_PROXY=true uv run python main_automation.py --test 5
 
-# 重试失败
-python retry_failed_applications.py
+# 补采基础失败
+USE_MITM_PROXY=true uv run python main_automation.py --update-list data/retry_failed.txt
 
 # 补采发文
-python collect_fwxx.py
+USE_MITM_PROXY=true uv run python collect_fwxx.py --input data/retry_fwxx.txt
+
+# 验证数据
+uv run python validate_results.py
 ```
 
 ### 文件位置
@@ -292,6 +301,6 @@ data/
 ---
 
 *生成时间*: 2026-05-10  
-*有效期*: 直到下一次重大改动  
-*下次更新*: 2026-05-17  
+*最后更新*: 2026-05-12  
+*下次更新*: 补采完成后 / JSONL 升级后  
 *维护人*: @minxiaochen
