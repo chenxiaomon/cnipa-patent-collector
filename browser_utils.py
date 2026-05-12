@@ -38,13 +38,15 @@ def load_credentials() -> tuple[str, str]:
 
 
 def clear_input_field(x: int = None, y: int = None) -> None:
-    """三击输入框全选已有内容（跨平台最可靠，下一次输入直接覆盖选中内容）"""
+    """三击全选输入框内容，再 backspace 删除，确保输入框为空"""
     if x is not None and y is not None:
         pyautogui.click(x, y, clicks=3, interval=0.1)
     else:
         pos = pyautogui.position()
         pyautogui.click(pos.x, pos.y, clicks=3, interval=0.1)
-    time.sleep(0.25)
+    time.sleep(0.2)
+    pyautogui.press('backspace')  # 删除选中内容，输入框清空
+    time.sleep(0.15)
 
 
 def fill_vue_input(driver, element, value: str) -> None:
