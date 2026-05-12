@@ -74,6 +74,28 @@
 
 ---
 
+## 2026-05-12：README 状态修正 + 补采列表准备
+
+**目标**: 修正 README.md 两处过时状态；生成数据缺口的补采列表
+
+**改动**:
+- ✅ README.md：JSON RMW 状态改为"🟡 部分修复"（DetectionLogger 已原子替换，JSONL 待做）
+- ✅ README.md：路径策略状态改为"✅ 已完成"（settings.py 2026-05-11 完成）
+- ✅ 生成 `data/retry_failed.txt`（4 条基础采集失败，待补采）
+- ✅ 生成 `data/retry_fwxx.txt`（21 条驳回等复审缺发文，待补采）
+
+**结果**:
+- README 与实际代码状态一致
+- 补采列表已就绪，补采命令：
+  - 基础数据：`USE_MITM_PROXY=true uv run python main_automation.py --update-list data/retry_failed.txt`
+  - 发文数据：`USE_MITM_PROXY=true uv run python collect_fwxx.py --input data/retry_fwxx.txt`
+
+**下一步**:
+- [ ] 实际运行上述两条补采命令（需要 MITM 代理 + 浏览器登录）
+- [ ] 补采完成后重跑 validate_results.py 验证
+
+---
+
 ## [待填] 
 
 **目标**:  
