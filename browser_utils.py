@@ -37,13 +37,14 @@ def load_credentials() -> tuple[str, str]:
     return os.getenv('CNIPA_USERNAME', ''), os.getenv('CNIPA_PASSWORD', '')
 
 
-def clear_input_field() -> None:
-    """清空当前焦点输入框（跨平台：macOS 用 command+a，其他用 ctrl+a）"""
-    select_all = 'command' if sys.platform == 'darwin' else 'ctrl'
-    pyautogui.hotkey(select_all, 'a')
-    time.sleep(0.1)
-    pyautogui.press('delete')
-    time.sleep(0.3)
+def clear_input_field(x: int = None, y: int = None) -> None:
+    """三击输入框全选已有内容（跨平台最可靠，下一次输入直接覆盖选中内容）"""
+    if x is not None and y is not None:
+        pyautogui.click(x, y, clicks=3, interval=0.1)
+    else:
+        pos = pyautogui.position()
+        pyautogui.click(pos.x, pos.y, clicks=3, interval=0.1)
+    time.sleep(0.25)
 
 
 def fill_vue_input(driver, element, value: str) -> None:
