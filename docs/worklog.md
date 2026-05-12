@@ -52,6 +52,28 @@
 
 ---
 
+## 2026-05-12：环境和工作区收口
+
+**目标**: 统一 Python 环境（3.11）、修复测试体系、清理工作区脏数据、对齐 JSON/Excel
+
+**改动**:
+- ✅ 新增 `pyproject.toml` + `uv.lock`：项目正式用 uv 管理依赖，Python 3.11
+- ✅ `pyproject.toml` 增加 `[dependency-groups] dev = [pytest>=8.0.0]`，解决测试无法运行问题
+- ✅ `requirements.txt` 补充 `pandas` / `openpyxl`（之前漏掉）
+- ✅ 删除 3 条因 MITM 未启动产生的测试脏记录（201880002233/234/235），恢复 9422 条
+- ✅ 重新导出 `patents_data.xlsx`（9422 条专利主信息 + 10830 条发文）
+
+**结果**:
+- `uv run pytest tests/` → 35/35 passed，Python 3.11.15
+- `validate_results.py` 通过，JSON/Excel 一致，成功率 99.96%（9418/9422）
+- 工作区干净，commit `5bfc542`
+
+**下一步**:
+- [ ] JSONL 日志存储（仍是大 JSON 原子替换，高并发/大规模时仍有风险）
+- [ ] 补充脚本路径硬编码问题（`update_by_strategy.py`、`sync.py`、`import_from_cache.py`）
+
+---
+
 ## [待填] 
 
 **目标**:  
