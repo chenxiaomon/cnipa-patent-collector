@@ -101,7 +101,7 @@
 **目标**: 修复连续采集时 `ctrl+a` 在 macOS 不全选导致申请号拼接的问题
 
 **改动**:
-- ✅ `browser_utils.py`：新增 `clear_input_field()`，macOS 用 `command+a`，其他平台用 `ctrl+a`
+- ✅ `browser_utils.py`：新增 `clear_input_field(x, y)`，最终方案为三击 + backspace（command+a 在 Vue 输入框不可靠）
 - ✅ `main_automation.py`：替换 3 行清空逻辑 → 调用 `clear_input_field()`
 - ✅ `collect_fwxx.py`：同上
 

@@ -71,7 +71,7 @@
 | 2026-05-11 | settings.py 配置集中化 | settings.py 新增，5 个脚本迁移 | 路径、MITM 配置统一 |
 | 2026-05-11 | 单元测试补充 | tests/ 新增 | 35 个测试，pytest 通过 |
 | 2026-05-12 | 环境统一（pyproject.toml + uv.lock） | pyproject.toml, uv.lock 新增 | Python 3.11，pytest dev 依赖 |
-| 2026-05-12 | macOS 输入框清空 bug 修复 | browser_utils.py, main_automation.py, collect_fwxx.py | 跨平台 command+a/ctrl+a |
+| 2026-05-12 | 输入框清空 bug 修复（三击+backspace） | browser_utils.py, main_automation.py, collect_fwxx.py | 三击全选 + backspace 删除，跨平台可靠 |
 | 2026-05-12 | README 状态修正 | README.md | 路径策略、JSON RMW 状态更新 |
 | 2026-05-12 | 补采列表生成 | data/retry_failed.txt, data/retry_fwxx.txt | 4 条失败 + 21 条缺发文 |
 | 2026-05-12 | JSONL 存储升级 | detection_logger.py, collect_fwxx.py, validate_results.py, tests/, migrate_to_jsonl.py | 中断安全，O_APPEND + fsync |
@@ -85,7 +85,7 @@
 | **falvzt vs anjianywzt** | 实测：falvzt 全为 `--`（不可用），anjianywzt 为准 | ✅ 完成 | 已验证，代码逻辑一致 |
 | **JSON 文件 RMW 非原子** | 中断会损坏日志 | ✅ 完成 | JSONL 追加写入，add_record() O_APPEND + fsync（2026-05-12） |
 | **采集成功率已验证** | 99.96%（9418/9422），文档已更新 | ✅ 完成 | 后续关注缺失的 21 条发文 |
-| **输入框清空跨平台不兼容** | macOS 下连续输入申请号时可能残留上次内容 | ✅ 完成 | browser_utils.clear_input_field()，macOS 用 command+a（2026-05-12） |
+| **输入框清空跨平台不兼容** | macOS 下连续输入申请号时可能残留上次内容 | ✅ 完成 | browser_utils.clear_input_field()，三击全选 + backspace（2026-05-12） |
 | **代码重复（browser/input 逻辑）** | 维护成本高；bug 修复需多处改 | 🟡 P1 | 模块化重构（待做） |
 | **路径策略不统一** | 从不同目录启动脚本会失败 | ✅ 完成 | settings.py 集中管理（2026-05-11），残留 3 个非核心脚本 |
 | **缺少单元测试** | 规则变化时易出现回归 | ✅ 完成 | 35 个测试，uv run pytest 通过（2026-05-12） |
@@ -143,14 +143,11 @@
 - 重试/更新列表流程：`main_automation.py --update-list ...`
 - 发文补采流程：`collect_fwxx.py`
 
-### 建议方案
+### 最终实现方案
 
-- 抽出统一的输入框清空函数，例如 `clear_input_field()`。
-- 根据系统平台选择快捷键：
-  - macOS: `command+a`
-  - Windows/Linux: `ctrl+a`
-- 优先保持 PyAutoGUI 输入策略，不引入大量 DOM 操作。
-- 可作为 `input_service.py` 模块化任务的第一步，也可先做小范围 bugfix。
+- `browser_utils.clear_input_field(x, y)`：三击坐标处（全选输入框内容）+ `backspace`（删除）
+- `command+a` / `ctrl+a` 快捷键在 Vue.js 输入框中不可靠（Vue 事件拦截），三击是跨平台最稳定方案
+- `main_automation.py` 和 `collect_fwxx.py` 均调用 `clear_input_field(input_x, input_y)`，无平台分支逻辑
 
 ### 验收标准
 
