@@ -21,12 +21,12 @@
 - [x] 基础采集：9421/9422（99.99%），2025116556932 暂不可采（2025年申请未公开）
 - [x] 发文覆盖：99.64%（1398/1403），5 条残留接受现状
 
-**优先级 3 - 代码模块化**（核心已完成）
+**优先级 3 - 代码模块化** ✅ 全部完成
 - [x] coordinate_service.py：坐标加载/记录逻辑统一（commit 3375574，删除 ~169 行）
 - [x] browser_service.py：浏览器启动/登录统一（commit a2105f8，删除 ~40 行）
 - [x] input_service.py：PyAutoGUI 操作统一（commit 394fa42，删除 ~35 行）
-- [ ] cache_service.py 扩展：clear_cache_key 等辅助函数（低优先级）
-- [ ] 补充脚本路径迁移：update_by_strategy.py, sync.py, import_from_cache.py（低优先级）
+- [x] cache_utils 扩展：新增 clear_cache_key()（commit e686469）
+- [x] 补充脚本路径迁移：update_by_strategy.py, sync.py, import_from_cache.py（commit e686469）
 
 ---
 
@@ -84,6 +84,7 @@
 | 2026-05-13 | coordinate_service.py 接入主流程 | coordinate_service.py 新增, main_automation.py, collect_fwxx.py | 删除 ~169 行重复坐标逻辑，模块化第一步 |
 | 2026-05-13 | browser_service.py 接入 | browser_service.py 新增, main_automation.py, collect_fwxx.py | 删除 ~40 行重复登录逻辑 |
 | 2026-05-13 | input_service.py 接入 | input_service.py 新增, main_automation.py, collect_fwxx.py | 删除 ~35 行重复 PyAutoGUI 操作 |
+| 2026-05-14 | cache_utils 扩展 + 补充脚本路径迁移 | cache_utils.py, collect_fwxx.py, import_from_cache.py, sync.py, update_by_strategy.py | clear_cache_key()；JSONL 路径统一到 settings |
 
 ---
 
@@ -96,7 +97,7 @@
 | **采集成功率已验证** | 99.99%（9421/9422），文档已更新 | ✅ 完成 | 1 条 2025 年申请暂不可采，5 条缺发文接受现状 |
 | **输入框清空跨平台不兼容** | macOS 下连续输入申请号时可能残留上次内容 | ✅ 完成 | click → command+a/ctrl+a → backspace（2026-05-12） |
 | **代码重复（browser/input 逻辑）** | 维护成本高；bug 修复需多处改 | ✅ 完成 | coordinate/browser/input_service 三个模块已完成，合计删除 ~244 行（2026-05-13） |
-| **路径策略不统一** | 从不同目录启动脚本会失败 | ✅ 完成 | settings.py 集中管理（2026-05-11），残留 3 个非核心脚本 |
+| **路径策略不统一** | 从不同目录启动脚本会失败 | ✅ 完成 | settings.py 集中管理全部脚本（2026-05-14，含 sync/import_from_cache/update_by_strategy） |
 | **缺少单元测试** | 规则变化时易出现回归 | ✅ 完成 | 35 个测试，uv run pytest 通过（2026-05-12） |
 | **数据缺口** | 1 条不可采（2025年申请）+ 5 条缺发文 | ✅ 收口 | 成功率 99.99%，发文覆盖 99.64%，接受现状 |
 
@@ -114,6 +115,7 @@
 | coordinate_service.py | 137 | load_or_record_search_coordinates, load_or_record_fwxx_coordinates | 🟢 低 |
 | browser_service.py | 55 | BrowserService.launch_and_login(url, page_load_wait) | 🟢 低 |
 | input_service.py | 60 | InputService.move_and_click(), type_in_search() | 🟢 低 |
+| cache_utils.py | 85 | clear_cache_key(), poll_cache_for_key(), normalize_app_no() | 🟢 低 |
 
 ### 补采脚本
 
@@ -231,14 +233,14 @@
 3. ~~**README 状态收口**~~ ✅ 已完成（2026-05-13）
    - 成功率、JSONL 状态、数据文件位置、重试入口已同步
 
-### 后续（2026-05-17 起）
+### 已完成（2026-05-14 全部收口）
 
-4. **模块化重构**（P1，5-7 天）
-   - 提取 `browser_service.py`：浏览器创建、销毁、健康检查
-   - 提取 `input_service.py`：坐标录制、鼠标操作
-   - 提取 `cache_service.py`：缓存读写、原子操作
+4. ~~**模块化重构**~~ ✅ 已完成
+   - coordinate_service / browser_service / input_service 三个模块全部接入
+   - cache_utils 扩展 + 三个辅助脚本路径迁移
+   - 合计删除 ~250 行重复代码
 
-5. **运维效率**（P1）
+5. **运维效率**（可选，暂无紧迫需求）
    - 一键启动脚本 run.sh
    - 采集结束自动检测缺口、自动 git push
 
@@ -354,6 +356,6 @@ data/
 ---
 
 *生成时间*: 2026-05-10  
-*最后更新*: 2026-05-12（JSONL 升级完成）  
-*下次更新*: 补采完成后  
+*最后更新*: 2026-05-14（模块化重构全部收口）  
+*下次更新*: 有新功能或新一轮采集时  
 *维护人*: @minxiaochen
