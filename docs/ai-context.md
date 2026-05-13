@@ -19,7 +19,7 @@
 
 **优先级 2 - 数据完整性** ✅ 已收口
 - [x] 基础采集：9421/9422（99.99%），2025116556932 暂不可采（2025年申请未公开）
-- [x] 发文覆盖：99.64%（1398/1403），5 条残留接受现状
+- [x] 发文覆盖：**100.00%（1405/1405）**（2026-05-14 新一轮采集后首次达到 100%）
 
 **优先级 3 - 代码模块化** ✅ 全部完成
 - [x] coordinate_service.py：坐标加载/记录逻辑统一（commit 3375574，删除 ~169 行）
@@ -85,6 +85,7 @@
 | 2026-05-13 | browser_service.py 接入 | browser_service.py 新增, main_automation.py, collect_fwxx.py | 删除 ~40 行重复登录逻辑 |
 | 2026-05-13 | input_service.py 接入 | input_service.py 新增, main_automation.py, collect_fwxx.py | 删除 ~35 行重复 PyAutoGUI 操作 |
 | 2026-05-14 | cache_utils 扩展 + 补充脚本路径迁移 | cache_utils.py, collect_fwxx.py, import_from_cache.py, sync.py, update_by_strategy.py | clear_cache_key()；JSONL 路径统一到 settings |
+| 2026-05-14 | 新一轮采集（update_by_strategy 动态更新） | detection_log.jsonl, patents_data.xlsx | 发文覆盖 99.64% → **100.00%**（1405/1405） |
 
 ---
 
@@ -99,7 +100,7 @@
 | **代码重复（browser/input 逻辑）** | 维护成本高；bug 修复需多处改 | ✅ 完成 | coordinate/browser/input_service 三个模块已完成，合计删除 ~244 行（2026-05-13） |
 | **路径策略不统一** | 从不同目录启动脚本会失败 | ✅ 完成 | settings.py 集中管理全部脚本（2026-05-14，含 sync/import_from_cache/update_by_strategy） |
 | **缺少单元测试** | 规则变化时易出现回归 | ✅ 完成 | 35 个测试，uv run pytest 通过（2026-05-12） |
-| **数据缺口** | 1 条不可采（2025年申请）+ 5 条缺发文 | ✅ 收口 | 成功率 99.99%，发文覆盖 99.64%，接受现状 |
+| **数据缺口** | 1 条不可采（2025年申请）| ✅ 收口 | 成功率 99.99%，发文覆盖 100.00%（2026-05-14） |
 | **本机坐标配置入库** | `data/config*.json` 是本机屏幕坐标，提交会误导其他环境 | ✅ 完成 | 已停止跟踪真实坐标，改用 example 模板（2026-05-14，commit 1117e7b） |
 
 ---
@@ -408,6 +409,6 @@ data/
 ---
 
 *生成时间*: 2026-05-10  
-*最后更新*: 2026-05-14（阶段 2 全部收口）  
+*最后更新*: 2026-05-14（发文覆盖 100%，新一轮采集完成）  
 *下次更新*: 有新功能或新一轮采集时  
 *维护人*: @minxiaochen
