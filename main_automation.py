@@ -29,12 +29,12 @@ except ImportError as e:
 
 from detection_logger import DetectionLogger, DetectionRecord
 from browser_utils import (
-    fill_vue_input, is_browser_alive, real_type,
-    create_driver_with_retry, clear_input_field,
+    fill_vue_input, is_browser_alive, create_driver_with_retry,
 )
 from cache_utils import normalize_app_no, poll_cache_for_key
 from coordinate_service import CoordinateService
 from browser_service import BrowserService
+from input_service import InputService
 from settings import (
     CNIPA_URL, SEARCH_LIST_FILE, CONFIG_FILE, FORCE_UPDATE_FLAG,
     PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE, MITM_TIMEOUT, MITM_POLL_INTERVAL,
@@ -122,23 +122,8 @@ def search_application(
 
         print(f"\n[→] 查询: {application_no}")
 
-        # 点击输入框
-        pyautogui.moveTo(input_x, input_y, duration=random.uniform(0.3, 0.5))
-        time.sleep(random.uniform(0.1, 0.2))
-        pyautogui.click()
-        time.sleep(0.5)
-
-        # 清空输入框
-        clear_input_field()
-
-        # 输入申请号
-        real_type(application_no)
-        time.sleep(random.uniform(0.5, 1))
-
-        # 点击查询按钮
-        pyautogui.moveTo(button_x, button_y, duration=random.uniform(0.3, 0.5))
-        time.sleep(random.uniform(0.1, 0.3))
-        pyautogui.click()
+        # 输入申请号并点击查询
+        InputService.type_in_search(input_x, input_y, button_x, button_y, application_no)
 
         # 等待并轮询缓存，最多 MITM_TIMEOUT 秒
         # ⭐ 核心原则：宁可不采集，也不要采集错误的数据

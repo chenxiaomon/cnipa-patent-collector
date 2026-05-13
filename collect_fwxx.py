@@ -59,10 +59,11 @@ import undetected_chromedriver as uc
 sys.path.insert(0, os.path.dirname(__file__))
 from detection_logger import DetectionLogger
 from browser_utils import (
-    is_browser_alive, real_type, create_driver_with_retry, clear_input_field,
+    is_browser_alive, create_driver_with_retry,
 )
 from coordinate_service import CoordinateService
 from browser_service import BrowserService
+from input_service import InputService
 from cache_utils import read_json_cache, write_json_cache, poll_cache_for_key
 from settings import (
     CNIPA_URL, DETECTION_LOG_JSONL_FILE, CONFIG_FILE, CONFIG_FWXX_FILE,
@@ -303,25 +304,12 @@ def collect_one_fwxx(
 
         print(f"    [*] 输入申请号...")
 
-        # 点击输入框
-        pyautogui.moveTo(input_x, input_y, duration=random.uniform(0.3, 0.5))
-        time.sleep(random.uniform(0.1, 0.2))
-        pyautogui.click()
-        time.sleep(0.5)
-
-        # 清空输入框
-        clear_input_field()
-
-        # 输入申请号（保持原始防爬虫延迟）
-        real_type(application_no, delay_range=(0.05, 0.18), pause_prob=0.15)
-        time.sleep(random.uniform(0.5, 1))
-
-        # 自动点击查询按钮
+        # 输入申请号并点击查询（保持原始防爬虫延迟）
         print(f"    [*] 点击查询按钮...")
-        pyautogui.moveTo(button_x, button_y, duration=random.uniform(0.3, 0.5))
-        time.sleep(random.uniform(0.1, 0.3))
-        pyautogui.click()
-        time.sleep(3)  # 等待搜索结果
+        InputService.type_in_search(
+            input_x, input_y, button_x, button_y, application_no,
+            delay_range=(0.05, 0.18), pause_prob=0.15, post_search_wait=3,
+        )
 
         # 验证搜索结果是否正常（检查页面是否有异常提示）
         try:
@@ -344,10 +332,7 @@ def collect_one_fwxx(
         # 记录点击前的标签数量（用于检测是否成功打开新标签）
         tabs_before = len(driver.window_handles)
 
-        pyautogui.moveTo(link_x, link_y, duration=random.uniform(0.3, 0.5))
-        time.sleep(random.uniform(0.1, 0.3))
-        pyautogui.click()
-        time.sleep(4)  # 详情页加载较慢
+        InputService.move_and_click(link_x, link_y, post_click_wait=4)
 
         # 检查是否打开了新标签页
         tabs_after = len(driver.window_handles)
@@ -376,10 +361,7 @@ def collect_one_fwxx(
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
         print(f"    [*] 点击'发文信息'菜单...")
-        pyautogui.moveTo(fwxx_menu_x, fwxx_menu_y, duration=random.uniform(0.3, 0.5))
-        time.sleep(random.uniform(0.1, 0.3))
-        pyautogui.click()
-        time.sleep(3)  # 等待 API 响应
+        InputService.move_and_click(fwxx_menu_x, fwxx_menu_y, post_click_wait=3)
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 步骤 5：从缓存读取发文信息（轮询等待）

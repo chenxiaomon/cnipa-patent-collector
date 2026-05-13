@@ -248,6 +248,25 @@
 
 ---
 
+## 2026-05-13：input_service.py 接入
+
+**目标**: 统一 PyAutoGUI 鼠标/输入操作，消除 main_automation.py 和 collect_fwxx.py 中重复的 moveTo+click 逻辑
+
+**改动**:
+- ✅ 新增 `input_service.py`：`move_and_click(x, y, post_click_wait)` + `type_in_search(...)`
+- ✅ `main_automation.py`：搜索流程 13 行 → 1 行 `InputService.type_in_search()`
+- ✅ `collect_fwxx.py`：搜索流程 13 行 → 1 行；链接点击 3 行 → 1 行；菜单点击 3 行 → 1 行
+- ✅ 移除两个文件中不再直接使用的 `real_type` / `clear_input_field` 导入
+
+**结果**:
+- `uv run pytest` → 35/35 passed
+- `py_compile` 三个文件全部通过
+
+**下一步**:
+- [ ] cache_service 扩展（clear_cache_key 等辅助函数）或补充脚本路径迁移
+
+---
+
 ## [待填] 
 
 **目标**:  
