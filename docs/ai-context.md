@@ -100,6 +100,7 @@
 | **路径策略不统一** | 从不同目录启动脚本会失败 | ✅ 完成 | settings.py 集中管理全部脚本（2026-05-14，含 sync/import_from_cache/update_by_strategy） |
 | **缺少单元测试** | 规则变化时易出现回归 | ✅ 完成 | 35 个测试，uv run pytest 通过（2026-05-12） |
 | **数据缺口** | 1 条不可采（2025年申请）+ 5 条缺发文 | ✅ 收口 | 成功率 99.99%，发文覆盖 99.64%，接受现状 |
+| **本机坐标配置入库** | `data/config*.json` 是本机屏幕坐标，提交会误导其他环境 | 🟡 P1 | 待任务卡处理：停止跟踪真实坐标，改用 example 模板 |
 
 ---
 
@@ -142,6 +143,49 @@
 | merge_detection_logs.py | 合并多个日志 | 可用 ✓ |
 | export_public_search.py | 导出公开查询 | 可选 |
 | patent_data_cache.py | 内存缓存（已弃用） | 已弃用 ✓ |
+
+---
+
+## 待办任务卡：本机坐标配置不入库
+
+**状态**: ⚪ 待做  
+**优先级**: P1  
+**发现时间**: 2026-05-14  
+**背景**: `data/config.json` 和 `data/config_fwxx.json` 存储的是当前机器的 PyAutoGUI 鼠标坐标。它们会随屏幕分辨率、浏览器位置、缩放比例变化，不适合作为仓库标准配置。
+
+### 问题描述
+
+- 当前 `data/config.json` 和 `data/config_fwxx.json` 已被 git 跟踪。
+- 用户运行或重新记录坐标后，这两个文件会频繁产生本机 diff。
+- 如果提交真实坐标，其他机器可能直接加载错误坐标，导致点击错位置或采集失败。
+- `.gitignore` 当前没有忽略这两个真实配置文件。
+
+### 建议执行方案
+
+- 保留用户本地真实坐标文件，不删除本地文件。
+- 使用 `git rm --cached data/config.json data/config_fwxx.json` 停止跟踪真实坐标。
+- 在 `.gitignore` 中加入：
+  - `data/config.json`
+  - `data/config_fwxx.json`
+- 新增模板文件：
+  - `data/config.example.json`
+  - `data/config_fwxx.example.json`
+- 模板文件只说明字段结构，使用示例坐标或 `0` 值，不包含个人真实坐标。
+
+### 验收标准
+
+- `git status` 中不再显示 `data/config.json` 和 `data/config_fwxx.json` 的修改。
+- 仓库中保留 `data/config.example.json` 和 `data/config_fwxx.example.json`。
+- `.gitignore` 明确忽略真实坐标配置。
+- 本地真实 `data/config.json` 和 `data/config_fwxx.json` 仍存在，不影响当前机器运行。
+- 不修改采集逻辑，不改 `coordinate_service.py` 行为。
+
+### 监工审查点
+
+- 确认执行者没有删除用户本地坐标文件。
+- 确认执行者没有把真实坐标复制进 example 模板。
+- 确认执行者没有顺手改动主程序逻辑。
+- 确认提交中只包含 `.gitignore`、example 模板，以及从 git 跟踪中移除真实坐标这类配置收口。
 
 ---
 

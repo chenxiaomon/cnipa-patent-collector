@@ -1,6 +1,8 @@
 # CNIPA Patent Collector - 专利数据采集系统
 
-自动化从中国知识产权局（CNIPA）采集专利数据的系统。采集 **申请号 + 13 个基础字段 + 3 个发文字段**（条件采集），支持断点续传。**本次采集成功率 99.96%（9418/9422）**。
+自动化从中国知识产权局（CNIPA）采集专利数据的系统。采集 **申请号 + 13 个基础字段 + 3 个发文字段**（条件采集），支持断点续传。**本次采集成功率 99.99%（9421/9422）**。
+
+系统同时支持三种采集模式：按申请号自动采集、Phase 0 手动按申请人采集、公开查询手动/半自动翻页采集。
 
 ## 🚀 快速开始（30 秒）
 
@@ -35,6 +37,14 @@ USE_MITM_PROXY=true python main_automation.py
 
 ## 📊 采集数据
 
+### 采集模式
+
+| 模式 | 适用场景 | 主要入口 | 输出 |
+|------|----------|----------|------|
+| 自动按申请号采集 | 已有申请号列表，需要批量采集基础字段 | `main_automation.py` | `detection_log.jsonl`, `patents_data.xlsx` |
+| Phase 0 手动采集 | 按申请人/关键词在 CNIPA 中手动搜索，补充一批申请号 | `start_browser_for_phase0.py`, `import_from_cache.py` | 导入主日志 |
+| 公开查询采集 | 使用 publicSearch 页面手动或半自动翻页采集搜索结果 | `launch_browser_with_proxy.py`, `auto_paginate.py`, `export_public_search.py` | `public_search_results.xlsx/json` |
+
 ### 采集的字段
 
 **基础信息 (申请号 + 13 个专利字段)**
@@ -57,11 +67,11 @@ search_list.txt (申请号列表)
     ↓
 PyAutoGUI (鼠标操作) → CNIPA 网站
     ↓
-MITM 代理 (127.0.0.1:8080) 拦截 API 响应
+MITM 代理 (127.0.0.1:8082) 拦截 API 响应
     ↓
-detection_logger.py 记录 JSON
+detection_logger.py 记录 JSONL
     ↓
-patents_data.xlsx (Excel 报表) + detection_log.json (完整日志)
+patents_data.xlsx (Excel 报表) + detection_log.jsonl (完整日志)
 ```
 
 ---
@@ -71,6 +81,7 @@ patents_data.xlsx (Excel 报表) + detection_log.json (完整日志)
 ✅ **稳定** - MITM + PyAutoGUI，规避反爬虫检测  
 ✅ **完整** - 申请号 + 13 个专利字段 + 3 个发文字段  
 ✅ **可靠** - 断点续传，浏览器启动自动重试，支持手动重试和补采  
+✅ **灵活** - 支持自动采集、手动按申请人采集、公开查询采集  
 ✅ **可扩展** - 模块化设计，易于维护和修改  
 ✅ **透明** - 详细文档，决策记录，协作日志  
 
@@ -81,10 +92,15 @@ patents_data.xlsx (Excel 报表) + detection_log.json (完整日志)
 | 文件 | 职责 | 状态 |
 |------|------|------|
 | `main_automation.py` | 主流程：浏览器控制、申请号循环、数据采集 | ✅ 活跃 |
-| `detection_logger.py` | 日志记录：JSON 序列化、Excel 导出 | ✅ 活跃 |
+| `detection_logger.py` | 日志记录：JSONL 追加写入、Excel/JSON 导出 | ✅ 活跃 |
 | `patent_mitm_scraper.py` | MITM 插件：API 拦截、字段解析 | ✅ 活跃 |
 | `collect_fwxx.py` | 补采脚本：补采漏掉的发文信息 | ✅ 活跃 |
-| `retry_failed_applications.py` | 重试脚本：重新采集失败的申请号 | ✅ 活跃 |
+| `main_automation.py --update-list` | 重试/强制更新：重新采集指定申请号列表 | ✅ 活跃 |
+| `start_browser_for_phase0.py` | Phase 0：打开带代理浏览器，用户手动按申请人搜索 | ✅ 可用 |
+| `import_from_cache.py` | Phase 0：将手动浏览产生的缓存导入主日志 | ✅ 可用 |
+| `launch_browser_with_proxy.py` | 公开查询：打开带代理的 publicSearch 浏览器 | ✅ 可用 |
+| `auto_paginate.py` | 公开查询：半自动翻页 | ✅ 可用 |
+| `export_public_search.py` | 公开查询：导出 Excel/JSON | ✅ 可用 |
 
 **详见**: [docs/architecture.md](docs/architecture.md#核心文件职责)
 
@@ -97,9 +113,14 @@ data/
 ├── search_list.txt           # 输入：申请号列表
 ├── config.json               # 配置：鼠标坐标
 ├── patent_cache.json         # 临时：MITM 缓存（可删除）
+├── patent_fwxx_cache.json    # 临时：发文 MITM 缓存（可删除）
+├── raw_responses/            # 公开查询原始响应
+├── raw_searches/             # 公开查询 JSONL 记录
 └── results/
-    ├── detection_log.json    # ⭐ 输出：采集日志（JSON）
-    └── patents_data.xlsx     # ⭐ 输出：最终报表（Excel）
+    ├── detection_log.jsonl   # ⭐ 输出：主采集日志（JSONL）
+    ├── detection_log.json    # 兼容导出/备份 JSON
+    ├── patents_data.xlsx     # ⭐ 输出：最终报表（Excel）
+    └── public_search_results.xlsx/json
 ```
 
 ---
@@ -109,10 +130,11 @@ data/
 | 问题 | 优先级 | 状态 | 计划 |
 |------|--------|------|------|
 | **falvzt 不可用（全为 `--`）** | P0 | ✅ 已确认 | 以 anjianywzt 为准（实测 9422 条采集数据验证） |
-| **JSON 文件 RMW 非原子写入** | P0 | 🟡 部分修复 | DetectionLogger 已改原子替换写入 + 备份恢复；JSONL 升级待做 |
+| **JSON 文件 RMW 非原子写入** | P0 | ✅ 已完成 | 已升级为 JSONL 追加写入 + fsync；JSON 仅作兼容导出/备份 |
+| **数据缺口** | P0 | ✅ 已收口 | 1 条 2025 年申请暂不可采，5 条缺发文接受现状 |
 | **代码重复（浏览器/输入逻辑）** | P1 | 🟡 未改 | 模块化提取（3 周） |
-| **路径策略不统一** | P1 | ✅ 已完成 | settings.py 集中管理所有路径（2026-05-11） |
-| **文档草稿审核** | P1 | 🟡 进行中 | 代码事实验证中，待用户补充业务信息 |
+| **路径策略不统一** | P1 | 🟡 主要完成 | settings.py 已覆盖核心脚本；少量辅助脚本待迁移 |
+| **文档状态同步** | P1 | ✅ 本轮收口 | README 已同步成功率、JSONL 状态、手动采集入口 |
 
 **详见**: [docs/ai-context.md](docs/ai-context.md#当前风险--处理计划)
 
@@ -133,12 +155,39 @@ USE_MITM_PROXY=true python main_automation.py
 
 ### 重试失败申请号
 ```bash
-python retry_failed_applications.py
+USE_MITM_PROXY=true python main_automation.py --update-list data/retry_failed.txt
 ```
 
 ### 补采发文信息
 ```bash
 python collect_fwxx.py
+```
+
+### Phase 0 手动按申请人采集
+```bash
+# 终端 1：启动主 MITM 代理
+python start_mitm_proxy.py
+
+# 终端 2：打开带代理浏览器，手动登录、按申请人搜索、翻页
+python start_browser_for_phase0.py
+
+# 浏览完成后：把 patent_cache.json 导入主日志
+python import_from_cache.py
+```
+
+### 公开查询手动/半自动采集
+```bash
+# 终端 1：启动 publicSearch 专用代理
+python start_mitm_public_search.py
+
+# 终端 2：打开带代理 publicSearch 页面，手动输入查询条件
+python launch_browser_with_proxy.py
+
+# 可选：让脚本自动翻页
+python auto_paginate.py --delay 1.5 --max-pages 50
+
+# 采集完成后导出公开查询结果
+python export_public_search.py
 ```
 
 **更多命令**: [docs/runbook.md](docs/runbook.md#常见操作)
@@ -172,15 +221,17 @@ python collect_fwxx.py
 
 | 指标 | 值 |
 |------|-----|
-| **本次采集成功率** | 99.96%（9418 成功 / 9422 总数，status_code=200） |
-| **发文采集覆盖** | 98.50%（1382 有发文 / 1403 驳回复审） |
+| **本次采集成功率** | 99.99%（9421 成功 / 9422 总数，status_code=200） |
+| **发文采集覆盖** | 99.64%（1398 有发文 / 1403 驳回复审） |
+| **数据一致性** | JSONL/Excel 行数一致，发文列表数一致 |
 | **数据架构** | 申请号 + 13 个基础字段 + 3 个发文字段（条件采集） |
+| **采集模式** | 自动按申请号采集 + Phase 0 手动采集 + 公开查询采集 |
 | **项目文档** | 7 份（project-brief, architecture, domain-rules, runbook, decision-log, ai-context, worklog） |
-| **核心代码文件** | 5 个（main_automation, detection_logger, patent_mitm_scraper, collect_fwxx, retry_failed） |
+| **核心代码文件** | 5 个（main_automation, detection_logger, patent_mitm_scraper, collect_fwxx, validate_results） |
 
 ---
 
-**最后更新**: 2026-05-10  
+**最后更新**: 2026-05-13  
 **项目阶段**: 阶段 2 - 工程化优化  
 **下次审查**: 2026-05-17  
 **维护人**: @minxiaochen
