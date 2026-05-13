@@ -20,7 +20,7 @@ MITM_LOG="$SCRIPT_DIR/.mitm.log"
 cleanup() {
     if [[ -n "${MITM_PID:-}" ]] && kill -0 "$MITM_PID" 2>/dev/null; then
         echo ""
-        echo "[*] 停止 MITM 代理（PID $MITM_PID）..."
+        echo "[*] 停止 MITM 代理（PID ${MITM_PID}）..."
         kill "$MITM_PID" 2>/dev/null || true
     fi
 }
@@ -28,7 +28,7 @@ trap cleanup EXIT INT TERM
 
 # ── 启动 MITM 代理（后台）────────────────────────────────────────
 echo "============================================================"
-echo "▶  启动 MITM 代理（端口 $MITM_PORT）..."
+echo "▶  启动 MITM 代理（端口 ${MITM_PORT}）..."
 echo "============================================================"
 
 uv run python start_mitm_proxy.py > "$MITM_LOG" 2>&1 &
