@@ -2,6 +2,10 @@
 # 上传关键采集数据
 !data/results/detection_log.json  # 采集日志，需要上传
 
+# 本机坐标配置（随屏幕/浏览器位置变化，不入库；用 config.example.json 了解字段结构）
+data/config.json
+data/config_fwxx.json
+
 # 忽略中间缓存（不需要上传）
 data/patent_cache.json
 data/patent_fwxx_cache.json
