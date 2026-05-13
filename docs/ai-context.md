@@ -7,7 +7,7 @@
 
 ---
 
-## 当前目标（2026-05-12 更新）
+## 当前目标（2026-05-13 更新）
 
 **优先级 1 - 工程化基础** ✅ 基本完成
 - [x] 文档重构：project-brief, architecture, domain-rules, runbook, decision-log, ai-context, worklog
@@ -21,9 +21,11 @@
 - [x] 基础采集：9421/9422（99.99%），2025116556932 暂不可采（2025年申请未公开）
 - [x] 发文覆盖：99.64%（1398/1403），5 条残留接受现状
 
-**优先级 3 - 代码模块化**
-- [ ] 抽象公共模块：browser_service, input_service, cache_service, cnipa_rules
-- [ ] 减少 main_automation.py 和 collect_fwxx.py 的代码重复
+**优先级 3 - 代码模块化**（进行中）
+- [x] coordinate_service.py：坐标加载/记录逻辑统一（2026-05-13，commit 3375574，删除 ~169 行重复代码）
+- [ ] browser_service.py：浏览器创建、登录流程（main_automation 和 collect_fwxx 仍重复）
+- [ ] input_service.py：PyAutoGUI 鼠标/输入操作抽象
+- [ ] cache_service.py 扩展：clear_cache_key 等辅助函数
 - [ ] 补充脚本路径迁移：update_by_strategy.py, sync.py, import_from_cache.py
 
 ---
@@ -33,10 +35,11 @@
 ### 核心架构约束
 
 - **采集方式**: MITM 代理 + PyAutoGUI（不能改为纯 DOM）
+- **采集模式**: 自动按申请号采集 + Phase 0 手动按申请人采集 + 公开查询手动/半自动采集
 - **采集对象**: CNIPA 官网 (https://cpquery.cponline.cnipa.gov.cn/)
 - **触发条件**: anjianywzt == '驳回等复审请求' 时才采集发文（以 anjianywzt 为准）
 - **性能目标**: 500 条目 < 30 分钟（单线程）✅ 已验证
-- **成功率**: 99.98%（9420/9422，按 status_code=200 计）✅ 已验证（2026-05-12）
+- **成功率**: 99.99%（9421/9422，按 status_code=200 计）✅ 已验证（2026-05-13）
 
 ### 代码约束
 
@@ -71,10 +74,14 @@
 | 2026-05-11 | settings.py 配置集中化 | settings.py 新增，5 个脚本迁移 | 路径、MITM 配置统一 |
 | 2026-05-11 | 单元测试补充 | tests/ 新增 | 35 个测试，pytest 通过 |
 | 2026-05-12 | 环境统一（pyproject.toml + uv.lock） | pyproject.toml, uv.lock 新增 | Python 3.11，pytest dev 依赖 |
-| 2026-05-12 | 输入框清空 bug 修复（三击+backspace） | browser_utils.py, main_automation.py, collect_fwxx.py | 三击全选 + backspace 删除，跨平台可靠 |
+| 2026-05-12 | 输入框清空 bug 修复 | browser_utils.py, main_automation.py, collect_fwxx.py | command+a/ctrl+a + backspace，跨平台可靠 |
 | 2026-05-12 | README 状态修正 | README.md | 路径策略、JSON RMW 状态更新 |
 | 2026-05-12 | 补采列表生成 | data/retry_failed.txt, data/retry_fwxx.txt | 4 条失败 + 21 条缺发文 |
 | 2026-05-12 | JSONL 存储升级 | detection_logger.py, collect_fwxx.py, validate_results.py, tests/, migrate_to_jsonl.py | 中断安全，O_APPEND + fsync |
+| 2026-05-13 | 数据补采收口 | detection_log.jsonl, patents_data.xlsx | 成功率 99.99%，发文覆盖 99.64% |
+| 2026-05-13 | 手动/半手动采集文档补全 | README.md, docs/architecture.md, docs/ai-context.md | Phase 0 + publicSearch 入口补齐 |
+| 2026-05-13 | README 状态收口 | README.md, docs/worklog.md | 成功率、JSONL、数据位置、重试入口同步 |
+| 2026-05-13 | coordinate_service.py 接入主流程 | coordinate_service.py 新增, main_automation.py, collect_fwxx.py | 删除 ~169 行重复坐标逻辑，模块化第一步 |
 
 ---
 
@@ -84,9 +91,9 @@
 |------|------|--------|------|
 | **falvzt vs anjianywzt** | 实测：falvzt 全为 `--`（不可用），anjianywzt 为准 | ✅ 完成 | 已验证，代码逻辑一致 |
 | **JSON 文件 RMW 非原子** | 中断会损坏日志 | ✅ 完成 | JSONL 追加写入，add_record() O_APPEND + fsync（2026-05-12） |
-| **采集成功率已验证** | 99.96%（9418/9422），文档已更新 | ✅ 完成 | 后续关注缺失的 21 条发文 |
+| **采集成功率已验证** | 99.99%（9421/9422），文档已更新 | ✅ 完成 | 1 条 2025 年申请暂不可采，5 条缺发文接受现状 |
 | **输入框清空跨平台不兼容** | macOS 下连续输入申请号时可能残留上次内容 | ✅ 完成 | click → command+a/ctrl+a → backspace（2026-05-12） |
-| **代码重复（browser/input 逻辑）** | 维护成本高；bug 修复需多处改 | 🟡 P1 | 模块化重构（待做） |
+| **代码重复（browser/input 逻辑）** | 维护成本高；bug 修复需多处改 | 🟡 P1 | coordinate_service 已完成；browser_service / input_service 待做 |
 | **路径策略不统一** | 从不同目录启动脚本会失败 | ✅ 完成 | settings.py 集中管理（2026-05-11），残留 3 个非核心脚本 |
 | **缺少单元测试** | 规则变化时易出现回归 | ✅ 完成 | 35 个测试，uv run pytest 通过（2026-05-12） |
 | **数据缺口** | 1 条不可采（2025年申请）+ 5 条缺发文 | ✅ 收口 | 成功率 99.99%，发文覆盖 99.64%，接受现状 |
@@ -99,16 +106,28 @@
 
 | 文件 | 行数 | 关键行 | 改动频率 |
 |------|------|--------|---------|
-| main_automation.py | 550+ | 62(浏览器创建), 398(MITM超时) | 🟡 中 |
+| main_automation.py | 390+ | CoordinateService 调用, MITM 超时 | 🟡 中 |
 | detection_logger.py | 280+ | add_record(JSONL追加), export_to_excel, export_to_json | 🟡 中 |
 | patent_mitm_scraper.py | 380+ | 139(缓存写入), 221(缓存写入) | 🟡 中 |
+| coordinate_service.py | 137 | load_or_record_search_coordinates, load_or_record_fwxx_coordinates | 🟢 低 |
 
 ### 补采脚本
 
 | 文件 | 作用 | 关键问题 |
 |------|------|---------|
 | collect_fwxx.py | 补采发文信息 | 正确使用 anjianywzt 判定 ✓ |
-| retry_failed_applications.py | 重试失败申请号 | 正常 ✓ |
+| main_automation.py --update-list | 重试/强制更新指定申请号列表 | 正常 ✓ |
+
+### 手动/半手动采集入口
+
+| 文件 | 作用 | 何时使用 |
+|------|------|----------|
+| start_browser_for_phase0.py | 打开带代理浏览器，用户手动按申请人搜索和翻页 | 已知申请人/关键词，想批量发现申请号 |
+| import_from_cache.py | 将 Phase 0 手动浏览产生的 `patent_cache.json` 导入主日志 | 手动浏览结束后 |
+| start_mitm_public_search.py | 启动 publicSearch 专用 MITM 插件 | 公开查询采集前 |
+| launch_browser_with_proxy.py | 打开带代理的 publicSearch 浏览器 | 手动输入公开查询条件 |
+| auto_paginate.py | 对 publicSearch 页面半自动翻页 | 页数较多时减少手动点击 |
+| export_public_search.py | 将 `data/raw_responses/` 导出为 Excel/JSON | 公开查询采集结束后 |
 
 ### 辅助脚本
 
@@ -181,7 +200,7 @@
   - `patent_mitm_scraper.py`: 使用 PATENT_CACHE_FILE, PATENT_FWXX_CACHE_FILE, MARKER_FILE, FORCE_UPDATE_FLAG
 - ✅ 验收标准全部满足
   - `python3 -m py_compile *.py` 通过
-  - `python3 validate_results.py` 通过（99.96% 成功率验证）
+  - `python3 validate_results.py` 通过（最新 99.99% 成功率验证）
   - 从项目根目录和外部目录均能正确运行
   - 补充脚本（export_public_search.py, mitm_addon_public_search.py 等）暂未迁移（范围外）
 
@@ -197,22 +216,25 @@
 4. ✅ **环境统一**：pyproject.toml + uv.lock，Python 3.11
 5. ✅ **macOS 输入框 bug**：clear_input_field() 跨平台修复
 
-### 当前优先（2026-05-12 起）
+### 当前优先（2026-05-13 起）
 
-1. **补采数据缺口**（最紧迫，列表已就绪）
-   - 2 条基础采集失败：`USE_MITM_PROXY=true uv run python main_automation.py --update-list data/retry_failed.txt`
-   - 21 条缺发文：`USE_MITM_PROXY=true uv run python collect_fwxx.py --input data/retry_fwxx.txt`
+1. ~~**补采数据缺口**~~ ✅ 已收口（2026-05-13）
+   - 基础采集：9421/9422，1 条 2025 年申请暂不可采
+   - 发文覆盖：1398/1403，5 条残留接受现状
 
 2. ~~**JSONL 存储升级**~~ ✅ 已完成（2026-05-12，commit ab68d5e）
 
+3. ~~**README 状态收口**~~ ✅ 已完成（2026-05-13）
+   - 成功率、JSONL 状态、数据文件位置、重试入口已同步
+
 ### 后续（2026-05-17 起）
 
-3. **模块化重构**（P1，5-7 天）
+4. **模块化重构**（P1，5-7 天）
    - 提取 `browser_service.py`：浏览器创建、销毁、健康检查
    - 提取 `input_service.py`：坐标录制、鼠标操作
    - 提取 `cache_service.py`：缓存读写、原子操作
 
-4. **运维效率**（P1）
+5. **运维效率**（P1）
    - 一键启动脚本 run.sh
    - 采集结束自动检测缺口、自动 git push
 
@@ -248,6 +270,35 @@ USE_MITM_PROXY=true uv run python collect_fwxx.py --input data/retry_fwxx.txt
 uv run python validate_results.py
 ```
 
+### Phase 0 手动按申请人采集
+
+```bash
+# 终端 1：启动主 MITM 代理
+uv run python start_mitm_proxy.py
+
+# 终端 2：打开带代理浏览器，手动登录、按申请人搜索、翻页
+uv run python start_browser_for_phase0.py
+
+# 浏览完成后：导入缓存到主日志
+uv run python import_from_cache.py
+```
+
+### 公开查询手动/半自动采集
+
+```bash
+# 终端 1：启动 publicSearch 专用 MITM
+uv run python start_mitm_public_search.py
+
+# 终端 2：打开带代理 publicSearch 页面，手动输入查询条件
+uv run python launch_browser_with_proxy.py
+
+# 可选：自动/半自动翻页
+uv run python auto_paginate.py --delay 1.5 --max-pages 50
+
+# 采集完成后导出公开查询结果
+uv run python export_public_search.py
+```
+
 ### 文件位置
 
 ```
@@ -255,9 +306,13 @@ data/
 ├── search_list.txt           # 申请号输入
 ├── config.json               # 鼠标坐标
 ├── patent_cache.json         # MITM 缓存（临时）
+├── raw_responses/            # 公开查询原始响应
+├── raw_searches/             # 公开查询 JSONL 记录
 ├── results/
-│   ├── detection_log.json    # ⭐ 主日志
-│   └── patents_data.xlsx     # ⭐ 最终报表
+│   ├── detection_log.jsonl   # ⭐ 主日志
+│   ├── detection_log.json    # 兼容导出/备份
+│   ├── patents_data.xlsx     # ⭐ 最终报表
+│   └── public_search_results.xlsx/json
 ```
 
 ### 关键变量
