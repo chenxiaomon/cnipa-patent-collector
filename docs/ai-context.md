@@ -21,12 +21,12 @@
 - [x] 基础采集：9421/9422（99.99%），2025116556932 暂不可采（2025年申请未公开）
 - [x] 发文覆盖：99.64%（1398/1403），5 条残留接受现状
 
-**优先级 3 - 代码模块化**（进行中）
-- [x] coordinate_service.py：坐标加载/记录逻辑统一（2026-05-13，commit 3375574，删除 ~169 行重复代码）
-- [ ] browser_service.py：浏览器创建、登录流程（main_automation 和 collect_fwxx 仍重复）
-- [ ] input_service.py：PyAutoGUI 鼠标/输入操作抽象
-- [ ] cache_service.py 扩展：clear_cache_key 等辅助函数
-- [ ] 补充脚本路径迁移：update_by_strategy.py, sync.py, import_from_cache.py
+**优先级 3 - 代码模块化**（核心已完成）
+- [x] coordinate_service.py：坐标加载/记录逻辑统一（commit 3375574，删除 ~169 行）
+- [x] browser_service.py：浏览器启动/登录统一（commit a2105f8，删除 ~40 行）
+- [x] input_service.py：PyAutoGUI 操作统一（commit 394fa42，删除 ~35 行）
+- [ ] cache_service.py 扩展：clear_cache_key 等辅助函数（低优先级）
+- [ ] 补充脚本路径迁移：update_by_strategy.py, sync.py, import_from_cache.py（低优先级）
 
 ---
 
@@ -82,6 +82,8 @@
 | 2026-05-13 | 手动/半手动采集文档补全 | README.md, docs/architecture.md, docs/ai-context.md | Phase 0 + publicSearch 入口补齐 |
 | 2026-05-13 | README 状态收口 | README.md, docs/worklog.md | 成功率、JSONL、数据位置、重试入口同步 |
 | 2026-05-13 | coordinate_service.py 接入主流程 | coordinate_service.py 新增, main_automation.py, collect_fwxx.py | 删除 ~169 行重复坐标逻辑，模块化第一步 |
+| 2026-05-13 | browser_service.py 接入 | browser_service.py 新增, main_automation.py, collect_fwxx.py | 删除 ~40 行重复登录逻辑 |
+| 2026-05-13 | input_service.py 接入 | input_service.py 新增, main_automation.py, collect_fwxx.py | 删除 ~35 行重复 PyAutoGUI 操作 |
 
 ---
 
@@ -93,7 +95,7 @@
 | **JSON 文件 RMW 非原子** | 中断会损坏日志 | ✅ 完成 | JSONL 追加写入，add_record() O_APPEND + fsync（2026-05-12） |
 | **采集成功率已验证** | 99.99%（9421/9422），文档已更新 | ✅ 完成 | 1 条 2025 年申请暂不可采，5 条缺发文接受现状 |
 | **输入框清空跨平台不兼容** | macOS 下连续输入申请号时可能残留上次内容 | ✅ 完成 | click → command+a/ctrl+a → backspace（2026-05-12） |
-| **代码重复（browser/input 逻辑）** | 维护成本高；bug 修复需多处改 | 🟡 P1 | coordinate_service 已完成；browser_service / input_service 待做 |
+| **代码重复（browser/input 逻辑）** | 维护成本高；bug 修复需多处改 | ✅ 完成 | coordinate/browser/input_service 三个模块已完成，合计删除 ~244 行（2026-05-13） |
 | **路径策略不统一** | 从不同目录启动脚本会失败 | ✅ 完成 | settings.py 集中管理（2026-05-11），残留 3 个非核心脚本 |
 | **缺少单元测试** | 规则变化时易出现回归 | ✅ 完成 | 35 个测试，uv run pytest 通过（2026-05-12） |
 | **数据缺口** | 1 条不可采（2025年申请）+ 5 条缺发文 | ✅ 收口 | 成功率 99.99%，发文覆盖 99.64%，接受现状 |
@@ -106,10 +108,12 @@
 
 | 文件 | 行数 | 关键行 | 改动频率 |
 |------|------|--------|---------|
-| main_automation.py | 390+ | CoordinateService 调用, MITM 超时 | 🟡 中 |
+| main_automation.py | 360+ | BrowserService/InputService/CoordinateService 调用，MITM 超时 | 🟡 中 |
 | detection_logger.py | 280+ | add_record(JSONL追加), export_to_excel, export_to_json | 🟡 中 |
 | patent_mitm_scraper.py | 380+ | 139(缓存写入), 221(缓存写入) | 🟡 中 |
 | coordinate_service.py | 137 | load_or_record_search_coordinates, load_or_record_fwxx_coordinates | 🟢 低 |
+| browser_service.py | 55 | BrowserService.launch_and_login(url, page_load_wait) | 🟢 低 |
+| input_service.py | 60 | InputService.move_and_click(), type_in_search() | 🟢 低 |
 
 ### 补采脚本
 
