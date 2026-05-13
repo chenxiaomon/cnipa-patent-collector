@@ -59,10 +59,10 @@ import undetected_chromedriver as uc
 sys.path.insert(0, os.path.dirname(__file__))
 from detection_logger import DetectionLogger
 from browser_utils import (
-    is_browser_alive, real_type, create_driver_with_retry,
-    auto_fill_login, load_credentials, clear_input_field,
+    is_browser_alive, real_type, create_driver_with_retry, clear_input_field,
 )
 from coordinate_service import CoordinateService
+from browser_service import BrowserService
 from cache_utils import read_json_cache, write_json_cache, poll_cache_for_key
 from settings import (
     CNIPA_URL, DETECTION_LOG_JSONL_FILE, CONFIG_FILE, CONFIG_FWXX_FILE,
@@ -542,32 +542,9 @@ def run_fwxx_collection(args) -> None:
 
     driver = None
     try:
-        driver = create_driver_with_retry()
-
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # 步骤 3：打开搜索页，等待用户登录
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
+        # 步骤 3：创建浏览器，打开搜索页，等待用户登录
         print(f"\n[*] 打开搜索页: {args.url}")
-        driver.get(args.url)
-        time.sleep(3)
-
-        # 自动填写账密
-        username, password = load_credentials()
-        if username and password:
-            filled = auto_fill_login(driver, username, password)
-            if filled:
-                print("\n" + "="*60)
-                print("请在浏览器中完成验证码，然后点击【登录】按钮")
-                print("登录成功后，回到这里按 Enter 继续...")
-                print("="*60)
-            else:
-                print("[!] 自动填写失败，请手动登录后按 Enter 继续...")
-        else:
-            print("[!] 未找到登录凭证，请手动登录后按 Enter 继续...")
-            print("    提示：在 .env 中填写 CNIPA_USERNAME / CNIPA_PASSWORD 可自动填写")
-
-        input()
+        driver = BrowserService.launch_and_login(args.url, page_load_wait=3)
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 步骤 4：加载坐标配置

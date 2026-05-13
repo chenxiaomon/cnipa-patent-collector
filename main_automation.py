@@ -29,12 +29,12 @@ except ImportError as e:
 
 from detection_logger import DetectionLogger, DetectionRecord
 from browser_utils import (
-    load_credentials, fill_vue_input, auto_fill_login,
-    is_browser_alive, real_type, create_driver_with_retry,
-    clear_input_field,
+    fill_vue_input, is_browser_alive, real_type,
+    create_driver_with_retry, clear_input_field,
 )
 from cache_utils import normalize_app_no, poll_cache_for_key
 from coordinate_service import CoordinateService
+from browser_service import BrowserService
 from settings import (
     CNIPA_URL, SEARCH_LIST_FILE, CONFIG_FILE, FORCE_UPDATE_FLAG,
     PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE, MITM_TIMEOUT, MITM_POLL_INTERVAL,
@@ -261,30 +261,8 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
             open(FORCE_UPDATE_FLAG, 'w').close()
             print(f"[*] 已写入强制更新信号: {FORCE_UPDATE_FLAG}")
 
-        # 创建浏览器
-        driver = create_driver_with_retry()
-        driver.get(CNIPA_URL)
-        time.sleep(5)
-
-        print("\n✓ 浏览器已打开")
-
-        # 半自动登录：自动填写账密，等待用户处理验证码
-        username, password = load_credentials()
-        if username and password:
-            filled = auto_fill_login(driver, username, password)
-            if filled:
-                print("\n" + "="*60)
-                print("请在浏览器中完成验证码，然后点击【登录】按钮")
-                print("登录成功后，回到这里按 Enter 继续...")
-                print("="*60)
-        else:
-            print("\n⚠️  未找到登录凭证，请手动登录")
-            print("提示：在 .env 文件中填写 CNIPA_USERNAME 和 CNIPA_PASSWORD 可自动填写账密")
-
-        if sys.stdin.isatty():
-            input("登录完成后按 Enter 继续...")
-        else:
-            print("⏭️  跳过登录等待（非交互模式）")
+        # 创建浏览器并登录
+        driver = BrowserService.launch_and_login(CNIPA_URL)
 
         # 加载或记录鼠标位置
         print("\n⏳ 正在加载鼠标位置配置...")

@@ -229,6 +229,25 @@
 
 ---
 
+## 2026-05-13：browser_service.py 接入
+
+**目标**: 统一 main_automation.py 和 collect_fwxx.py 中重复的浏览器启动/登录逻辑
+
+**改动**:
+- ✅ 新增 `browser_service.py`：`BrowserService.launch_and_login(url, page_load_wait)`
+- ✅ `main_automation.py`：删除内联启动+登录代码（约 20 行），改为一行调用
+- ✅ `collect_fwxx.py`：同上（约 20 行），以 `page_load_wait=3` 保留差异参数
+- ✅ 两个文件均移除不再直接使用的 `load_credentials` / `auto_fill_login` 导入
+
+**结果**:
+- `uv run pytest` → 35/35 passed
+- `py_compile` 三个文件全部通过
+
+**下一步**:
+- [ ] input_service.py：PyAutoGUI 鼠标/输入操作抽象
+
+---
+
 ## [待填] 
 
 **目标**:  
