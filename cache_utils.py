@@ -39,6 +39,21 @@ def write_json_cache(cache_file: str, data: dict) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+def clear_cache_key(cache_file: str, key: str) -> bool:
+    """
+    删除缓存中指定键，防止旧数据干扰下次采集
+
+    Returns:
+        True 表示键存在并已删除；False 表示键不存在
+    """
+    cache = read_json_cache(cache_file)
+    if key in cache:
+        del cache[key]
+        write_json_cache(cache_file, cache)
+        return True
+    return False
+
+
 def poll_cache_for_key(
     cache_file: str,
     key: str,

@@ -267,6 +267,26 @@
 
 ---
 
+## 2026-05-13：cache_utils 扩展 + 补充脚本路径迁移
+
+**目标**: 消除 collect_fwxx.py 中 read→del→write 的 cache 模式；将三个辅助脚本的硬编码路径迁移到 settings.py
+
+**改动**:
+- ✅ `cache_utils.py`：新增 `clear_cache_key(cache_file, key)`，封装缓存键删除操作
+- ✅ `collect_fwxx.py`：使用 `clear_cache_key()` 替换 5 行 read→del→write 逻辑
+- ✅ `import_from_cache.py`：`CACHE_FILE` / `LOG_FILE` 改为 settings 常量
+- ✅ `sync.py`：路径改为 JSONL；`record_count()` 改为按行计数；`_auto_merge_conflict()` 重写为 JSONL 合并
+- ✅ `update_by_strategy.py`：`load_detection_log()` 改为 JSONL 按行读取；`save_...()` 改为 JSONL 原子重写；`load_focus_strategy()` 用 settings.DATA_DIR
+
+**结果**:
+- `py_compile` 5 个文件全部通过
+- `uv run pytest` → 35/35 passed
+
+**下一步**:
+- [ ] 模块化阶段收口：更新 ai-context.md，将优先级 3 标为已完成
+
+---
+
 ## [待填] 
 
 **目标**:  

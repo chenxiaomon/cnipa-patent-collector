@@ -27,7 +27,8 @@ def normalize_app_no(app_no: str) -> str:
 
 def load_focus_strategy() -> Dict:
     """加载关注策略配置"""
-    strategy_file = 'data/focus_strategy.json'
+    from settings import DATA_DIR
+    strategy_file = str(DATA_DIR / 'focus_strategy.json')
     if not os.path.exists(strategy_file):
         print(f"❌ 找不到关注策略文件: {strategy_file}")
         sys.exit(1)
@@ -36,14 +37,23 @@ def load_focus_strategy() -> Dict:
         return json.load(f)
 
 def load_detection_log() -> Dict:
-    """加载采集日志"""
-    log_file = 'data/results/detection_log.json'
+    """加载采集日志（JSONL 格式）"""
+    from settings import DETECTION_LOG_JSONL_FILE
+    log_file = str(DETECTION_LOG_JSONL_FILE)
     if not os.path.exists(log_file):
         print(f"❌ 找不到采集日志: {log_file}")
         sys.exit(1)
 
+    records = []
     with open(log_file, 'r', encoding='utf-8') as f:
-        return json.load(f)
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    return {'records': records}
 
 def parse_timestamp(timestamp_str: str) -> Optional[datetime]:
     """解析 ISO 格式的时间戳"""
@@ -217,10 +227,14 @@ def ensure_previous_status(detection_log: Dict) -> Dict:
 
 
 def save_detection_log_with_previous_status(detection_log: Dict):
-    """保存包含 previous_status 字段的 detection_log。"""
-    log_file = 'data/results/detection_log.json'
-    with open(log_file, 'w', encoding='utf-8') as f:
-        json.dump(detection_log, f, ensure_ascii=False, indent=2)
+    """保存包含 previous_status 字段的 detection_log（JSONL 格式，原子重写）。"""
+    from settings import DETECTION_LOG_JSONL_FILE
+    log_file = str(DETECTION_LOG_JSONL_FILE)
+    tmp = log_file + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        for record in detection_log.get('records', []):
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+    os.replace(tmp, log_file)
 
 
 def get_status_change_type(prev_status: Optional[str], curr_status: Optional[str]) -> Optional[str]:

@@ -64,7 +64,7 @@ from browser_utils import (
 from coordinate_service import CoordinateService
 from browser_service import BrowserService
 from input_service import InputService
-from cache_utils import read_json_cache, write_json_cache, poll_cache_for_key
+from cache_utils import read_json_cache, write_json_cache, poll_cache_for_key, clear_cache_key
 from settings import (
     CNIPA_URL, DETECTION_LOG_JSONL_FILE, CONFIG_FILE, CONFIG_FWXX_FILE,
     PATENT_CACHE_FILE, PATENT_FWXX_CACHE_FILE, MARKER_FILE,
@@ -291,10 +291,7 @@ def collect_one_fwxx(
 
         # 清理缓存中的旧数据（防止脏数据干扰）
         try:
-            cache = read_json_cache(PATENT_FWXX_CACHE_FILE)
-            if application_no in cache:
-                del cache[application_no]
-                write_json_cache(PATENT_FWXX_CACHE_FILE, cache)
+            clear_cache_key(PATENT_FWXX_CACHE_FILE, application_no)
         except Exception:
             pass
 

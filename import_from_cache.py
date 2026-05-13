@@ -25,14 +25,10 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(__file__))
 from detection_logger import DetectionLogger, DetectionRecord
 from cache_utils import normalize_app_no, read_json_cache
+from settings import PATENT_CACHE_FILE, DETECTION_LOG_JSONL_FILE
 
-
-# ============================================================================
-# 常量
-# ============================================================================
-
-CACHE_FILE = 'data/patent_cache.json'
-LOG_FILE = 'data/results/detection_log.json'
+CACHE_FILE = str(PATENT_CACHE_FILE)
+LOG_FILE = str(DETECTION_LOG_JSONL_FILE)
 
 
 # ============================================================================

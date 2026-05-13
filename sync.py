@@ -14,7 +14,10 @@ import os
 import subprocess
 import sys
 
-LOG_FILE = 'data/results/detection_log.json'
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from settings import DETECTION_LOG_JSONL_FILE
+
+LOG_FILE = str(DETECTION_LOG_JSONL_FILE)
 
 
 def run(cmd: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -24,45 +27,60 @@ def run(cmd: str, check: bool = True) -> subprocess.CompletedProcess:
 
 def record_count() -> int:
     try:
-        return len(json.load(open(LOG_FILE)).get('records', []))
+        with open(LOG_FILE, 'r', encoding='utf-8') as f:
+            return sum(1 for line in f if line.strip())
     except Exception:
         return 0
 
 
+def _parse_jsonl(text: str) -> dict:
+    """将 JSONL 文本解析为 {application_no: record} 字典"""
+    result = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+            app_no = record.get('application_no')
+            if app_no:
+                result[app_no] = record
+        except json.JSONDecodeError:
+            pass
+    return result
+
+
 def _auto_merge_conflict() -> bool:
     """
-    git pull 产生冲突时自动合并 detection_log.json。
+    git pull 产生冲突时自动合并 detection_log.jsonl。
     策略：以申请号为 key 合并双方记录，timestamp 较新的优先，两边独有的都保留。
     返回 True 表示合并成功并已 git add，False 表示合并失败需人工介入。
     """
     try:
         ours_raw   = run(f'git show :2:{LOG_FILE}', check=False).stdout
         theirs_raw = run(f'git show :3:{LOG_FILE}', check=False).stdout
-        ours   = json.loads(ours_raw)
-        theirs = json.loads(theirs_raw)
-    except (json.JSONDecodeError, Exception) as e:
+        our_map    = _parse_jsonl(ours_raw)
+        their_map  = _parse_jsonl(theirs_raw)
+    except Exception as e:
         print(f"[!] 无法解析冲突文件，需人工处理: {e}")
         return False
-
-    our_map    = {r['application_no']: r for r in ours.get('records', [])}
-    their_map  = {r['application_no']: r for r in theirs.get('records', [])}
 
     merged = dict(their_map)
     for app_no, record in our_map.items():
         if app_no not in merged:
             merged[app_no] = record
         else:
-            # 同一申请号取 timestamp 较新的那条
             if record.get('timestamp', '') > merged[app_no].get('timestamp', ''):
                 merged[app_no] = record
 
-    merged_data = {'records': list(merged.values())}
-
-    with open(LOG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(merged_data, f, ensure_ascii=False, indent=2)
+    tmp = LOG_FILE + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        for record in merged.values():
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+    os.replace(tmp, LOG_FILE)
 
     run(f'git add {LOG_FILE}')
-    total = len(merged_data['records'])
+    total = len(merged)
     ours_only   = len(set(our_map) - set(their_map))
     theirs_only = len(set(their_map) - set(our_map))
     print(f"[✓] 自动合并完成：共 {total} 条（本地独有 {ours_only} 条，远端独有 {theirs_only} 条）")
@@ -77,7 +95,7 @@ def cmd_pull():
     before = record_count()
 
     # 检查本地是否有未提交的修改
-    dirty = run('git status --porcelain data/results/detection_log.json').stdout.strip()
+    dirty = run('git status --porcelain data/results/detection_log.jsonl').stdout.strip()
     if dirty:
         print(f"[!] 本地有未提交的修改（{before} 条），先提交再拉取")
         ans = input("    是否先提交本地数据？(y/N): ").strip().lower()
@@ -92,7 +110,7 @@ def cmd_pull():
         if 'CONFLICT' in result.stdout or 'conflict' in result.stderr:
             print("[!] 检测到合并冲突，尝试自动合并...")
             if not _auto_merge_conflict():
-                print("[✗] 自动合并失败，请手动检查 detection_log.json")
+                print("[✗] 自动合并失败，请手动检查 detection_log.jsonl")
                 sys.exit(1)
         else:
             print(f"[✗] pull 失败（网络或权限问题）:\n{result.stderr.strip()}")
@@ -120,7 +138,7 @@ def cmd_push():
         if 'CONFLICT' in pull.stdout or 'conflict' in pull.stderr:
             print("[!] 检测到合并冲突，尝试自动合并...")
             if not _auto_merge_conflict():
-                print("[✗] 自动合并失败，请手动检查 detection_log.json")
+                print("[✗] 自动合并失败，请手动检查 detection_log.jsonl")
                 sys.exit(1)
         else:
             print(f"[✗] pull 失败（网络或权限问题）:\n{pull.stderr.strip()}")
@@ -153,7 +171,7 @@ def cmd_status():
     print("=" * 60)
     print(f"本地记录数 : {record_count()} 条")
 
-    log = run('git log --oneline -5 data/results/detection_log.json', check=False).stdout
+    log = run('git log --oneline -5 data/results/detection_log.jsonl', check=False).stdout
     if log.strip():
         print("最近提交:")
         for line in log.strip().splitlines():
