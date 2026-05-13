@@ -165,6 +165,70 @@
 
 ---
 
+## 2026-05-13：补充手动/半手动采集能力文档
+
+**目标**: 将 Phase 0 手动采集和 publicSearch 手动/半自动采集补入长期维护入口，避免后续 AI 只看到自动按申请号采集链路
+
+**改动**:
+- ✅ `README.md`：新增三种采集模式说明、手动采集命令、公开查询命令
+- ✅ `docs/architecture.md`：新增模式 A/B/C 三条采集链路和相关脚本职责
+- ✅ `docs/ai-context.md`：新增手动/半手动采集入口速览和快速命令
+
+**结果**:
+- 系统功能清单覆盖自动主采集、Phase 0 手动按申请人采集、公开查询手动/半自动采集
+- 后续 AI 可从 README 或 ai-context 直接发现 `start_browser_for_phase0.py`、`import_from_cache.py`、`launch_browser_with_proxy.py`、`auto_paginate.py`、`export_public_search.py`
+
+**下一步**:
+- [ ] 后续模块化时评估是否把手动采集脚本纳入 `settings.py` 路径迁移范围
+- [ ] README 中成功率、JSONL 状态等旧口径可单独做一次文档状态收口
+
+---
+
+## 2026-05-13：README 状态收口
+
+**目标**: 修正 README 中过时的成功率、JSONL 状态、数据文件位置和重试入口，避免入口文档误导后续 AI 或人工操作
+
+**改动**:
+- ✅ `README.md`：成功率更新为 99.99%（9421/9422），发文覆盖更新为 99.64%（1398/1403）
+- ✅ `README.md`：JSONL 状态改为已完成，`detection_log.jsonl` 标记为主日志
+- ✅ `README.md`：重试入口改为 `main_automation.py --update-list data/retry_failed.txt`
+- ✅ `README.md`：优化计划表同步为当前状态，补充数据缺口已收口
+- ✅ `docs/ai-context.md`：同步成功率、当前优先级和 README 收口状态
+- ✅ `docs/architecture.md`：同步 JSONL 日志口径和 `--update-list` 重试入口
+
+**结果**:
+- `python3 validate_results.py` 通过
+- JSONL/Excel 行数一致，发文列表数一致
+- README 与 2026-05-13 数据补采收口状态一致
+
+**下一步**:
+- [ ] 模块化重构（browser_service, input_service, cache_service）
+- [ ] 一键启动脚本 run.sh
+- [ ] 补充脚本路径迁移（update_by_strategy.py, sync.py, import_from_cache.py）
+
+---
+
+## 2026-05-13：接入 coordinate_service.py
+
+**目标**: 将已存在但未跟踪的 coordinate_service.py 接入主流程，消除 main_automation.py 中的重复坐标加载逻辑
+
+**改动**:
+- ✅ `coordinate_service.py`：修复语法错误（中文引号嵌套）
+- ✅ `main_automation.py`：新增 `from coordinate_service import CoordinateService`
+- ✅ `main_automation.py`：删除本地 `load_or_record_positions()` 函数（约 52 行）
+- ✅ `main_automation.py`：将调用点改为 `CoordinateService.load_or_record_search_coordinates()`
+
+**结果**:
+- `uv run python main_automation.py --help` 正常运行
+- `uv run pytest` → 35/35 passed
+- `py_compile` 三个文件全部通过
+
+**��一步**:
+- [x] collect_fwxx.py 中的重复坐标逻辑替换为 CoordinateService（同日完成）
+- [ ] git add + commit
+
+---
+
 ## [待填] 
 
 **目标**:  

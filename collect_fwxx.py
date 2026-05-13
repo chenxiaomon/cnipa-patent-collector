@@ -62,6 +62,7 @@ from browser_utils import (
     is_browser_alive, real_type, create_driver_with_retry,
     auto_fill_login, load_credentials, clear_input_field,
 )
+from coordinate_service import CoordinateService
 from cache_utils import read_json_cache, write_json_cache, poll_cache_for_key
 from settings import (
     CNIPA_URL, DETECTION_LOG_JSONL_FILE, CONFIG_FILE, CONFIG_FWXX_FILE,
@@ -238,79 +239,6 @@ def _load_standalone_collected() -> set:
 
 
 
-
-# ============================================================================
-# Part 3: 坐标配置函数
-# ============================================================================
-
-def load_or_record_fwxx_positions() -> dict:
-    """
-    加载或手动记录发文信息采集所需的坐标
-
-    需要记录的两个坐标：
-    1. link_x, link_y: 搜索结果中申请号链接的位置
-    2. fwxx_menu_x, fwxx_menu_y: 详情页左侧"发文信息"菜单的位置
-
-    Returns:
-        包含坐标的字典
-    """
-    # 尝试从配置文件加载
-    if os.path.exists(CONFIG_FWXX_FILE):
-        try:
-            with open(CONFIG_FWXX_FILE, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                print("\n✓ 从配置文件加载发文信息坐标")
-                print(f"  申请号链接: ({config['link_x']}, {config['link_y']})")
-                print(f"  发文菜单: ({config['fwxx_menu_x']}, {config['fwxx_menu_y']})")
-                print()
-                return config
-        except Exception as e:
-            print(f"⚠️  配置文件读取失败: {e}\n")
-
-    # 自动记录坐标（使用 PyAutoGUI，与 main_automation.py 一致）
-    print("\n" + "="*70)
-    print("⚠️  需要自动记录 2 个坐标")
-    print("="*70)
-
-    print("\n【记录坐标 A】申请号链接位置")
-    print("  1. 在浏览器中搜索一个申请号，使搜索结果显示")
-    print("  2. 将鼠标移动到搜索结果中的申请号链接上")
-    print("  倒计时开始（请保持鼠标位置）...")
-    countdown(8, "准备读取申请号链接坐标，倒计时")
-
-    # 获取坐标 A（自动读取）
-    link_x, link_y = pyautogui.position()
-    print(f"\n✓ 申请号链接坐标已记录: ({link_x}, {link_y})")
-
-    print("\n【记录坐标 B】发文信息菜单位置")
-    print("  1. 在搜索结果中点击申请号，进入详情页")
-    print("  2. 等待详情页加载完成")
-    print("  3. 在左侧菜单栏中找到'发文信息'文字")
-    print("  4. 将鼠标移动到'发文信息'上")
-    print("  倒计时开始（请保持鼠标位置）...")
-    countdown(8, "准备读取发文菜单坐标，倒计时")
-
-    # 获取坐标 B（自动读取）
-    fwxx_menu_x, fwxx_menu_y = pyautogui.position()
-    print(f"\n✓ 发文菜单坐标已记录: ({fwxx_menu_x}, {fwxx_menu_y})")
-
-    # 保存配置
-    config = {
-        'link_x': link_x,
-        'link_y': link_y,
-        'fwxx_menu_x': fwxx_menu_x,
-        'fwxx_menu_y': fwxx_menu_y,
-        'last_updated': datetime.now().isoformat()
-    }
-
-    try:
-        with open(CONFIG_FWXX_FILE, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
-        print(f"\n✓ 坐标已保存到 {CONFIG_FWXX_FILE}")
-    except Exception as e:
-        print(f"\n[!] 保存配置失败: {e}")
-
-    return config
 
 
 # ============================================================================
@@ -645,65 +573,15 @@ def run_fwxx_collection(args) -> None:
         # 步骤 4：加载坐标配置
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-        # 搜索页坐标（复用现有配置或自动记录）
+        # 搜索页坐标
         print("\n[*] 正在加载坐标配置...")
-        if not os.path.exists(CONFIG_FILE):
-            print(f"[!] 配置文件不存在: {CONFIG_FILE}")
-            print("[*] 需要手动记录坐标信息（仅需一次）...")
-            print("\n" + "="*60)
-            print("📍 鼠标位置记录（自动模式）")
-            print("="*60)
-            print("⚠️  紧急停止: 把鼠标甩到屏幕左上角\n")
-
-            print("▶ 请把鼠标移到 [申请号输入框] 的中间")
-            countdown(8, "秒后自动读取坐标")
-            input_x, input_y = pyautogui.position()
-            print(f"  ✓ 输入框坐标: ({input_x}, {input_y})")
-
-            print("\n▶ 请把鼠标移到 [查询按钮] 的中间")
-            countdown(8, "秒后自动读取坐标")
-            button_x, button_y = pyautogui.position()
-            print(f"  ✓ 按钮坐标: ({button_x}, {button_y})")
-
-            # 保存到配置文件
-            search_config = {
-                'input_x': input_x,
-                'input_y': input_y,
-                'button_x': button_x,
-                'button_y': button_y,
-                'last_updated': datetime.now().isoformat()
-            }
-            try:
-                with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-                    json.dump(search_config, f, indent=2, ensure_ascii=False)
-                print(f"\n✓ 坐标已保存到配置文件: {CONFIG_FILE}")
-            except Exception as e:
-                print(f"\n[!] 保存配置失败: {e}")
-                driver.quit()
-                return
-        else:
-            try:
-                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                    search_config = json.load(f)
-                input_x = search_config['input_x']
-                input_y = search_config['input_y']
-                button_x = search_config['button_x']
-                button_y = search_config['button_y']
-                print(f"[✓] 坐标配置已加载")
-            except (KeyError, json.JSONDecodeError) as e:
-                print(f"[!] 配置文件格式错误: {e}")
-                driver.quit()
-                return
+        input_x, input_y, button_x, button_y = CoordinateService.load_or_record_search_coordinates()
 
         print("\n[*] 现在需要记录发文信息页面的坐标...")
         print("[*] 请确保浏览器已登录并正常显示搜索页")
 
-        # 发文信息坐标（新增）
-        fwxx_config = load_or_record_fwxx_positions()
-        link_x = fwxx_config['link_x']
-        link_y = fwxx_config['link_y']
-        fwxx_menu_x = fwxx_config['fwxx_menu_x']
-        fwxx_menu_y = fwxx_config['fwxx_menu_y']
+        # 发文信息坐标
+        link_x, link_y, fwxx_menu_x, fwxx_menu_y = CoordinateService.load_or_record_fwxx_coordinates()
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 步骤 5：倒计时

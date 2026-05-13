@@ -34,6 +34,7 @@ from browser_utils import (
     clear_input_field,
 )
 from cache_utils import normalize_app_no, poll_cache_for_key
+from coordinate_service import CoordinateService
 from settings import (
     CNIPA_URL, SEARCH_LIST_FILE, CONFIG_FILE, FORCE_UPDATE_FLAG,
     PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE, MITM_TIMEOUT, MITM_POLL_INTERVAL,
@@ -56,62 +57,6 @@ def load_search_list() -> list:
 
     print(f"✓ 已加载 {len(applications)} 个申请号")
     return applications
-
-
-
-def load_or_record_positions() -> tuple:
-    """
-    从配置文件加载鼠标位置，或者手动记录
-    返回: (input_x, input_y, button_x, button_y)
-    """
-    # 尝试从配置文件加载
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                print("\n✓ 从配置文件加载鼠标位置")
-                print(f"  输入框: ({config['input_x']}, {config['input_y']})")
-                print(f"  按钮: ({config['button_x']}, {config['button_y']})")
-                return config['input_x'], config['input_y'], config['button_x'], config['button_y']
-        except Exception as e:
-            print(f"⚠️  配置文件读取失败: {e}")
-
-    # 手动记录
-    print("\n" + "="*60)
-    print("📍 鼠标位置记录")
-    print("="*60)
-    print("⚠️  紧急停止: 把鼠标甩到屏幕左上角")
-
-    print("\n▶ 请把鼠标移到 [申请号输入框] 的中间")
-    for i in range(8, 0, -1):
-        print(f"  {i}...", end="\r")
-        time.sleep(1)
-    input_x, input_y = pyautogui.position()
-    print(f"  ✓ 输入框坐标: ({input_x}, {input_y})   ")
-
-    print("\n▶ 请把鼠标移到 [查询按钮] 的中间")
-    for i in range(8, 0, -1):
-        print(f"  {i}...", end="\r")
-        time.sleep(1)
-    button_x, button_y = pyautogui.position()
-    print(f"  ✓ 按钮坐标: ({button_x}, {button_y})   ")
-
-    # 保存到配置文件
-    config = {
-        'input_x': input_x,
-        'input_y': input_y,
-        'button_x': button_x,
-        'button_y': button_y,
-        'last_updated': datetime.now().isoformat()
-    }
-    try:
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
-        print("\n✓ 位置已保存到配置文件")
-    except Exception as e:
-        print(f"\n⚠️  保存配置失败: {e}")
-
-    return input_x, input_y, button_x, button_y
 
 
 def _is_patent_data_complete(data: dict) -> bool:
@@ -344,7 +289,7 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
         # 加载或记录鼠标位置
         print("\n⏳ 正在加载鼠标位置配置...")
         time.sleep(1)
-        input_x, input_y, button_x, button_y = load_or_record_positions()
+        input_x, input_y, button_x, button_y = CoordinateService.load_or_record_search_coordinates()
 
         # 倒计时
         print("\n⏳ 5秒后开始自动操作，请不要动鼠标！")
