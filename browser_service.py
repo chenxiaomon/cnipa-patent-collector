@@ -4,6 +4,7 @@
 浏览器服务 - 统一处理浏览器启动和登录流程
 """
 
+import os
 import sys
 import time
 
@@ -55,4 +56,9 @@ class BrowserService:
         if sys.stdin.isatty():
             input("登录完成后按 Enter 继续...")
         else:
-            print("⏭️  跳过登录等待（非交互模式）")
+            wait_seconds = float(os.getenv('CNIPA_LOGIN_WAIT_SECONDS', '0') or '0')
+            if wait_seconds > 0:
+                print(f"⏳ 非交互模式：等待 {wait_seconds:.0f} 秒，请在浏览器中完成验证码并登录...")
+                time.sleep(wait_seconds)
+            else:
+                print("⏭️  跳过登录等待（非交互模式）")

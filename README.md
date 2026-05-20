@@ -6,6 +6,18 @@
 
 ## 🚀 快速开始（30 秒）
 
+### 可视化控制台
+
+```bash
+python web_dashboard.py
+```
+
+打开：`http://127.0.0.1:8765`
+
+可在页面中查看采集概览、启动代理、生成动态清单、执行测试采集/按清单更新、查看任务日志。详见 [VISUAL_UI_GUIDE.md](VISUAL_UI_GUIDE.md)。
+
+### 命令行方式
+
 ```bash
 # 1. 准备申请号列表
 echo -e "CN201880002233\nCN201880002234" > data/search_list.txt
@@ -29,6 +41,7 @@ USE_MITM_PROXY=true python main_automation.py
 | **[docs/architecture.md](docs/architecture.md)** | 采集链路、文件职责、数据流 | 🟠 代码改动、新功能开发 |
 | **[docs/domain-rules.md](docs/domain-rules.md)** | 字段定义、采集触发条件、失败处理 | 🔴 理解业务规则、排查问题 |
 | **[docs/runbook.md](docs/runbook.md)** | 启动命令、故障排查、性能调优 | 🟢 日常运维 |
+| **[VISUAL_UI_GUIDE.md](VISUAL_UI_GUIDE.md)** | 本地可视化控制台启动和操作流程 | 🟢 日常操作 |
 | **[docs/decision-log.md](docs/decision-log.md)** | 技术决策及原因（MITM 为什么？条件采集为什么？） | 🟠 理解设计意图、讨论优化 |
 | **[docs/ai-context.md](docs/ai-context.md)** | 当前目标、约束、风险、下一步（给 AI 的 1 屏纲要） | 🤖 AI/Harness 协作 |
 | **[docs/worklog.md](docs/worklog.md)** | 每次改动记录（日期、目标、结果、下一步） | 📝 了解项目演进 |
@@ -91,6 +104,7 @@ patents_data.xlsx (Excel 报表) + detection_log.jsonl (完整日志)
 
 | 文件 | 职责 | 状态 |
 |------|------|------|
+| `web_dashboard.py` | 本地 Web 控制台：采集概览、任务启动、日志查看、清单/配置编辑 | ✅ 新增 |
 | `main_automation.py` | 主流程：浏览器控制、申请号循环、数据采集 | ✅ 活跃 |
 | `detection_logger.py` | 日志记录：JSONL 追加写入、Excel/JSON 导出 | ✅ 活跃 |
 | `patent_mitm_scraper.py` | MITM 插件：API 拦截、字段解析 | ✅ 活跃 |
