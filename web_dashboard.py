@@ -45,7 +45,7 @@ from settings import (
 
 
 APP_NAME = "CNIPA 采集控制台"
-SERVER_VERSION = "CNIPADashboard/0.1"
+SERVER_VERSION = "CNIPADashboard/0.2"
 MAX_LOG_LINES = 1600
 DEFAULT_LOGIN_WAIT_SECONDS = "75"
 
@@ -244,6 +244,7 @@ class JobManager:
             job.command,
             cwd=str(BASE_DIR),
             env=env,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -330,29 +331,19 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
     action = action.strip()
 
     if action == "mitm_proxy":
-        return {
-            "action": action,
-            "title": "主 MITM 代理",
-            "command": [py, "-u", "start_mitm_proxy.py"],
-        }
+        return {"action": action, "title": "主 MITM 代理", "command": [py, "-u", "start_mitm_proxy.py"]}
     if action == "public_mitm_proxy":
-        return {
-            "action": action,
-            "title": "公开查询 MITM 代理",
-            "command": [py, "-u", "start_mitm_public_search.py"],
-        }
+        return {"action": action, "title": "公开查询 MITM 代理", "command": [py, "-u", "start_mitm_public_search.py"]}
     if action == "main_full":
         return {
-            "action": action,
-            "title": "主流程采集",
+            "action": action, "title": "主流程采集",
             "command": [py, "-u", "main_automation.py"],
             "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
         }
     if action == "main_test":
         count = positive_int(params.get("count"), default=5, maximum=10000)
         return {
-            "action": action,
-            "title": f"强制测试前 {count} 条",
+            "action": action, "title": f"强制测试前 {count} 条",
             "command": [py, "-u", "main_automation.py", "--update-list", "data/search_list.txt", "--test", str(count)],
             "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
         }
@@ -363,8 +354,7 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         if count:
             command.extend(["--test", str(count)])
         return {
-            "action": action,
-            "title": f"按清单更新 {Path(update_file).name}",
+            "action": action, "title": f"按清单更新 {Path(update_file).name}",
             "command": command,
             "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
         }
@@ -374,9 +364,7 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         if count:
             command.extend(["--test", str(count)])
         return {
-            "action": action,
-            "title": "补采发文信息",
-            "command": command,
+            "action": action, "title": "补采发文信息", "command": command,
             "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
         }
     if action == "collect_fwxx_app":
@@ -384,8 +372,7 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         if not app_no:
             raise ValueError("请输入申请号")
         return {
-            "action": action,
-            "title": f"补采发文 {app_no}",
+            "action": action, "title": f"补采发文 {app_no}",
             "command": [py, "-u", "collect_fwxx.py", "--app", app_no],
             "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
         }
@@ -394,80 +381,50 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         freq = positive_int(params.get("frequency"), default=None, maximum=3650)
         if freq:
             command.append(str(freq))
-        return {
-            "action": action,
-            "title": "生成状态检查清单",
-            "command": command,
-        }
+        return {"action": action, "title": "生成状态检查清单", "command": command}
     if action == "strategy_status":
         command = [py, "-u", "update_by_strategy.py", "status"]
         freq = positive_int(params.get("frequency"), default=None, maximum=3650)
         if freq:
             command.append(str(freq))
-        return {
-            "action": action,
-            "title": "查看策略状态",
-            "command": command,
-        }
+        return {"action": action, "title": "查看策略状态", "command": command}
     if action == "strategy_check":
         app_no = normalize_app_no(params.get("app_no"))
         if not app_no:
             raise ValueError("请输入申请号")
         return {
-            "action": action,
-            "title": f"检查申请号 {app_no}",
+            "action": action, "title": f"检查申请号 {app_no}",
             "command": [py, "-u", "update_by_strategy.py", "check", app_no],
         }
     if action in {"strategy_prepare", "strategy_diff", "strategy_report", "strategy_validate", "strategy_stats"}:
-        command_name = {
-            "strategy_prepare": "prepare",
-            "strategy_diff": "diff",
-            "strategy_report": "report",
-            "strategy_validate": "validate",
-            "strategy_stats": "stats",
-        }[action]
-        title = {
-            "strategy_prepare": "保存采集前快照",
-            "strategy_diff": "查看状态变化",
-            "strategy_report": "生成详细报告",
-            "strategy_validate": "验证策略计数",
-            "strategy_stats": "策略统计",
-        }[action]
+        cmd_map = {
+            "strategy_prepare": "prepare", "strategy_diff": "diff",
+            "strategy_report": "report", "strategy_validate": "validate", "strategy_stats": "stats",
+        }
+        title_map = {
+            "strategy_prepare": "保存采集前快照", "strategy_diff": "查看状态变化",
+            "strategy_report": "生成详细报告", "strategy_validate": "验证策略计数", "strategy_stats": "策略统计",
+        }
         return {
-            "action": action,
-            "title": title,
-            "command": [py, "-u", "update_by_strategy.py", command_name],
+            "action": action, "title": title_map[action],
+            "command": [py, "-u", "update_by_strategy.py", cmd_map[action]],
         }
     if action == "export_excel":
         return {
-            "action": action,
-            "title": "导出 Excel",
+            "action": action, "title": "导出 Excel",
             "command": [py, "-u", "-c", "from detection_logger import DetectionLogger; DetectionLogger().export_to_excel()"],
         }
     if action == "export_json":
         return {
-            "action": action,
-            "title": "导出 JSON",
+            "action": action, "title": "导出 JSON",
             "command": [py, "-u", "-c", "from detection_logger import DetectionLogger; DetectionLogger().export_to_json()"],
         }
     if action == "phase0_browser":
-        return {
-            "action": action,
-            "title": "Phase 0 浏览器",
-            "command": [py, "-u", "start_browser_for_phase0.py"],
-        }
+        return {"action": action, "title": "Phase 0 浏览器", "command": [py, "-u", "start_browser_for_phase0.py"]}
     if action == "import_cache":
-        return {
-            "action": action,
-            "title": "导入 MITM 缓存",
-            "command": [py, "-u", "import_from_cache.py"],
-        }
+        return {"action": action, "title": "导入 MITM 缓存", "command": [py, "-u", "import_from_cache.py"]}
     if action == "public_browser":
-        return {
-            "action": action,
-            "title": "公开查询浏览器",
-            "command": [py, "-u", "launch_browser_with_proxy.py"],
-        }
+        return {"action": action, "title": "公开查询浏览器", "command": [py, "-u", "launch_browser_with_proxy.py"]}
     if action == "public_auto_paginate":
         delay = params.get("delay", 1.5)
         try:
@@ -476,16 +433,28 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
             delay_text = "1.5"
         max_pages = positive_int(params.get("max_pages"), default=50, maximum=10000)
         return {
-            "action": action,
-            "title": f"公开查询自动翻页 {max_pages} 页",
+            "action": action, "title": f"公开查询自动翻页 {max_pages} 页",
             "command": [py, "-u", "auto_paginate.py", "--delay", delay_text, "--max-pages", str(max_pages)],
         }
     if action == "public_export":
-        return {
-            "action": action,
-            "title": "导出公开查询结果",
-            "command": [py, "-u", "export_public_search.py"],
-        }
+        return {"action": action, "title": "导出公开查询结果", "command": [py, "-u", "export_public_search.py"]}
+    # ── 数据管理类（新增）──────────────────────────────────────────
+    if action == "retry_failed":
+        return {"action": action, "title": "重试失败记录", "command": [py, "-u", "retry_failed.py"]}
+    if action == "validate_results":
+        return {"action": action, "title": "验证采集结果", "command": [py, "-u", "validate_results.py"]}
+    if action == "analyze_recent":
+        return {"action": action, "title": "分析采集状态", "command": [py, "-u", "analyze_collection_status.py"]}
+    if action == "merge_logs":
+        return {"action": action, "title": "合并检测日志", "command": [py, "-u", "merge_detection_logs.py"]}
+    if action == "merge_fwxx":
+        return {"action": action, "title": "合并发文缓存", "command": [py, "-u", "merge_fwxx_cache.py"]}
+    if action == "sync_status":
+        return {"action": action, "title": "查看同步状态", "command": [py, "-u", "sync.py", "status"]}
+    if action == "sync_pull":
+        return {"action": action, "title": "从远端拉取数据", "command": [py, "-u", "sync.py", "pull"]}
+    if action == "sync_push":
+        return {"action": action, "title": "推送数据到远端", "command": [py, "-u", "sync.py", "push"]}
 
     raise ValueError(f"未知操作: {action}")
 
@@ -506,8 +475,7 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
     rejection = sum(1 for item in latest_records if item.get("anjianywzt") == "驳回等复审请求")
     fwxx_collected = sum(1 for item in latest_records if item.get("fwxx_list"))
     fwxx_pending = sum(
-        1
-        for item in latest_records
+        1 for item in latest_records
         if item.get("anjianywzt") == "驳回等复审请求" and item.get("fwxx_list") is None
     )
 
@@ -534,11 +502,33 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
         for item in recent
     ]
 
-    active_jobs = [
-        job
-        for job in job_manager.list_jobs()
-        if job.get("status") in {"running", "stopping"}
-    ]
+    # 7 天采集量趋势（按天统计写入事件数）
+    now_dt = utc_now()
+    daily_keys = [(now_dt - timedelta(days=6 - i)).strftime("%m-%d") for i in range(7)]
+    daily_cnt: dict[str, int] = {k: 0 for k in daily_keys}
+    for r in records:
+        ts = parse_timestamp(r.get("timestamp"))
+        if ts:
+            day = ts.strftime("%m-%d")
+            if day in daily_cnt:
+                daily_cnt[day] += 1
+
+    # 待补采发文申请号列表（最新 20 条）
+    fwxx_pending_list = sorted(
+        [
+            {
+                "application_no": item.get("application_no"),
+                "anjianywzt": item.get("anjianywzt"),
+                "timestamp": item.get("timestamp"),
+            }
+            for item in latest_records
+            if item.get("anjianywzt") == "驳回等复审请求" and item.get("fwxx_list") is None
+        ],
+        key=lambda x: x.get("timestamp") or "",
+        reverse=True,
+    )[:20]
+
+    active_jobs = [j for j in job_manager.list_jobs() if j.get("status") in {"running", "stopping"}]
 
     warnings: list[str] = []
     if search_count == 0:
@@ -587,6 +577,8 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
         "files": {key: file_info(path) for key, path in DOWNLOADS.items()},
         "jobs": active_jobs,
         "warnings": warnings,
+        "daily_counts": [{"date": k, "count": v} for k, v in daily_cnt.items()],
+        "fwxx_pending_list": fwxx_pending_list,
     }
 
 
@@ -634,6 +626,10 @@ def build_update_groups(records: list[dict[str, Any]], status_breakdown: dict[st
     return [groups[key] for key in sorted(groups)]
 
 
+# ══════════════════════════════════════════════════════════════════════
+#  前端资源
+# ══════════════════════════════════════════════════════════════════════
+
 HTML = r"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -643,210 +639,382 @@ HTML = r"""<!doctype html>
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
-  <main class="shell">
+<div class="layout">
+
+  <!-- ── 侧边栏 ── -->
+  <nav class="sidebar">
+    <div class="sidebar-logo">
+      <span>CNIPA</span>
+      <small>采集控制台</small>
+    </div>
+    <a class="nav-item" data-tab="overview">  <span>📊</span>概览</a>
+    <a class="nav-item" data-tab="collection"><span>⚡</span>采集控制</a>
+    <a class="nav-item" data-tab="strategy">  <span>📅</span>策略管理</a>
+    <a class="nav-item" data-tab="fwxx">      <span>📋</span>发文采集</a>
+    <a class="nav-item" data-tab="public">    <span>🔍</span>公开查询</a>
+    <a class="nav-item" data-tab="analytics"> <span>📈</span>数据分析</a>
+    <a class="nav-item" data-tab="data">      <span>🗄</span>数据管理</a>
+    <a class="nav-item" data-tab="logs">      <span>📟</span>任务日志</a>
+    <a class="nav-item" data-tab="config">    <span>⚙</span>系统配置</a>
+  </nav>
+
+  <!-- ── 主内容区 ── -->
+  <div class="main">
+
+    <!-- 顶部栏 -->
     <header class="topbar">
-      <div>
-        <h1>CNIPA 采集控制台</h1>
-        <div class="subline">
-          <span id="clock">--</span>
-          <span class="dot"></span>
-          <span id="proxyPill" class="pill muted">代理检测中</span>
-        </div>
+      <div class="top-left">
+        <span id="clock">--</span>
+        <span class="dot"></span>
+        <span id="proxyPill" class="pill muted">代理检测中</span>
       </div>
       <div class="top-actions">
         <button class="btn secondary" data-action="export_excel">导出 Excel</button>
         <button class="btn secondary" data-action="export_json">导出 JSON</button>
-        <button class="btn primary" data-action="mitm_proxy">启动主代理</button>
+        <button class="btn primary"   data-action="mitm_proxy">启动主代理</button>
       </div>
     </header>
 
     <section id="warnings" class="warnings hidden"></section>
 
-    <section class="metrics" aria-label="采集概览">
-      <article class="metric"><span>唯一申请号</span><strong id="mUnique">0</strong><em id="mEvents">0 条记录</em></article>
-      <article class="metric"><span>成功率</span><strong id="mRate">0%</strong><em id="mSuccess">0 成功 / 0 失败</em></article>
-      <article class="metric"><span>驳回目标</span><strong id="mRejection">0</strong><em id="mFwxx">0 待补发文</em></article>
-      <article class="metric"><span>现在应检查</span><strong id="mDue">0</strong><em id="mTracked">0 跟踪中</em></article>
-      <article class="metric"><span>动态清单</span><strong id="mDynamic">0</strong><em id="mSearch">0 输入申请号</em></article>
-    </section>
+    <!-- ═══ Tab 1：概览 ═══ -->
+    <div id="tab-overview" class="tab-panel">
+      <section class="metrics">
+        <article class="metric"><span>唯一申请号</span><strong id="mUnique">0</strong><em id="mEvents">0 条记录</em></article>
+        <article class="metric"><span>成功率</span><strong id="mRate">0%</strong><em id="mSuccess">0 成功 / 0 失败</em></article>
+        <article class="metric"><span>驳回目标</span><strong id="mRejection">0</strong><em id="mFwxx">0 待补发文</em></article>
+        <article class="metric"><span>现在应检查</span><strong id="mDue">0</strong><em id="mTracked">0 跟踪中</em></article>
+        <article class="metric"><span>动态清单</span><strong id="mDynamic">0</strong><em id="mSearch">0 输入申请号</em></article>
+      </section>
 
-    <section class="grid two">
-      <article class="panel">
-        <div class="panel-head">
-          <h2>日常采集</h2>
-          <span class="hint">主流程</span>
-        </div>
-        <div class="control-grid">
-          <label class="field">
-            <span>测试条数</span>
-            <input id="testCount" type="number" min="1" max="10000" value="5">
-          </label>
-          <button class="btn primary" id="runTest">强制测试</button>
-          <button class="btn danger-soft" data-action="main_full">继续全量采集</button>
-        </div>
-        <div class="control-grid">
-          <label class="field">
-            <span>更新清单</span>
-            <select id="updateFile">
-              <option value="data/update_list_dynamic.txt">动态清单</option>
-              <option value="data/update_list_dynamic_7days.txt">7 天动态清单</option>
-              <option value="data/retry_dynamic.txt">动态重试清单</option>
-              <option value="data/retry_failed.txt">失败重试清单</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>限制条数</span>
-            <input id="updateLimit" type="number" min="1" max="10000" placeholder="不限制">
-          </label>
-          <button class="btn primary" id="runUpdate">按清单更新</button>
-        </div>
+      <section class="grid two">
+        <article class="panel">
+          <div class="panel-head"><h2>近 7 天采集量</h2><span class="hint">写入事件数</span></div>
+          <svg id="trendSvg" viewBox="0 0 360 72" style="width:100%;height:72px;display:block;overflow:visible"></svg>
+          <div id="trendLabels" class="trend-labels"></div>
+        </article>
+        <article class="panel">
+          <div class="panel-head"><h2>系统状态</h2></div>
+          <div class="info-grid">
+            <div class="info-row"><span>MITM 代理</span><span id="healthProxy">—</span></div>
+            <div class="info-row"><span>最后采集</span><span id="healthLastCollect">—</span></div>
+            <div class="info-row"><span>日志大小</span><span id="healthLogSize">—</span></div>
+            <div class="info-row"><span>Excel 文件</span><span id="healthExcel">—</span></div>
+          </div>
+        </article>
+      </section>
+
+      <article class="panel" style="margin-bottom:14px">
+        <div class="panel-head"><h2>快捷操作</h2><span class="hint">常用</span></div>
         <div class="button-row">
+          <button class="btn primary"   data-action="main_full">继续全量采集</button>
           <button class="btn secondary" data-action="collect_fwxx">补采发文</button>
-          <button class="btn secondary" id="collectFwxxTest">补采测试</button>
-          <button class="btn secondary" data-action="phase0_browser">Phase 0 浏览器</button>
-          <button class="btn secondary" data-action="import_cache">导入缓存</button>
+          <button class="btn secondary" data-action="strategy_generate">生成策略清单</button>
+          <button class="btn secondary" data-action="export_excel">导出 Excel</button>
         </div>
       </article>
 
       <article class="panel">
-        <div class="panel-head">
-          <h2>状态检查策略</h2>
-          <span class="hint">update_by_strategy</span>
-        </div>
-        <div class="control-grid">
-          <label class="field">
-            <span>周期</span>
-            <select id="strategyFrequency">
-              <option value="">全部</option>
-              <option value="7">7 天</option>
-              <option value="14">14 天</option>
-              <option value="30">30 天</option>
-              <option value="45">45 天</option>
-            </select>
-          </label>
-          <button class="btn primary" id="generateStrategy">生成清单</button>
-          <button class="btn secondary" id="statusStrategy">查看状态</button>
-        </div>
-        <div class="button-row">
-          <button class="btn secondary" data-action="strategy_prepare">保存快照</button>
-          <button class="btn secondary" data-action="strategy_diff">状态变化</button>
-          <button class="btn secondary" data-action="strategy_report">详细报告</button>
-          <button class="btn secondary" data-action="strategy_validate">校验策略</button>
-        </div>
-        <div class="check-line">
-          <input id="singleAppNo" placeholder="输入申请号">
-          <button class="btn primary" id="checkApp">单号判断</button>
-        </div>
+        <div class="panel-head"><h2>运行中任务</h2><span class="hint">实时</span></div>
+        <div id="activeJobs"><span class="hint">暂无运行中的任务</span></div>
       </article>
-    </section>
+    </div>
 
-    <section class="grid two">
-      <article class="panel">
-        <div class="panel-head">
-          <h2>策略分组</h2>
-          <span class="hint">按检查周期</span>
-        </div>
-        <div id="strategyGroups" class="group-list"></div>
+    <!-- ═══ Tab 2：采集控制 ═══ -->
+    <div id="tab-collection" class="tab-panel">
+      <article class="panel" style="margin-bottom:14px">
+        <div class="panel-head"><h2>采集进度</h2><span class="hint" id="collectProgressHint">—</span></div>
+        <div class="prog-bar-wrap"><div class="prog-bar" id="collectProgBar" style="width:0%"></div></div>
       </article>
 
-      <article class="panel">
-        <div class="panel-head">
-          <h2>公开查询</h2>
-          <span class="hint">publicSearch</span>
-        </div>
-        <div class="button-row">
-          <button class="btn primary" data-action="public_mitm_proxy">公开代理</button>
-          <button class="btn secondary" data-action="public_browser">公开浏览器</button>
-          <button class="btn secondary" data-action="public_export">导出公开结果</button>
-        </div>
-        <div class="control-grid">
-          <label class="field">
-            <span>翻页间隔</span>
-            <input id="pageDelay" type="number" min="0.2" max="30" step="0.1" value="1.5">
-          </label>
-          <label class="field">
-            <span>最大页数</span>
-            <input id="maxPages" type="number" min="1" max="10000" value="50">
-          </label>
-          <button class="btn primary" id="autoPaginate">自动翻页</button>
-        </div>
-        <div class="downloads">
-          <a href="/download/excel">Excel</a>
-          <a href="/download/jsonl">JSONL</a>
-          <a href="/download/json">JSON</a>
-          <a href="/download/dynamic">动态清单</a>
-        </div>
-      </article>
-    </section>
-
-    <section class="grid two wide-left">
-      <article class="panel">
-        <div class="panel-head">
-          <h2>任务日志</h2>
-          <div class="job-controls">
-            <select id="jobSelect"></select>
-            <button class="btn secondary" id="stopJob">停止</button>
+      <section class="grid two">
+        <article class="panel">
+          <div class="panel-head"><h2>主流程采集</h2><span class="hint">main_automation</span></div>
+          <div class="control-grid" style="margin-bottom:10px">
+            <label class="field"><span>测试条数</span><input id="testCount" type="number" min="1" max="10000" value="5"></label>
+            <button class="btn primary"   id="runTest">强制测试</button>
+            <button class="btn secondary" id="collectFwxxTest">补采测试</button>
           </div>
+          <div class="button-row" style="margin-bottom:14px">
+            <button class="btn danger-soft" data-action="main_full">继续全量采集</button>
+            <button class="btn secondary"   data-action="phase0_browser">Phase 0 浏览器</button>
+            <button class="btn secondary"   data-action="import_cache">导入缓存</button>
+          </div>
+          <div class="panel-head"><h2>按清单更新</h2></div>
+          <div class="control-grid">
+            <label class="field">
+              <span>更新清单</span>
+              <select id="updateFile">
+                <option value="data/update_list_dynamic.txt">动态清单</option>
+                <option value="data/update_list_dynamic_7days.txt">7 天动态清单</option>
+                <option value="data/retry_dynamic.txt">动态重试清单</option>
+                <option value="data/retry_failed.txt">失败重试清单</option>
+              </select>
+            </label>
+            <label class="field"><span>限制条数</span><input id="updateLimit" type="number" min="1" max="10000" placeholder="不限制"></label>
+            <button class="btn primary" id="runUpdate">按清单更新</button>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>申请号列表</h2>
+            <button class="btn primary" id="saveSearchList">保存</button>
+          </div>
+          <textarea id="searchList" spellcheck="false"></textarea>
+        </article>
+      </section>
+    </div>
+
+    <!-- ═══ Tab 3：策略管理 ═══ -->
+    <div id="tab-strategy" class="tab-panel">
+      <article class="panel" style="margin-bottom:14px">
+        <div class="panel-head"><h2>策略总览</h2></div>
+        <div class="info-grid two-col">
+          <div class="info-row"><span>跟踪申请数</span><strong id="stratTracked">—</strong></div>
+          <div class="info-row"><span>现在应检查</span><strong id="stratDue">—</strong></div>
         </div>
-        <pre id="jobLog" class="terminal">等待任务启动...</pre>
       </article>
+
+      <section class="grid two">
+        <article class="panel">
+          <div class="panel-head"><h2>策略分组</h2><span class="hint">按检查周期，点击"采集"立即触发</span></div>
+          <div id="strategyGroups" class="group-list"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head"><h2>辅助操作</h2></div>
+          <div class="control-grid" style="margin-bottom:12px">
+            <label class="field">
+              <span>周期</span>
+              <select id="strategyFrequency">
+                <option value="">全部</option>
+                <option value="7">7 天</option>
+                <option value="14">14 天</option>
+                <option value="30">30 天</option>
+                <option value="45">45 天</option>
+              </select>
+            </label>
+            <button class="btn primary"   id="generateStrategy">生成清单</button>
+            <button class="btn secondary" id="statusStrategy">查看状态</button>
+          </div>
+          <div class="button-row" style="margin-bottom:12px">
+            <button class="btn secondary" data-action="strategy_prepare">保存快照</button>
+            <button class="btn secondary" data-action="strategy_diff">状态变化</button>
+            <button class="btn secondary" data-action="strategy_report">详细报告</button>
+            <button class="btn secondary" data-action="strategy_validate">校验策略</button>
+            <button class="btn secondary" data-action="strategy_stats">策略统计</button>
+          </div>
+          <div class="check-line">
+            <input id="singleAppNo" placeholder="输入申请号">
+            <button class="btn primary" id="checkApp">单号判断</button>
+          </div>
+        </article>
+      </section>
+    </div>
+
+    <!-- ═══ Tab 4：发文采集 ═══ -->
+    <div id="tab-fwxx" class="tab-panel">
+      <section class="grid two" style="margin-bottom:14px">
+        <article class="panel ring-panel">
+          <div class="ring-wrap">
+            <svg class="ring-svg" viewBox="0 0 100 100">
+              <circle cx="50" cy="50" r="40" class="ring-bg"/>
+              <circle cx="50" cy="50" r="40" id="fwxxRingFg" class="ring-fg"/>
+            </svg>
+            <div class="ring-label">
+              <strong id="fwxxPct">0%</strong>
+              <span>发文完成率</span>
+            </div>
+          </div>
+          <div class="ring-stats">
+            <div class="info-row"><span>驳回案件</span><strong id="fwxxRejection">—</strong></div>
+            <div class="info-row"><span>已采集发文</span><strong id="fwxxCollected">—</strong></div>
+            <div class="info-row"><span>待补采</span><strong id="fwxxPending">—</strong></div>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head"><h2>采集操作</h2><span class="hint">collect_fwxx</span></div>
+          <div class="button-row" style="margin-bottom:14px">
+            <button class="btn primary"   data-action="collect_fwxx">全量补采</button>
+            <button class="btn secondary" id="fwxxTestBtn">测试 5 条</button>
+          </div>
+          <div class="check-line">
+            <input id="fwxxAppNo" placeholder="单号采集：输入申请号">
+            <button class="btn primary" id="fwxxSingleBtn">采集</button>
+          </div>
+        </article>
+      </section>
 
       <article class="panel">
-        <div class="panel-head">
-          <h2>申请号列表</h2>
-          <button class="btn primary" id="saveSearchList">保存</button>
-        </div>
-        <textarea id="searchList" spellcheck="false"></textarea>
-        <div class="mini-grid">
-          <div>
-            <h3>状态分布</h3>
-            <div id="statusCounts" class="mini-list"></div>
-          </div>
-          <div>
-            <h3>申请人 TOP</h3>
-            <div id="applicantCounts" class="mini-list"></div>
-          </div>
+        <div class="panel-head"><h2>待补采列表</h2><span class="hint" id="fwxxPendingHint">最新 20 条</span></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>申请号</th><th>业务状态</th><th>最后采集</th></tr></thead>
+            <tbody id="fwxxPendingRows"></tbody>
+          </table>
         </div>
       </article>
-    </section>
+    </div>
 
-    <section class="panel">
-      <div class="panel-head">
-        <h2>最近记录</h2>
-        <span class="hint">最新写入</span>
+    <!-- ═══ Tab 5：公开查询 ═══ -->
+    <div id="tab-public" class="tab-panel">
+      <div class="steps">
+        <article class="panel step-panel">
+          <div class="step-num">1</div>
+          <div style="flex:1">
+            <h3 style="margin-bottom:10px">启动公开查询代理</h3>
+            <button class="btn primary" data-action="public_mitm_proxy">公开代理</button>
+          </div>
+        </article>
+        <article class="panel step-panel">
+          <div class="step-num">2</div>
+          <div style="flex:1">
+            <h3 style="margin-bottom:10px">打开浏览器并翻页</h3>
+            <div class="button-row" style="margin-bottom:12px">
+              <button class="btn secondary" data-action="public_browser">公开浏览器</button>
+            </div>
+            <div class="control-grid">
+              <label class="field"><span>翻页间隔（秒）</span><input id="pageDelay" type="number" min="0.2" max="30" step="0.1" value="1.5"></label>
+              <label class="field"><span>最大页数</span><input id="maxPages" type="number" min="1" max="10000" value="50"></label>
+              <button class="btn primary" id="autoPaginate">自动翻页</button>
+            </div>
+          </div>
+        </article>
+        <article class="panel step-panel">
+          <div class="step-num">3</div>
+          <div style="flex:1">
+            <h3 style="margin-bottom:10px">导出结果</h3>
+            <div class="button-row" style="margin-bottom:12px">
+              <button class="btn secondary" data-action="public_export">导出公开结果</button>
+            </div>
+            <div class="downloads">
+              <a href="/download/excel">Excel ↓</a>
+              <a href="/download/jsonl">JSONL ↓</a>
+              <a href="/download/json">JSON ↓</a>
+              <a href="/download/dynamic">动态清单 ↓</a>
+            </div>
+          </div>
+        </article>
       </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>申请号</th>
-              <th>状态码</th>
-              <th>业务状态</th>
-              <th>专利名称</th>
-              <th>申请人</th>
-              <th>耗时</th>
-              <th>时间</th>
-            </tr>
-          </thead>
-          <tbody id="recentRows"></tbody>
-        </table>
-      </div>
-    </section>
+    </div>
 
-    <section class="panel">
-      <div class="panel-head">
-        <h2>坐标配置</h2>
+    <!-- ═══ Tab 6：数据分析 ═══ -->
+    <div id="tab-analytics" class="tab-panel">
+      <section class="grid two" style="margin-bottom:14px">
+        <article class="panel">
+          <div class="panel-head"><h2>业务状态分布</h2><span class="hint">TOP 12</span></div>
+          <div id="statusCounts" class="bar-list"></div>
+        </article>
+        <article class="panel">
+          <div class="panel-head"><h2>申请人分布</h2><span class="hint">TOP 8</span></div>
+          <div id="applicantCounts" class="bar-list"></div>
+        </article>
+      </section>
+      <article class="panel" style="margin-bottom:14px">
+        <div class="panel-head"><h2>验证与分析</h2></div>
         <div class="button-row">
-          <button class="btn secondary" id="resetConfig">重录坐标</button>
-          <button class="btn primary" id="saveConfig">保存配置</button>
+          <button class="btn primary"   data-action="validate_results">运行验证</button>
+          <button class="btn secondary" data-action="analyze_recent">采集状态分析</button>
         </div>
-      </div>
-      <textarea id="configText" class="codebox" spellcheck="false"></textarea>
-    </section>
-  </main>
+      </article>
+      <article class="panel">
+        <div class="panel-head"><h2>最近记录</h2><span class="hint">最新写入 16 条</span></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>申请号</th><th>状态码</th><th>业务状态</th><th>专利名称</th><th>申请人</th><th>耗时</th><th>时间</th></tr>
+            </thead>
+            <tbody id="recentRows"></tbody>
+          </table>
+        </div>
+      </article>
+    </div>
 
-  <div id="toast" class="toast hidden"></div>
-  <script src="/app.js"></script>
+    <!-- ═══ Tab 7：数据管理 ═══ -->
+    <div id="tab-data" class="tab-panel">
+      <section class="grid two" style="margin-bottom:14px">
+        <article class="panel">
+          <div class="panel-head"><h2>重试管理</h2><span class="hint">retry_failed</span></div>
+          <div class="info-grid" style="margin-bottom:14px">
+            <div class="info-row"><span>重试清单</span><span id="retryCount">—</span></div>
+          </div>
+          <div class="button-row">
+            <button class="btn primary" data-action="retry_failed">重试失败记录</button>
+          </div>
+        </article>
+        <article class="panel">
+          <div class="panel-head"><h2>日志维护</h2></div>
+          <div class="info-grid" style="margin-bottom:14px">
+            <div class="info-row"><span>JSONL 日志</span><span id="jsonlSize">—</span></div>
+          </div>
+          <div class="button-row">
+            <button class="btn secondary" data-action="merge_logs">合并检测日志</button>
+            <button class="btn secondary" data-action="merge_fwxx">合并发文缓存</button>
+          </div>
+        </article>
+      </section>
+      <article class="panel">
+        <div class="panel-head"><h2>多机同步</h2><span class="hint">sync</span></div>
+        <div class="button-row">
+          <button class="btn secondary" data-action="sync_status">查看同步状态</button>
+          <button class="btn secondary" data-action="sync_pull">从远端拉取</button>
+          <button class="btn secondary" data-action="sync_push">推送到远端</button>
+        </div>
+      </article>
+    </div>
+
+    <!-- ═══ Tab 8：任务日志 ═══ -->
+    <div id="tab-logs" class="tab-panel">
+      <section class="grid wide-left">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>日志输出</h2>
+            <div style="display:flex;gap:8px;align-items:center">
+              <button class="btn primary hidden" id="resumeLoginBtn">✅ 我已完成验证码</button>
+              <button class="btn secondary" id="stopJob">停止</button>
+            </div>
+          </div>
+          <pre id="jobLog" class="terminal">等待任务启动...</pre>
+        </article>
+        <article class="panel">
+          <div class="panel-head"><h2>任务列表</h2></div>
+          <div id="jobList" class="job-list"></div>
+        </article>
+      </section>
+    </div>
+
+    <!-- ═══ Tab 9：系统配置 ═══ -->
+    <div id="tab-config" class="tab-panel">
+      <section class="grid two">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>鼠标坐标配置</h2>
+            <div class="button-row">
+              <button class="btn secondary" id="resetConfig">重录坐标</button>
+              <button class="btn primary"   id="saveConfig">保存配置</button>
+            </div>
+          </div>
+          <textarea id="configText" class="codebox" spellcheck="false"></textarea>
+        </article>
+        <article class="panel">
+          <div class="panel-head"><h2>系统信息</h2><span class="hint">只读</span></div>
+          <div class="info-grid">
+            <div class="info-row"><span>MITM 代理</span><span id="sysProxy">—</span></div>
+            <div class="info-row"><span>JSONL 大小</span><span id="sysJsonlSize">—</span></div>
+            <div class="info-row"><span>动态清单</span><span id="sysDynamic">—</span></div>
+            <div class="info-row"><span>重试清单</span><span id="sysRetry">—</span></div>
+          </div>
+        </article>
+      </section>
+    </div>
+
+  </div><!-- /main -->
+</div><!-- /layout -->
+
+<div id="toast" class="toast hidden"></div>
+<script src="/app.js"></script>
 </body>
 </html>
 """
@@ -864,7 +1032,8 @@ CSS = r""":root {
   --accent-dark: #0e5d4d;
   --amber: #ad6b00;
   --red: #b13b3b;
-  --shadow: 0 18px 50px rgba(31, 42, 36, 0.10);
+  --shadow: 0 4px 20px rgba(31,42,36,.07);
+  --sidebar-w: 174px;
 }
 
 * { box-sizing: border-box; }
@@ -872,66 +1041,154 @@ CSS = r""":root {
 body {
   margin: 0;
   min-height: 100vh;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+               "Segoe UI", "Microsoft YaHei", sans-serif;
   color: var(--ink);
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.82), rgba(255,255,255,0.12) 220px),
-    var(--bg);
+  background: var(--bg);
 }
 
-button, input, select, textarea {
-  font: inherit;
+button, input, select, textarea { font: inherit; }
+
+/* ── Layout ── */
+.layout { display: flex; min-height: 100vh; }
+
+.sidebar {
+  width: var(--sidebar-w);
+  flex-shrink: 0;
+  position: fixed;
+  top: 0; left: 0; bottom: 0;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  z-index: 100;
 }
 
-.shell {
-  width: min(1480px, calc(100vw - 32px));
-  margin: 0 auto;
-  padding: 22px 0 40px;
+.sidebar-logo {
+  padding: 20px 16px 14px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 8px;
+}
+.sidebar-logo span { display: block; font-weight: 800; font-size: 15px; color: var(--accent); }
+.sidebar-logo small { color: var(--muted); font-size: 11px; }
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  font-size: 13px;
+  color: var(--muted);
+  text-decoration: none;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  transition: background .1s, color .1s;
+  user-select: none;
+  white-space: nowrap;
+}
+.nav-item span { font-size: 14px; line-height: 1; }
+.nav-item:hover { background: var(--bg); color: var(--ink); }
+.nav-item.active {
+  color: var(--accent-dark);
+  background: #e9f5ef;
+  border-left-color: var(--accent);
+  font-weight: 600;
 }
 
+.main {
+  margin-left: var(--sidebar-w);
+  flex: 1;
+  min-width: 0;
+  padding: 0 24px 48px;
+}
+
+/* ── Top Bar ── */
 .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: rgba(238,241,239,.95);
+  backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
-  padding: 18px 0 20px;
+  gap: 16px;
+  padding: 11px 0;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--line);
 }
 
-h1, h2, h3, p { margin: 0; }
-
-h1 {
-  font-size: clamp(24px, 3vw, 34px);
-  line-height: 1.1;
-  letter-spacing: 0;
-}
-
-h2 {
-  font-size: 17px;
-  letter-spacing: 0;
-}
-
-h3 {
-  font-size: 13px;
-  margin-bottom: 10px;
-}
-
-.subline {
+.top-left {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-top: 8px;
+  font-size: 13px;
   color: var(--muted);
+}
+
+/* ── Tab Panels ── */
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ── Type ── */
+h1, h2, h3, p { margin: 0; }
+h2 { font-size: 16px; }
+h3 { font-size: 13px; }
+.hint { color: var(--muted); font-size: 12px; }
+
+.dot { width: 4px; height: 4px; border-radius: 999px; background: #9aa59f; }
+
+/* ── Pill ── */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--muted);
+  font-size: 12px;
+}
+.pill.ok   { color: var(--accent-dark); background: #e9f5ef; border-color: #b9dcca; }
+.pill.warn { color: var(--amber);       background: #fff7e8; border-color: #efd19c; }
+
+/* ── Warnings ── */
+.warnings {
+  margin-bottom: 14px;
+  border: 1px solid #efd19c;
+  background: #fff8ec;
+  color: #755014;
+  border-radius: 8px;
+  padding: 10px 14px;
   font-size: 13px;
 }
+.hidden { display: none !important; }
 
-.dot {
-  width: 4px;
-  height: 4px;
-  border-radius: 999px;
-  background: #9aa59f;
+/* ── Grid / Panel ── */
+.grid { display: grid; gap: 14px; margin-bottom: 14px; }
+.grid.two { grid-template-columns: 1fr 1fr; }
+.grid.wide-left { grid-template-columns: minmax(0, 1.35fr) minmax(300px, .65fr); }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: var(--shadow);
 }
 
-.top-actions, .button-row, .job-controls, .downloads {
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+/* ── Buttons ── */
+.top-actions, .button-row, .downloads {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -941,164 +1198,23 @@ h3 {
 .btn {
   border: 1px solid transparent;
   border-radius: 7px;
-  min-height: 36px;
+  min-height: 34px;
   padding: 0 13px;
   cursor: pointer;
   color: var(--ink);
   background: #edf1ec;
-  transition: transform .12s ease, border-color .12s ease, background .12s ease;
-  white-space: nowrap;
-}
-
-.btn:hover {
-  transform: translateY(-1px);
-}
-
-.btn.primary {
-  background: var(--accent);
-  color: #fff;
-}
-
-.btn.primary:hover {
-  background: var(--accent-dark);
-}
-
-.btn.secondary {
-  background: #f4f5f2;
-  border-color: var(--line);
-}
-
-.btn.danger-soft {
-  background: #fff2ef;
-  border-color: #f0c8bd;
-  color: #913729;
-}
-
-.pill {
-  display: inline-flex;
-  align-items: center;
-  min-height: 24px;
-  padding: 0 9px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: #fff;
-  color: var(--muted);
-}
-
-.pill.ok {
-  color: var(--accent-dark);
-  background: #e9f5ef;
-  border-color: #b9dcca;
-}
-
-.pill.warn {
-  color: var(--amber);
-  background: #fff7e8;
-  border-color: #efd19c;
-}
-
-.warnings {
-  margin-bottom: 14px;
-  border: 1px solid #efd19c;
-  background: #fff8ec;
-  color: #755014;
-  border-radius: 8px;
-  padding: 11px 13px;
-  font-size: 14px;
-}
-
-.hidden { display: none !important; }
-
-.metrics {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 12px;
-  margin-bottom: 14px;
-}
-
-.metric {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 14px;
-  box-shadow: var(--shadow);
-}
-
-.metric span {
-  display: block;
-  color: var(--muted);
   font-size: 13px;
-  margin-bottom: 7px;
+  white-space: nowrap;
+  transition: transform .1s, background .1s;
 }
+.btn:active { transform: translateY(0) !important; }
+.btn:hover  { transform: translateY(-1px); }
+.btn.primary      { background: var(--accent); color: #fff; }
+.btn.primary:hover { background: var(--accent-dark); }
+.btn.secondary    { background: #f4f5f2; border-color: var(--line); }
+.btn.danger-soft  { background: #fff2ef; border-color: #f0c8bd; color: #913729; }
 
-.metric strong {
-  display: block;
-  font-size: 30px;
-  line-height: 1;
-  letter-spacing: 0;
-}
-
-.metric em {
-  display: block;
-  color: var(--muted);
-  font-style: normal;
-  font-size: 12px;
-  margin-top: 8px;
-}
-
-.grid {
-  display: grid;
-  gap: 14px;
-  margin-bottom: 14px;
-}
-
-.grid.two {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-}
-
-.grid.wide-left {
-  grid-template-columns: minmax(0, 1.35fr) minmax(360px, .65fr);
-}
-
-.panel {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 15px;
-  box-shadow: var(--shadow);
-}
-
-.panel-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 13px;
-}
-
-.hint {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.control-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: end;
-  margin-bottom: 10px;
-}
-
-.field {
-  display: grid;
-  gap: 6px;
-}
-
-.field span {
-  color: var(--muted);
-  font-size: 12px;
-}
-
+/* ── Form ── */
 input, select, textarea {
   width: 100%;
   border: 1px solid var(--line);
@@ -1107,79 +1223,199 @@ input, select, textarea {
   color: var(--ink);
   outline: none;
 }
-
-input, select {
-  height: 36px;
-  padding: 0 10px;
-}
-
-textarea {
-  min-height: 280px;
-  resize: vertical;
-  padding: 11px;
-  line-height: 1.45;
-}
-
+input, select { height: 34px; padding: 0 10px; }
+textarea { min-height: 260px; resize: vertical; padding: 10px; line-height: 1.5; font-size: 13px; }
 input:focus, select:focus, textarea:focus {
-  border-color: rgba(20, 122, 99, .68);
-  box-shadow: 0 0 0 3px rgba(20, 122, 99, .12);
+  border-color: rgba(20,122,99,.68);
+  box-shadow: 0 0 0 3px rgba(20,122,99,.12);
 }
+
+.control-grid {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) minmax(0,1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 10px;
+}
+
+.field { display: grid; gap: 5px; }
+.field span { color: var(--muted); font-size: 12px; }
 
 .check-line {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0,1fr) auto;
   gap: 8px;
   margin-top: 10px;
 }
 
-.group-list {
-  display: grid;
-  gap: 9px;
+.codebox {
+  min-height: 200px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
 }
 
+/* ── Info Grid ── */
+.info-grid { display: grid; gap: 0; }
+.info-grid.two-col { grid-template-columns: 1fr 1fr; gap: 0 20px; }
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid #edf0ed;
+  font-size: 13px;
+}
+.info-row:last-child { border-bottom: 0; }
+.info-row > span:first-child { color: var(--muted); flex-shrink: 0; }
+
+/* ── Metrics ── */
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0,1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.metric {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  box-shadow: var(--shadow);
+}
+.metric span   { display: block; color: var(--muted); font-size: 12px; margin-bottom: 7px; }
+.metric strong { display: block; font-size: 28px; line-height: 1.1; }
+.metric em     { display: block; color: var(--muted); font-style: normal; font-size: 11px; margin-top: 6px; }
+
+/* ── Trend Chart ── */
+.trend-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 4px;
+  padding: 0 6px;
+}
+
+/* ── Active Jobs (overview) ── */
+#activeJobs { display: grid; gap: 8px; }
+.active-job-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-soft);
+  font-size: 13px;
+}
+.running-dot {
+  width: 8px; height: 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  flex-shrink: 0;
+  animation: pulse 1.5s infinite;
+}
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+
+/* ── Progress Bar ── */
+.prog-bar-wrap { height: 10px; background: #edf1ec; border-radius: 999px; overflow: hidden; }
+.prog-bar { height: 100%; background: linear-gradient(90deg, var(--accent), #1fa882); border-radius: 999px; transition: width .6s ease; }
+
+/* ── Strategy Groups ── */
+.group-list { display: grid; gap: 10px; }
 .group-item {
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr) 92px;
+  grid-template-columns: 72px minmax(0,1fr) 72px auto;
   gap: 10px;
   align-items: center;
   padding: 10px 0;
   border-top: 1px solid var(--line);
 }
+.group-item:first-child { border-top: 0; padding-top: 0; }
+.bar { height: 7px; background: #edf1ec; border-radius: 999px; overflow: hidden; margin-top: 4px; }
+.bar span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), #d69a38); }
 
-.group-item:first-child {
-  border-top: 0;
+/* ── Ring Chart (FWXX) ── */
+.ring-panel { display: flex; align-items: center; gap: 20px; }
+.ring-wrap { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
+.ring-svg { width: 96px; height: 96px; transform: rotate(-90deg); }
+.ring-bg { fill: none; stroke: #edf1ec; stroke-width: 10; }
+.ring-fg {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 10;
+  stroke-linecap: round;
+  stroke-dasharray: 251.3;
+  stroke-dashoffset: 251.3;
+  transition: stroke-dashoffset .6s ease;
 }
+.ring-label { text-align: center; }
+.ring-label strong { display: block; font-size: 20px; color: var(--accent-dark); }
+.ring-label span { font-size: 11px; color: var(--muted); }
+.ring-stats { flex: 1; min-width: 0; }
 
-.bar {
-  height: 8px;
-  background: #edf1ec;
+/* ── Public Search Steps ── */
+.steps { display: grid; gap: 14px; }
+.step-panel { display: flex; gap: 16px; align-items: flex-start; }
+.step-num {
+  width: 30px; height: 30px;
   border-radius: 999px;
-  overflow: hidden;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700; font-size: 14px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  margin-top: 2px;
 }
 
-.bar span {
-  display: block;
-  height: 100%;
-  background: linear-gradient(90deg, var(--accent), #d69a38);
-}
-
-.downloads {
-  margin-top: 14px;
-}
-
-.downloads a {
-  display: inline-flex;
+/* ── Bar List (Analytics) ── */
+.bar-list { display: grid; gap: 8px; }
+.bar-row {
+  display: grid;
+  grid-template-columns: minmax(100px,1.2fr) 100px 36px;
   align-items: center;
-  height: 32px;
-  padding: 0 10px;
-  border-radius: 7px;
-  color: var(--accent-dark);
-  background: #edf6f0;
-  text-decoration: none;
+  gap: 8px;
+  font-size: 12px;
 }
+.bar-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-thin { height: 5px; background: #edf1ec; border-radius: 999px; overflow: hidden; }
+.bar-thin span { display: block; height: 100%; background: var(--accent); opacity: .75; border-radius: 999px; }
+.bar-row .cnt { color: var(--muted); text-align: right; }
 
+/* ── Table ── */
+.table-wrap { overflow: auto; }
+table { width: 100%; border-collapse: collapse; min-width: 560px; }
+th, td { text-align: left; border-bottom: 1px solid var(--line); padding: 8px 8px; font-size: 13px; vertical-align: top; }
+th { color: var(--muted); font-weight: 600; background: var(--panel-soft); }
+td .clip { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+
+/* ── Job List (Logs tab) ── */
+.job-list { display: grid; gap: 6px; overflow-y: auto; max-height: 510px; }
+.job-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  cursor: pointer;
+  background: var(--panel-soft);
+  font-size: 13px;
+  transition: background .1s;
+}
+.job-item:hover { background: #edf6f0; }
+.job-item.selected { background: #e2f0e8; border-color: #b9dcca; }
+.jdot { width: 8px; height: 8px; border-radius: 999px; background: var(--muted); flex-shrink: 0; }
+.jdot.ok      { background: #6aae84; }
+.jdot.running { background: var(--accent); animation: pulse 1.5s infinite; }
+.jdot.err     { background: var(--red); }
+.job-meta { min-width: 0; flex: 1; }
+.job-meta strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 2px; }
+
+/* ── Terminal ── */
 .terminal {
-  min-height: 430px;
+  min-height: 490px;
   max-height: 560px;
   overflow: auto;
   margin: 0;
@@ -1190,390 +1426,519 @@ input:focus, select:focus, textarea:focus {
   font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   white-space: pre-wrap;
 }
+.terminal .lo { color: #7ec89a; }
+.terminal .le { color: #f07878; }
+.terminal .lw { color: #f0c060; }
 
-#jobSelect {
-  max-width: 320px;
+/* ── Downloads ── */
+.downloads a {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 7px;
+  color: var(--accent-dark);
+  background: #edf6f0;
+  text-decoration: none;
+  font-size: 12px;
+  margin-right: 6px;
 }
 
-.mini-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 14px;
-  margin-top: 14px;
-}
-
-.mini-list {
-  display: grid;
-  gap: 7px;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.mini-list .row {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  border-bottom: 1px solid #edf0ed;
-  padding-bottom: 5px;
-}
-
-.table-wrap {
-  overflow: auto;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  min-width: 880px;
-}
-
-th, td {
-  text-align: left;
-  border-bottom: 1px solid var(--line);
-  padding: 10px 8px;
-  font-size: 13px;
-  vertical-align: top;
-}
-
-th {
-  color: var(--muted);
-  font-weight: 600;
-  background: var(--panel-soft);
-}
-
-td .clip {
-  max-width: 320px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.codebox {
-  min-height: 180px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-}
-
+/* ── Toast ── */
 .toast {
   position: fixed;
-  right: 20px;
-  bottom: 20px;
+  right: 20px; bottom: 20px;
   max-width: min(420px, calc(100vw - 40px));
-  padding: 12px 14px;
+  padding: 11px 14px;
   border-radius: 8px;
   background: #202623;
   color: #fff;
-  box-shadow: var(--shadow);
+  box-shadow: 0 8px 30px rgba(0,0,0,.25);
   font-size: 14px;
+  z-index: 9999;
 }
 
-@media (max-width: 1060px) {
-  .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* ── Responsive ── */
+@media (max-width: 1100px) {
+  .metrics { grid-template-columns: repeat(3, 1fr); }
   .grid.two, .grid.wide-left { grid-template-columns: 1fr; }
-  .topbar { align-items: flex-start; flex-direction: column; }
+  .ring-panel { flex-direction: column; align-items: flex-start; }
+  .info-grid.two-col { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 720px) {
-  .shell { width: min(100vw - 20px, 1480px); padding-top: 10px; }
-  .metrics { grid-template-columns: 1fr; }
+  .metrics { grid-template-columns: 1fr 1fr; }
   .control-grid, .check-line { grid-template-columns: 1fr; }
-  .mini-grid { grid-template-columns: 1fr; }
-  .panel { padding: 12px; }
-  .top-actions .btn, .button-row .btn { flex: 1 1 auto; }
+  .main { padding: 0 14px 40px; }
 }
 """
 
 
 JS = r"""const state = {
+  currentTab: 'overview',
   selectedJobId: null,
   searchLoaded: false,
   configLoaded: false,
 };
 
-const $ = (selector) => document.querySelector(selector);
-const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => Array.from(document.querySelectorAll(s));
 
-function fmtNumber(value) {
-  return Number(value || 0).toLocaleString("zh-CN");
+// ── Utilities ─────────────────────────────────────────────────────────
+function fmtNumber(v) { return Number(v || 0).toLocaleString('zh-CN'); }
+
+function fmtBytes(b) {
+  if (!b) return '—';
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+  return (b / 1048576).toFixed(1) + ' MB';
 }
 
-function shortTime(value) {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString("zh-CN", { hour12: false });
+function shortTime(v) {
+  if (!v) return '—';
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? v : d.toLocaleString('zh-CN', { hour12: false });
 }
 
-function showToast(message) {
-  const toast = $("#toast");
-  toast.textContent = message;
-  toast.classList.remove("hidden");
-  clearTimeout(showToast.timer);
-  showToast.timer = setTimeout(() => toast.classList.add("hidden"), 2600);
+function relTime(v) {
+  if (!v) return '—';
+  const diff = Date.now() - new Date(v).getTime();
+  if (diff < 60000)    return '刚刚';
+  if (diff < 3600000)  return Math.floor(diff / 60000) + ' 分钟前';
+  if (diff < 86400000) return Math.floor(diff / 3600000) + ' 小时前';
+  return Math.floor(diff / 86400000) + ' 天前';
 }
 
-async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
-  const text = await response.text();
+function escHtml(v) {
+  return String(v)
+    .replaceAll('&', '&amp;').replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#039;');
+}
+
+function colorLine(line) {
+  const e = escHtml(line);
+  if (/[✓✅]|成功|[Ss]uccess|finished|完成|采集成功/.test(line)) return '<span class="lo">' + e + '</span>';
+  if (/[✗❌]|错误|[Ee]rror|[Ff]ail|失败|异常|Traceback|Exception|CRITICAL/.test(line)) return '<span class="le">' + e + '</span>';
+  if (/[⚠]|警告|[Ww]arn|重试|retry|跳过|SKIP/.test(line)) return '<span class="lw">' + e + '</span>';
+  return e;
+}
+
+function showToast(msg) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.remove('hidden');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => t.classList.add('hidden'), 2800);
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  const text = await res.text();
   let payload = {};
-  try {
-    payload = text ? JSON.parse(text) : {};
-  } catch {
-    payload = { raw: text };
-  }
-  if (!response.ok) {
-    throw new Error(payload.error || response.statusText);
-  }
+  try { payload = text ? JSON.parse(text) : {}; } catch { payload = { raw: text }; }
+  if (!res.ok) throw new Error(payload.error || res.statusText);
   return payload;
 }
 
+// ── Tab Routing ───────────────────────────────────────────────────────
+function switchTab(tab) {
+  $$('.tab-panel').forEach(p => p.classList.remove('active'));
+  $$('.nav-item').forEach(n => n.classList.remove('active'));
+  const panel = document.getElementById('tab-' + tab);
+  if (panel) panel.classList.add('active');
+  const nav = document.querySelector('.nav-item[data-tab="' + tab + '"]');
+  if (nav) nav.classList.add('active');
+  location.hash = tab;
+  state.currentTab = tab;
+}
+
+function initTabRouting() {
+  $$('.nav-item').forEach(item => item.addEventListener('click', () => switchTab(item.dataset.tab)));
+  const hash = location.hash.replace('#', '') || 'overview';
+  switchTab(hash);
+}
+
+// ── Job Control ───────────────────────────────────────────────────────
 async function startJob(action, params = {}) {
-  const payload = await api("/api/jobs", {
-    method: "POST",
-    body: JSON.stringify({ action, params }),
-  });
-  state.selectedJobId = payload.job.id;
-  showToast(`已启动：${payload.job.title}`);
-  await refreshJobs();
-  await refreshSummary();
-}
-
-async function refreshSummary() {
-  const data = await api("/api/summary");
-  renderSummary(data);
-}
-
-function renderSummary(data) {
-  $("#clock").textContent = `当前 ${shortTime(data.now)}`;
-  const proxy = $("#proxyPill");
-  proxy.textContent = data.proxy.reachable
-    ? `主代理在线 ${data.proxy.host}:${data.proxy.port}`
-    : `主代理未连接 ${data.proxy.host}:${data.proxy.port}`;
-  proxy.className = `pill ${data.proxy.reachable ? "ok" : "warn"}`;
-
-  $("#mUnique").textContent = fmtNumber(data.records.unique);
-  $("#mEvents").textContent = `${fmtNumber(data.records.events)} 条写入记录`;
-  $("#mRate").textContent = `${data.records.success_rate}%`;
-  $("#mSuccess").textContent = `${fmtNumber(data.records.success)} 成功 / ${fmtNumber(data.records.failed)} 失败`;
-  $("#mRejection").textContent = fmtNumber(data.business.rejection);
-  $("#mFwxx").textContent = `${fmtNumber(data.business.fwxx_pending)} 待补发文`;
-  $("#mDue").textContent = fmtNumber(data.business.update_due);
-  $("#mTracked").textContent = `${fmtNumber(data.business.tracked_total)} 跟踪中`;
-  $("#mDynamic").textContent = fmtNumber(data.lists.dynamic);
-  $("#mSearch").textContent = `${fmtNumber(data.lists.search)} 输入申请号`;
-
-  const warnings = $("#warnings");
-  if (data.warnings.length) {
-    warnings.textContent = data.warnings.join(" · ");
-    warnings.classList.remove("hidden");
-  } else {
-    warnings.classList.add("hidden");
-  }
-
-  renderGroups(data.update_groups);
-  renderCounts("#statusCounts", data.status_counts);
-  renderCounts("#applicantCounts", data.applicant_counts);
-  renderRecent(data.recent);
-
-  if (!state.configLoaded) {
-    $("#configText").value = JSON.stringify(data.config || {}, null, 2);
-    state.configLoaded = true;
-  }
-}
-
-function renderGroups(groups) {
-  const root = $("#strategyGroups");
-  if (!groups.length) {
-    root.innerHTML = `<div class="hint">暂无策略配置</div>`;
-    return;
-  }
-  const maxDue = Math.max(...groups.map((item) => item.due), 1);
-  root.innerHTML = groups.map((item) => {
-    const width = Math.max(3, Math.round(item.due / maxDue * 100));
-    const statusText = item.statuses.join("、");
-    return `<div class="group-item">
-      <strong>${item.frequency_days} 天</strong>
-      <div>
-        <div>${statusText}</div>
-        <div class="bar"><span style="width:${width}%"></span></div>
-        <div class="hint">${fmtNumber(item.total)} 件，最早 ${shortTime(item.earliest)}</div>
-      </div>
-      <div><strong>${fmtNumber(item.due)}</strong><div class="hint">应检查</div></div>
-    </div>`;
-  }).join("");
-}
-
-function renderCounts(selector, rows) {
-  const root = $(selector);
-  if (!rows.length) {
-    root.innerHTML = `<span class="hint">暂无数据</span>`;
-    return;
-  }
-  root.innerHTML = rows.map(([name, count]) => {
-    return `<div class="row"><span title="${escapeHtml(name)}">${escapeHtml(name)}</span><strong>${fmtNumber(count)}</strong></div>`;
-  }).join("");
-}
-
-function renderRecent(rows) {
-  const root = $("#recentRows");
-  if (!rows.length) {
-    root.innerHTML = `<tr><td colspan="7">暂无记录</td></tr>`;
-    return;
-  }
-  root.innerHTML = rows.map((row) => {
-    const ok = row.status_code === 200;
-    return `<tr>
-      <td>${escapeHtml(row.application_no || "-")}</td>
-      <td><span class="pill ${ok ? "ok" : "warn"}">${escapeHtml(String(row.status_code ?? "-"))}</span></td>
-      <td>${escapeHtml(row.anjianywzt || "-")}</td>
-      <td><div class="clip" title="${escapeHtml(row.zhuanlimc || "")}">${escapeHtml(row.zhuanlimc || "-")}</div></td>
-      <td><div class="clip" title="${escapeHtml(row.shenqingrxm || "")}">${escapeHtml(row.shenqingrxm || "-")}</div></td>
-      <td>${escapeHtml(String(row.response_time_ms ?? "-"))}</td>
-      <td>${shortTime(row.timestamp)}</td>
-    </tr>`;
-  }).join("");
+  try {
+    const data = await api('/api/jobs', { method: 'POST', body: JSON.stringify({ action, params }) });
+    state.selectedJobId = data.job.id;
+    showToast('已启动：' + data.job.title);
+    switchTab('logs');
+    await refreshJobs();
+  } catch (e) { showToast('启动失败：' + e.message); }
 }
 
 async function refreshJobs() {
-  const data = await api("/api/jobs");
-  const select = $("#jobSelect");
+  const data = await api('/api/jobs');
   const jobs = data.jobs || [];
-  if (!state.selectedJobId && jobs.length) {
-    state.selectedJobId = jobs[0].id;
-  }
-  select.innerHTML = jobs.length
-    ? jobs.map((job) => `<option value="${job.id}">${escapeHtml(job.title)} · ${job.status}</option>`).join("")
-    : `<option value="">暂无任务</option>`;
-  if (state.selectedJobId) {
-    select.value = state.selectedJobId;
-  }
-  await refreshSelectedJob();
+  if (!state.selectedJobId && jobs.length) state.selectedJobId = jobs[0].id;
+  renderJobList(jobs);
+  await refreshJobLog();
 }
 
-async function refreshSelectedJob() {
-  if (!state.selectedJobId) {
-    $("#jobLog").textContent = "等待任务启动...";
-    return;
-  }
+async function refreshJobLog() {
+  if (!state.selectedJobId) { $('#jobLog').textContent = '等待任务启动...'; return; }
   try {
-    const data = await api(`/api/jobs/${state.selectedJobId}`);
+    const data = await api('/api/jobs/' + state.selectedJobId);
     const logs = data.job.logs || [];
-    $("#jobLog").textContent = logs.join("\n") || "任务暂无输出...";
-    const terminal = $("#jobLog");
-    terminal.scrollTop = terminal.scrollHeight;
-  } catch {
-    state.selectedJobId = null;
+    const term = $('#jobLog');
+    term.innerHTML = logs.map(colorLine).join('\n');
+    term.scrollTop = term.scrollHeight;
+    // 检测是否正在等待登录
+    const isWaiting = data.job.status === 'running' &&
+      logs.some(l => l.includes('[WAITING_FOR_LOGIN]')) &&
+      !logs.some(l => l.includes('收到登录完成信号') || l.includes('等待') && l.includes('超时'));
+    const btn = $('#resumeLoginBtn');
+    if (btn) btn.classList.toggle('hidden', !isWaiting);
+  } catch { state.selectedJobId = null; }
+}
+
+function renderJobList(jobs) {
+  const root = $('#jobList');
+  if (!root) return;
+  if (!jobs.length) { root.innerHTML = '<span class="hint" style="padding:8px 0;display:block">暂无任务</span>'; return; }
+  root.innerHTML = jobs.map(job => {
+    const dc = job.status === 'running' || job.status === 'stopping' ? 'running'
+             : job.status === 'failed' ? 'err'
+             : job.status === 'finished' ? 'ok' : '';
+    const sel = state.selectedJobId === job.id ? ' selected' : '';
+    const rc = job.returncode != null ? ' rc:' + job.returncode : '';
+    return '<div class="job-item' + sel + '" data-id="' + job.id + '">' +
+      '<span class="jdot ' + dc + '"></span>' +
+      '<div class="job-meta"><strong>' + escHtml(job.title) + '</strong>' +
+      '<span class="hint">' + job.status + rc + ' · ' + relTime(job.started_at) + '</span></div>' +
+      '</div>';
+  }).join('');
+  root.querySelectorAll('.job-item').forEach(item => {
+    item.addEventListener('click', () => {
+      state.selectedJobId = item.dataset.id;
+      refreshJobLog();
+      $$('#jobList .job-item').forEach(i => i.classList.toggle('selected', i.dataset.id === state.selectedJobId));
+    });
+  });
+}
+
+// ── Summary ───────────────────────────────────────────────────────────
+async function refreshSummary() {
+  try { const data = await api('/api/summary'); renderSummary(data); }
+  catch (e) { showToast('刷新失败：' + e.message); }
+}
+
+function renderSummary(data) {
+  // 顶部栏
+  $('#clock').textContent = '当前 ' + shortTime(data.now);
+  const pp = $('#proxyPill');
+  pp.textContent = data.proxy.reachable
+    ? '主代理在线 ' + data.proxy.host + ':' + data.proxy.port
+    : '主代理未连接 ' + data.proxy.host + ':' + data.proxy.port;
+  pp.className = 'pill ' + (data.proxy.reachable ? 'ok' : 'warn');
+
+  // 警告
+  const wb = $('#warnings');
+  if (data.warnings && data.warnings.length) {
+    wb.textContent = data.warnings.join(' · ');
+    wb.classList.remove('hidden');
+  } else {
+    wb.classList.add('hidden');
+  }
+
+  // 指标卡片
+  set('#mUnique',    fmtNumber(data.records.unique));
+  set('#mEvents',    fmtNumber(data.records.events) + ' 条写入记录');
+  set('#mRate',      data.records.success_rate + '%');
+  set('#mSuccess',   fmtNumber(data.records.success) + ' 成功 / ' + fmtNumber(data.records.failed) + ' 失败');
+  set('#mRejection', fmtNumber(data.business.rejection));
+  set('#mFwxx',      fmtNumber(data.business.fwxx_pending) + ' 待补发文');
+  set('#mDue',       fmtNumber(data.business.update_due));
+  set('#mTracked',   fmtNumber(data.business.tracked_total) + ' 跟踪中');
+  set('#mDynamic',   fmtNumber(data.lists.dynamic));
+  set('#mSearch',    fmtNumber(data.lists.search) + ' 输入申请号');
+
+  // 概览 Tab
+  renderTrendChart(data.daily_counts || []);
+  renderSystemHealth(data);
+  renderActiveJobs(data.jobs || []);
+
+  // 采集控制 Tab
+  const total = data.lists.search;
+  const collected = data.records.unique;
+  const pct = total > 0 ? Math.min(100, Math.round(collected / total * 100)) : 0;
+  setStyle('#collectProgBar', 'width', pct + '%');
+  set('#collectProgressHint', '已采集 ' + fmtNumber(collected) + ' / 输入 ' + fmtNumber(total) + '（' + pct + '%）');
+
+  // 策略管理 Tab
+  set('#stratTracked', fmtNumber(data.business.tracked_total));
+  set('#stratDue',     fmtNumber(data.business.update_due));
+  renderGroups(data.update_groups || []);
+
+  // 发文采集 Tab
+  const rej = data.business.rejection;
+  const fwxxC = data.business.fwxx_collected;
+  const fwxxP = data.business.fwxx_pending;
+  const fwxxPct = rej > 0 ? Math.round(fwxxC / rej * 100) : 0;
+  updateRing(fwxxPct);
+  set('#fwxxPct',       fwxxPct + '%');
+  set('#fwxxRejection', fmtNumber(rej));
+  set('#fwxxCollected', fmtNumber(fwxxC));
+  set('#fwxxPending',   fmtNumber(fwxxP));
+  renderFwxxPending(data.fwxx_pending_list || []);
+
+  // 数据分析 Tab
+  renderBarList('#statusCounts',    data.status_counts    || []);
+  renderBarList('#applicantCounts', data.applicant_counts || []);
+  renderRecent(data.recent || []);
+
+  // 数据管理 Tab
+  set('#retryCount', fmtNumber(data.lists.retry) + ' 条');
+  const jinfo = data.files && data.files.jsonl;
+  set('#jsonlSize', jinfo ? fmtBytes(jinfo.size) : '—');
+
+  // 系统配置 Tab
+  set('#sysProxy',    data.proxy.host + ':' + data.proxy.port + (data.proxy.reachable ? ' ● 在线' : ' ● 离线'));
+  set('#sysJsonlSize', jinfo ? fmtBytes(jinfo.size) + ' · ' + relTime(jinfo.mtime) : '—');
+  set('#sysDynamic',  fmtNumber(data.lists.dynamic) + ' 条');
+  set('#sysRetry',    fmtNumber(data.lists.retry) + ' 条');
+
+  if (!state.configLoaded) {
+    const ct = $('#configText');
+    if (ct) { ct.value = JSON.stringify(data.config || {}, null, 2); state.configLoaded = true; }
   }
 }
 
+function set(sel, val) { const el = $(sel); if (el) el.textContent = val; }
+function setStyle(sel, prop, val) { const el = $(sel); if (el) el.style[prop] = val; }
+
+// ── Renderers ─────────────────────────────────────────────────────────
+function renderTrendChart(daily) {
+  const svg = $('#trendSvg');
+  const lbls = $('#trendLabels');
+  if (!svg || !daily.length) return;
+  const W = 360, H = 64, px = 6, py = 6;
+  const max = Math.max(...daily.map(d => d.count), 1);
+  const pts = daily.map((d, i) => {
+    const x = px + (i / Math.max(daily.length - 1, 1)) * (W - 2 * px);
+    const y = py + (1 - d.count / max) * (H - 2 * py);
+    return [+x.toFixed(1), +y.toFixed(1)];
+  });
+  const pline = pts.map(p => p[0] + ',' + p[1]).join(' ');
+  const areaD = 'M' + pts[0][0] + ',' + H + ' ' +
+    pts.map(p => 'L' + p[0] + ',' + p[1]).join(' ') +
+    ' L' + pts[pts.length - 1][0] + ',' + H + ' Z';
+  svg.innerHTML =
+    '<defs><linearGradient id="tg" x1="0" y1="0" x2="0" y2="1">' +
+    '<stop offset="0%" stop-color="#147a63" stop-opacity="0.25"/>' +
+    '<stop offset="100%" stop-color="#147a63" stop-opacity="0"/>' +
+    '</linearGradient></defs>' +
+    '<path d="' + areaD + '" fill="url(#tg)"/>' +
+    '<polyline fill="none" stroke="#147a63" stroke-width="2" stroke-linejoin="round" points="' + pline + '"/>' +
+    pts.map((p, i) =>
+      '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="3" fill="#147a63"/>' +
+      '<text x="' + p[0] + '" y="' + (H - 2) + '" text-anchor="middle" fill="#66736d" font-size="9" font-family="sans-serif">' +
+      fmtNumber(daily[i].count) + '</text>'
+    ).join('');
+  if (lbls) lbls.innerHTML = daily.map(d => '<span>' + escHtml(d.date) + '</span>').join('');
+}
+
+function renderSystemHealth(data) {
+  const hp = $('#healthProxy');
+  if (hp) hp.innerHTML = data.proxy.reachable
+    ? '<span class="pill ok">在线</span>'
+    : '<span class="pill warn">离线</span>';
+  set('#healthLastCollect', data.recent && data.recent.length ? relTime(data.recent[0].timestamp) : '—');
+  const jinfo = data.files && data.files.jsonl;
+  set('#healthLogSize', jinfo ? fmtBytes(jinfo.size) : '—');
+  const einfo = data.files && data.files.excel;
+  set('#healthExcel', einfo && einfo.exists ? fmtBytes(einfo.size) : '未生成');
+}
+
+function renderActiveJobs(jobs) {
+  const root = $('#activeJobs');
+  if (!root) return;
+  if (!jobs.length) { root.innerHTML = '<span class="hint">暂无运行中的任务</span>'; return; }
+  root.innerHTML = jobs.map(job =>
+    '<div class="active-job-item">' +
+    '<span class="running-dot"></span>' +
+    '<span>' + escHtml(job.title) + '</span>' +
+    '<span class="hint" style="margin-left:auto">' + job.status + ' · ' + relTime(job.started_at) + '</span>' +
+    '</div>'
+  ).join('');
+}
+
+function renderGroups(groups) {
+  const root = $('#strategyGroups');
+  if (!root) return;
+  if (!groups.length) { root.innerHTML = '<div class="hint">暂无策略配置，请先运行"生成清单"</div>'; return; }
+  const maxDue = Math.max(...groups.map(g => g.due), 1);
+  root.innerHTML = groups.map(g => {
+    const w = Math.max(3, Math.round(g.due / maxDue * 100));
+    return '<div class="group-item">' +
+      '<strong style="font-size:13px">' + g.frequency_days + ' 天</strong>' +
+      '<div><div class="hint" style="margin-bottom:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+      escHtml(g.statuses.join('、')) + '</div>' +
+      '<div class="bar"><span style="width:' + w + '%"></span></div>' +
+      '<div class="hint">' + fmtNumber(g.total) + ' 件</div></div>' +
+      '<div><strong>' + fmtNumber(g.due) + '</strong><div class="hint">应检查</div></div>' +
+      '<button class="btn secondary btn-run-freq" data-freq="' + g.frequency_days +
+      '" style="font-size:12px;min-height:28px;padding:0 9px">采集</button>' +
+      '</div>';
+  }).join('');
+}
+
+function updateRing(pct) {
+  const fg = $('#fwxxRingFg');
+  if (!fg) return;
+  fg.style.strokeDashoffset = 251.3 * (1 - pct / 100);
+}
+
+function renderFwxxPending(items) {
+  const tbody = $('#fwxxPendingRows');
+  if (!tbody) return;
+  if (!items.length) { tbody.innerHTML = '<tr><td colspan="3" style="color:var(--muted)">暂无待补采数据</td></tr>'; return; }
+  tbody.innerHTML = items.map(item =>
+    '<tr><td>' + escHtml(item.application_no || '—') + '</td>' +
+    '<td>' + escHtml(item.anjianywzt || '—') + '</td>' +
+    '<td>' + shortTime(item.timestamp) + '</td></tr>'
+  ).join('');
+  set('#fwxxPendingHint', '待补 ' + items.length + ' 条（最新）');
+}
+
+function renderBarList(sel, rows) {
+  const root = $(sel);
+  if (!root) return;
+  if (!rows.length) { root.innerHTML = '<span class="hint">暂无数据</span>'; return; }
+  const max = Math.max(...rows.map(r => r[1]), 1);
+  root.innerHTML = rows.map(([name, cnt]) =>
+    '<div class="bar-row">' +
+    '<span class="name" title="' + escHtml(name) + '">' + escHtml(name) + '</span>' +
+    '<div class="bar-thin"><span style="width:' + Math.round(cnt / max * 100) + '%"></span></div>' +
+    '<span class="cnt">' + fmtNumber(cnt) + '</span></div>'
+  ).join('');
+}
+
+function renderRecent(rows) {
+  const tbody = $('#recentRows');
+  if (!tbody) return;
+  if (!rows.length) { tbody.innerHTML = '<tr><td colspan="7">暂无记录</td></tr>'; return; }
+  tbody.innerHTML = rows.map(row => {
+    const ok = row.status_code === 200;
+    return '<tr>' +
+      '<td>' + escHtml(row.application_no || '—') + '</td>' +
+      '<td><span class="pill ' + (ok ? 'ok' : 'warn') + '">' + escHtml(String(row.status_code ?? '—')) + '</span></td>' +
+      '<td>' + escHtml(row.anjianywzt || '—') + '</td>' +
+      '<td><div class="clip" title="' + escHtml(row.zhuanlimc || '') + '">' + escHtml(row.zhuanlimc || '—') + '</div></td>' +
+      '<td><div class="clip" title="' + escHtml(row.shenqingrxm || '') + '">' + escHtml(row.shenqingrxm || '—') + '</div></td>' +
+      '<td>' + escHtml(String(row.response_time_ms ?? '—')) + '</td>' +
+      '<td>' + shortTime(row.timestamp) + '</td></tr>';
+  }).join('');
+}
+
+// ── Search List ───────────────────────────────────────────────────────
 async function loadSearchList() {
-  const data = await api("/api/search-list");
-  $("#searchList").value = data.text || "";
+  const data = await api('/api/search-list');
+  const sl = $('#searchList');
+  if (sl) sl.value = data.text || '';
   state.searchLoaded = true;
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
+// ── Event Binding ────────────────────────────────────────────────────
 function bindEvents() {
-  $$("[data-action]").forEach((button) => {
-    button.addEventListener("click", () => startJob(button.dataset.action));
+  // data-action 全局代理
+  $$('[data-action]').forEach(btn => {
+    btn.addEventListener('click', () => startJob(btn.dataset.action));
   });
 
-  $("#runTest").addEventListener("click", () => {
-    startJob("main_test", { count: $("#testCount").value });
+  // 策略分组"采集"按钮（动态生成，使用委托）
+  document.getElementById('strategyGroups').addEventListener('click', e => {
+    const btn = e.target.closest('.btn-run-freq');
+    if (btn) startJob('strategy_generate', { frequency: btn.dataset.freq });
   });
 
-  $("#runUpdate").addEventListener("click", () => {
-    startJob("main_update_dynamic", {
-      file: $("#updateFile").value,
-      count: $("#updateLimit").value,
-    });
-  });
+  $('#runTest').addEventListener('click', () =>
+    startJob('main_test', { count: $('#testCount').value }));
 
-  $("#collectFwxxTest").addEventListener("click", () => {
-    startJob("collect_fwxx", { count: $("#testCount").value });
-  });
+  $('#collectFwxxTest').addEventListener('click', () =>
+    startJob('collect_fwxx', { count: $('#testCount').value }));
 
-  $("#generateStrategy").addEventListener("click", () => {
-    startJob("strategy_generate", { frequency: $("#strategyFrequency").value });
-  });
+  $('#runUpdate').addEventListener('click', () =>
+    startJob('main_update_dynamic', { file: $('#updateFile').value, count: $('#updateLimit').value }));
 
-  $("#statusStrategy").addEventListener("click", () => {
-    startJob("strategy_status", { frequency: $("#strategyFrequency").value });
-  });
+  $('#generateStrategy').addEventListener('click', () =>
+    startJob('strategy_generate', { frequency: $('#strategyFrequency').value }));
 
-  $("#checkApp").addEventListener("click", () => {
-    startJob("strategy_check", { app_no: $("#singleAppNo").value });
-  });
+  $('#statusStrategy').addEventListener('click', () =>
+    startJob('strategy_status', { frequency: $('#strategyFrequency').value }));
 
-  $("#autoPaginate").addEventListener("click", () => {
-    startJob("public_auto_paginate", {
-      delay: $("#pageDelay").value,
-      max_pages: $("#maxPages").value,
-    });
-  });
+  $('#checkApp').addEventListener('click', () =>
+    startJob('strategy_check', { app_no: $('#singleAppNo').value }));
 
-  $("#jobSelect").addEventListener("change", (event) => {
-    state.selectedJobId = event.target.value;
-    refreshSelectedJob();
-  });
+  $('#autoPaginate').addEventListener('click', () =>
+    startJob('public_auto_paginate', { delay: $('#pageDelay').value, max_pages: $('#maxPages').value }));
 
-  $("#stopJob").addEventListener("click", async () => {
+  $('#fwxxTestBtn').addEventListener('click', () =>
+    startJob('collect_fwxx', { count: 5 }));
+
+  $('#fwxxSingleBtn').addEventListener('click', () =>
+    startJob('collect_fwxx_app', { app_no: $('#fwxxAppNo').value }));
+
+  $('#stopJob').addEventListener('click', async () => {
     if (!state.selectedJobId) return;
-    await api(`/api/jobs/${state.selectedJobId}/stop`, { method: "POST", body: "{}" });
-    showToast("已请求停止任务");
+    await api('/api/jobs/' + state.selectedJobId + '/stop', { method: 'POST', body: '{}' });
+    showToast('已请求停止任务');
     await refreshJobs();
   });
 
-  $("#saveSearchList").addEventListener("click", async () => {
-    await api("/api/search-list", {
-      method: "POST",
-      body: JSON.stringify({ text: $("#searchList").value }),
-    });
-    showToast("申请号列表已保存");
+  $('#saveSearchList').addEventListener('click', async () => {
+    const sl = $('#searchList');
+    if (!sl) return;
+    await api('/api/search-list', { method: 'POST', body: JSON.stringify({ text: sl.value }) });
+    showToast('申请号列表已保存');
     await refreshSummary();
   });
 
-  $("#saveConfig").addEventListener("click", async () => {
-    await api("/api/config", {
-      method: "POST",
-      body: JSON.stringify({ text: $("#configText").value }),
-    });
-    showToast("坐标配置已保存");
+  $('#saveConfig').addEventListener('click', async () => {
+    const ct = $('#configText');
+    if (!ct) return;
+    try {
+      await api('/api/config', { method: 'POST', body: JSON.stringify({ text: ct.value }) });
+      showToast('坐标配置已保存');
+      state.configLoaded = false;
+      await refreshSummary();
+    } catch (e) { showToast('保存失败：' + e.message); }
+  });
+
+  $('#resetConfig').addEventListener('click', async () => {
+    await api('/api/config/reset', { method: 'POST', body: '{}' });
+    showToast('旧坐标已备份，下次采集会重新记录');
     state.configLoaded = false;
     await refreshSummary();
   });
 
-  $("#resetConfig").addEventListener("click", async () => {
-    await api("/api/config/reset", {
-      method: "POST",
-      body: "{}",
-    });
-    showToast("旧坐标已备份，下次采集会重新记录");
-    state.configLoaded = false;
-    await refreshSummary();
+  $('#resumeLoginBtn').addEventListener('click', async () => {
+    try {
+      await api('/api/login-ready', { method: 'POST', body: '{}' });
+      showToast('已发送登录完成信号，采集继续...');
+      $('#resumeLoginBtn').classList.add('hidden');
+    } catch (e) { showToast('发送失败：' + e.message); }
   });
 }
 
+// ── Boot ─────────────────────────────────────────────────────────────
 async function boot() {
+  initTabRouting();
   bindEvents();
   await Promise.all([refreshSummary(), refreshJobs(), loadSearchList()]);
   setInterval(refreshSummary, 5000);
   setInterval(refreshJobs, 2500);
 }
 
-boot().catch((error) => showToast(error.message));
+boot().catch(e => showToast(e.message));
 """
 
+
+# ══════════════════════════════════════════════════════════════════════
+#  HTTP 服务器
+# ══════════════════════════════════════════════════════════════════════
 
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = SERVER_VERSION
@@ -1642,6 +2007,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     backup = CONFIG_FILE.with_name(f"config_backup_{timestamp}.json")
                     CONFIG_FILE.rename(backup)
                 self.send_json({"ok": True, "backup": str(backup) if backup else None})
+            elif path == "/api/login-ready":
+                flag = DATA_DIR / "login_ready.flag"
+                flag.parent.mkdir(parents=True, exist_ok=True)
+                flag.touch()
+                self.send_json({"ok": True})
             else:
                 self.send_error(HTTPStatus.NOT_FOUND, "Not found")
         except json.JSONDecodeError:

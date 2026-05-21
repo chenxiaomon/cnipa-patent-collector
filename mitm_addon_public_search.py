@@ -10,9 +10,13 @@ CNIPA 公开搜索 MITM 拦截脚本
 
 import json
 import os
+import sys
 from datetime import datetime
 from mitmproxy import http
 from urllib.parse import urlparse, parse_qs
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from settings import RAW_RESPONSES_DIR, RAW_SEARCHES_DIR
 
 
 class PublicSearchMITMAddon:
@@ -23,9 +27,9 @@ class PublicSearchMITMAddon:
         self.record_count = 0
         self.page_count = 0
 
-        # 确保输出目录存在
-        os.makedirs('data/raw_responses', exist_ok=True)
-        os.makedirs('data/raw_searches', exist_ok=True)
+        # 确保输出目录存在（settings 模块导入时已自动创建，这里保留以防独立运行）
+        RAW_RESPONSES_DIR.mkdir(parents=True, exist_ok=True)
+        RAW_SEARCHES_DIR.mkdir(parents=True, exist_ok=True)
 
     def response(self, flow: http.HTTPFlow) -> None:
         """拦截响应的钩子函数"""
@@ -129,7 +133,7 @@ class PublicSearchMITMAddon:
         try:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             filename = f"undomestic_{page_no:04d}_{timestamp}.json"
-            filepath = os.path.join('data/raw_responses', filename)
+            filepath = RAW_RESPONSES_DIR / filename
 
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(resp_json, f, ensure_ascii=False, indent=2)
@@ -142,7 +146,7 @@ class PublicSearchMITMAddon:
     def _append_to_jsonl(self, records: list) -> None:
         """追加记录到 JSONL 文件（一行一条）"""
         try:
-            filepath = 'data/raw_searches/undomestic_all_records.jsonl'
+            filepath = RAW_SEARCHES_DIR / 'undomestic_all_records.jsonl'
             with open(filepath, 'a', encoding='utf-8') as f:
                 for record in records:
                     f.write(json.dumps(record, ensure_ascii=False) + '\n')

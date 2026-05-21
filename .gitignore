@@ -1,6 +1,5 @@
 # ── 采集数据（保留关键数据）────────────────────────────────
-# 上传关键采集数据
-!data/results/detection_log.json  # 采集日志，需要上传
+# 主日志以 .jsonl 格式为准（detection_log.json 旧格式已废弃）
 
 # 本机坐标配置（随屏幕/浏览器位置变化，不入库；用 config.example.json 了解字段结构）
 data/config.json
@@ -16,6 +15,16 @@ data/search_list_retry.txt
 data/search_list.txt
 data/raw_responses/
 data/raw_searches/
+
+# 运行时临时标志（不入库）
+data/force_update.flag
+data/login_ready.flag
+
+# 配置备份（临时产物，不入库）
+data/config_backup_*.json
+
+# Excel 导出（衍生产物，可从 detection_log.jsonl 重新生成）
+data/results/*.xlsx
 
 # ── 浏览器驱动（二进制，不入库）──────────────────────────
 chromedriver-win64/

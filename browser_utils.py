@@ -23,6 +23,22 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 
+def _get_chrome_major_version() -> int | None:
+    """检测系统 Chrome 主版本号，供 undetected_chromedriver 使用"""
+    import subprocess
+    import re
+    for cmd in ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium']:
+        try:
+            r = subprocess.run([cmd, '--version'], capture_output=True, text=True, timeout=5)
+            if r.returncode == 0:
+                m = re.search(r'(\d+)\.\d+', r.stdout)
+                if m:
+                    return int(m.group(1))
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+    return None
+
+
 def load_credentials() -> tuple[str, str]:
     """从 .env 文件或环境变量加载登录凭证，返回 (username, password)"""
     env_file = os.path.join(os.path.dirname(__file__), '.env')
@@ -88,7 +104,7 @@ def auto_fill_login(driver, username: str, password: str) -> bool:
         False: 填写失败，需用户手动登录
     """
     try:
-        wait = WebDriverWait(driver, 15)
+        wait = WebDriverWait(driver, 45)
 
         print("\n[*] 等待登录页面加载...")
         username_input = wait.until(
@@ -160,6 +176,11 @@ def create_driver_with_retry(max_retries: int = 3, use_mitm: bool = None) -> uc.
             options.add_argument("--disable-dev-shm-usage")
             options.add_argument("--disable-gpu")
 
+            if os.getenv('USE_VIRTUAL_DISPLAY', '').lower() in ('true', '1', 'yes'):
+                options.add_argument("--disable-software-rasterizer")
+                options.add_argument("--no-first-run")
+                options.add_argument("--start-maximized")
+
             if use_mitm:
                 print("[*] 启用 MITM 代理: 127.0.0.1:8082")
                 options.add_argument("--proxy-server=http://127.0.0.1:8082")
@@ -169,6 +190,11 @@ def create_driver_with_retry(max_retries: int = 3, use_mitm: bool = None) -> uc.
             if local_driver_path:
                 print(f"[*] 使用本地 ChromeDriver: {local_driver_path}")
                 kwargs['driver_executable_path'] = local_driver_path
+            else:
+                chrome_ver = _get_chrome_major_version()
+                if chrome_ver:
+                    kwargs['version_main'] = chrome_ver
+                    print(f"[*] Chrome {chrome_ver}，指定匹配的 ChromeDriver")
 
             driver = uc.Chrome(**kwargs)
             print("[✓] 浏览器创建成功!")

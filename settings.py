@@ -98,6 +98,11 @@ PYAUTOGUI_FAILSAFE = os.getenv('PYAUTOGUI_FAILSAFE', 'false').lower() in ('true'
 # 是否启用 MITM 代理（生产采集必须启用）
 USE_MITM_PROXY = os.getenv('USE_MITM_PROXY', '').lower() in ('true', '1', 'yes')
 
+# 是否在 Xvfb 虚拟显示器中运行（释放物理桌面，需先安装 xvfb + pyvirtualdisplay）
+USE_VIRTUAL_DISPLAY = os.getenv('USE_VIRTUAL_DISPLAY', '').lower() in ('true', '1', 'yes')
+VIRTUAL_DISPLAY_WIDTH = int(os.getenv('VIRTUAL_DISPLAY_WIDTH', '1920'))
+VIRTUAL_DISPLAY_HEIGHT = int(os.getenv('VIRTUAL_DISPLAY_HEIGHT', '1080'))
+
 # ============================================================================
 # URL 和端点
 # ============================================================================
