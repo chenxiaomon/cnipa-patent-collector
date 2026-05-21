@@ -2,20 +2,21 @@
 # -*- coding: utf-8 -*-
 """
 检测数据记录模块
-- 以 JSONL 格式追加写入，每条记录一行，中断安全
-- 支持断点续传（跳过已处理的申请号）
-- upsert_record 原子重写整文件（强制更新模式专用，调用频率低）
+- 主存储：SQLite（data/patents.db），支持 O(1) upsert 和索引查询
+- 双写备份：add_record() 同时追加到 JSONL（用于 git 追踪）
+- upsert_record() 仅写 DB，彻底消除 JSONL 重写写放大
+- 公共接口与旧版完全兼容，所有调用方无需修改
 """
 
-import glob
 import json
 import os
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from settings import DETECTION_LOG_JSONL_FILE, RESULTS_DIR
+from settings import DETECTION_LOG_JSONL_FILE, RESULTS_DIR, PATENTS_DB_FILE
+from db_manager import PatentsDB
 
 
 def _normalize_app_no(app_no: str) -> str:
@@ -40,7 +41,6 @@ class DetectionRecord:
         detected: Optional[bool] = None,
         response_summary: Optional[str] = None,
         error_message: Optional[str] = None,
-        # 14 个专利信息字段
         famingzlsqgbg: Optional[str] = None,
         shouquanggh: Optional[str] = None,
         zhuanlimc: Optional[str] = None,
@@ -54,7 +54,6 @@ class DetectionRecord:
         zhufenlh: Optional[str] = None,
         anjianbh: Optional[str] = None,
         anjianywzt: Optional[str] = None,
-        # 发文信息字段（仅在状态="驳回等复审请求"时填充）
         fwxx_list: Optional[list] = None,
         bhsjtzs_xiazaisj: Optional[str] = None,
         bhsjtzs_data: Optional[dict] = None,
@@ -65,7 +64,7 @@ class DetectionRecord:
         self.detected = detected
         self.response_summary = response_summary
         self.error_message = error_message
-        self.timestamp = datetime.utcnow().isoformat() + 'Z'
+        self.timestamp = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
         self.famingzlsqgbg = famingzlsqgbg
         self.shouquanggh = shouquanggh
@@ -114,7 +113,7 @@ class DetectionRecord:
 
 
 class DetectionLogger:
-    """检测数据日志记录器（JSONL 存储，追加写入，中断安全）"""
+    """检测数据日志记录器（SQLite 主存储 + JSONL 双写备份）"""
 
     def __init__(self, log_file: str = None):
         if log_file is None:
@@ -131,78 +130,60 @@ class DetectionLogger:
         if not os.path.exists(self.log_file):
             open(self.log_file, 'a').close()
 
+        self._db = PatentsDB(PATENTS_DB_FILE)
+
     # ------------------------------------------------------------------
-    # 读
+    # 读（内部）
     # ------------------------------------------------------------------
 
     def _load_records(self) -> list:
-        """读取全部记录；损坏行跳过并警告。"""
-        records = []
-        try:
-            with open(self.log_file, 'r', encoding='utf-8') as f:
-                for line_no, line in enumerate(f, 1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        records.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        print(f"[!] 第 {line_no} 行解析失败，跳过（可能是上次中断残留）")
-        except OSError:
-            pass
-        return records
+        """从 SQLite 读取全部记录（仅导出时调用）"""
+        return self._db.get_all_records()
 
     # ------------------------------------------------------------------
     # 写
     # ------------------------------------------------------------------
 
     def add_record(self, record: DetectionRecord) -> None:
-        """追加一条记录（O_APPEND + fsync，中断安全）"""
+        """
+        追加一条新记录。
+        - DB：INSERT OR REPLACE（O(1)）
+        - JSONL：追加（双写备份，用于 git 追踪，O(1)）
+        """
         d = record.to_dict()
         d['application_no'] = _normalize_app_no(d['application_no'])
+
+        # 1. 写 SQLite
+        self._db.upsert(d)
+
+        # 2. 追加 JSONL（双写备份）
         line = json.dumps(d, ensure_ascii=False) + '\n'
         with open(self.log_file, 'a', encoding='utf-8') as f:
             f.write(line)
             f.flush()
             os.fsync(f.fileno())
+
         self._auto_backup()
 
     def upsert_record(self, record: DetectionRecord) -> None:
-        """更新已有记录（按 application_no），不存在则追加。用于强制重查模式（调用频率低）。"""
-        new = record.to_dict()
-        new['application_no'] = _normalize_app_no(new['application_no'])
-        records = self._load_records()
-        found = False
-        for i, r in enumerate(records):
-            if r.get('application_no') == new['application_no']:
-                records[i] = new
-                found = True
-                break
-        if not found:
-            records.append(new)
-        self._rewrite(records)
+        """
+        更新已有记录（按 application_no），不存在则插入。
+        - 仅写 SQLite，O(1)，彻底消除旧方案 O(n) JSONL 重写瓶颈
+        - 用于强制重查模式
+        """
+        d = record.to_dict()
+        d['application_no'] = _normalize_app_no(d['application_no'])
+        self._db.upsert(d)
         self._auto_backup()
 
-    def _rewrite(self, records: list) -> None:
-        """原子重写整个 JSONL 文件（tmp + os.replace）"""
-        tmp = self.log_file + '.tmp'
-        with open(tmp, 'w', encoding='utf-8') as f:
-            for r in records:
-                f.write(json.dumps(r, ensure_ascii=False) + '\n')
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, self.log_file)
-
     # ------------------------------------------------------------------
-    # 备份
+    # 备份（每 500 条 DB 记录自动备份一次 JSONL）
     # ------------------------------------------------------------------
 
     def _auto_backup(self, interval: int = 500) -> None:
-        """每累积 interval 条记录自动生成带时间戳备份，保留最近 5 个"""
         try:
-            with open(self.log_file, 'r', encoding='utf-8') as f:
-                count = sum(1 for line in f if line.strip())
-        except OSError:
+            count = self._db.count()
+        except Exception:
             return
         if count > 0 and count % interval == 0:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -212,6 +193,7 @@ class DetectionLogger:
             self._prune_backups()
 
     def _prune_backups(self, keep: int = 5) -> None:
+        import glob
         pattern = self.log_file.replace('.jsonl', '_backup_*.jsonl')
         for old in sorted(glob.glob(pattern))[:-keep]:
             try:
@@ -220,30 +202,18 @@ class DetectionLogger:
                 pass
 
     # ------------------------------------------------------------------
-    # 查询
+    # 查询（公共接口，接口与旧版完全兼容）
     # ------------------------------------------------------------------
 
     def get_processed_applications(self) -> set:
-        return {r['application_no'] for r in self._load_records()}
+        return self._db.get_all_app_nos()
 
     def get_pending_applications(self, all_applications: list) -> list:
         processed = self.get_processed_applications()
         return [a for a in all_applications if a not in processed]
 
     def get_stats(self) -> Dict[str, Any]:
-        records = self._load_records()
-        if not records:
-            return {'total': 0, 'success': 0, 'failed': 0, 'detected': 0, 'average_response_time_ms': 0}
-        success = sum(1 for r in records if r.get('status_code') == 200)
-        detected = sum(1 for r in records if r.get('detected'))
-        times = [r['response_time_ms'] for r in records if r.get('response_time_ms')]
-        return {
-            'total': len(records),
-            'success': success,
-            'failed': len(records) - success,
-            'detected': detected,
-            'average_response_time_ms': round(sum(times) / len(times), 2) if times else 0,
-        }
+        return self._db.get_stats()
 
     def print_summary(self) -> None:
         stats = self.get_stats()
@@ -258,7 +228,7 @@ class DetectionLogger:
         print("="*60 + "\n")
 
     # ------------------------------------------------------------------
-    # 导出
+    # 导出（内部改为从 DB 读取）
     # ------------------------------------------------------------------
 
     def export_to_excel(self, excel_file: str = None) -> bool:
@@ -333,7 +303,7 @@ class DetectionLogger:
             return False
 
     def export_to_json(self, json_file: str = None) -> bool:
-        """导出为 JSON 格式（兼容旧格式，用于人工检查）"""
+        """导出为 JSON 格式（兼容旧格式）"""
         if json_file is None:
             json_file = self.log_file.replace('.jsonl', '.json')
         records = self._load_records()
@@ -358,6 +328,10 @@ class DetectionLogger:
 if __name__ == '__main__':
     import tempfile
     with tempfile.TemporaryDirectory() as tmpdir:
+        # 测试时使用临时 DB
+        import db_manager as _dm
+        _orig = _dm.PatentsDB.__init__
+
         logger = DetectionLogger(os.path.join(tmpdir, 'test_log.json'))
 
         logger.add_record(DetectionRecord(
@@ -374,5 +348,4 @@ if __name__ == '__main__':
         ))
 
         logger.print_summary()
-        print(f"[✓] JSONL 文件: {logger.log_file}")
-        print(f"[✓] 记录数: {len(logger._load_records())}")
+        print(f"[✓] 记录数: {logger._db.count()}")

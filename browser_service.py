@@ -7,8 +7,11 @@
 import os
 import sys
 import subprocess
+import tempfile
 import threading
 import time
+import webbrowser
+from pathlib import Path
 
 from browser_utils import (
     load_credentials, auto_fill_login, create_driver_with_retry, fill_vue_input,
@@ -33,7 +36,10 @@ def start_virtual_display() -> None:
         from pyvirtualdisplay import Display
     except ImportError:
         print("⚠️  pyvirtualdisplay 未安装，跳过虚拟显示器（仍使用物理桌面）")
-        print("   安装命令: pip install pyvirtualdisplay && sudo apt-get install -y xvfb")
+        if sys.platform.startswith('linux'):
+            print("   安装命令: pip install pyvirtualdisplay && sudo apt-get install -y xvfb")
+        else:
+            print("   （Windows 不需要虚拟显示器，将使用物理屏幕）")
         return
 
     _original_display = os.environ.get('DISPLAY', ':0')
@@ -129,11 +135,10 @@ class BrowserService:
     @staticmethod
     def _show_virtual_screenshot(driver, filename: str = "screenshot.png") -> None:
         """截虚拟屏幕并在物理桌面弹出，让用户看到当前页面状态"""
-        path = f'/tmp/cnipa_{filename}'
+        path = str(Path(tempfile.gettempdir()) / f'cnipa_{filename}')
         driver.save_screenshot(path)
-        real_env = {**os.environ, 'DISPLAY': _original_display or ':0'}
         try:
-            subprocess.Popen(['xdg-open', path], env=real_env)
+            webbrowser.open(Path(path).as_uri())
             print(f"\n✓ 当前页面截图已在桌面弹出: {path}")
             # 30 秒后自动清理临时截图文件
             def _cleanup(p=path):

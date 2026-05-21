@@ -20,6 +20,11 @@ data/raw_searches/
 data/force_update.flag
 data/login_ready.flag
 
+# SQLite 数据库（主存储，二进制，不入库；用 detection_log.jsonl 作为 git 可追踪备份）
+data/patents.db
+data/patents.db-wal
+data/patents.db-shm
+
 # 配置备份（临时产物，不入库）
 data/config_backup_*.json
 

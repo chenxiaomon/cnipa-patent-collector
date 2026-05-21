@@ -23,28 +23,16 @@ from pathlib import Path
 from collections import defaultdict
 
 # 配置
-from settings import DETECTION_LOG_JSONL_FILE, PATENTS_EXCEL_FILE
+from settings import PATENTS_EXCEL_FILE, PATENTS_DB_FILE
+from db_manager import PatentsDB
 
-DETECTION_LOG = DETECTION_LOG_JSONL_FILE
 PATENTS_EXCEL = PATENTS_EXCEL_FILE
 
 
 def load_json_log():
-    """加载 detection_log.jsonl，返回与旧 JSON 格式兼容的 dict"""
-    if not DETECTION_LOG.exists():
-        print(f"❌ 找不到日志文件: {DETECTION_LOG}")
-        sys.exit(1)
-
-    records = []
-    with open(DETECTION_LOG, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    records.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
-
+    """加载采集记录（从 PatentsDB 读取，确保与 upsert_record 写入的最新状态一致）"""
+    db = PatentsDB(PATENTS_DB_FILE)
+    records = db.get_all_records()
     success = sum(1 for r in records if r.get('status_code') == 200)
     return {
         'metadata': {

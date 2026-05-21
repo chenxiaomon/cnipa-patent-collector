@@ -38,10 +38,14 @@ from settings import (
     DETECTION_LOG_JSONL_FILE,
     MITM_HOST,
     MITM_PORT,
+    PATENTS_DB_FILE,
     PATENTS_EXCEL_FILE,
     RESULTS_DIR,
     SEARCH_LIST_FILE,
 )
+from db_manager import PatentsDB
+
+_patents_db = PatentsDB(PATENTS_DB_FILE)
 
 
 APP_NAME = "CNIPA 采集控制台"
@@ -190,6 +194,15 @@ class Job:
         self.lines.append(line.rstrip("\n"))
 
     def to_dict(self, include_logs: bool = False) -> dict[str, Any]:
+        lines_list = list(self.lines)
+        waiting = (
+            self.status == "running"
+            and any("[WAITING_FOR_LOGIN]" in ln for ln in lines_list)
+            and not any(
+                "收到登录完成信号" in ln or "秒超时，继续执行" in ln
+                for ln in lines_list
+            )
+        )
         data = {
             "id": self.id,
             "action": self.action,
@@ -200,9 +213,10 @@ class Job:
             "status": self.status,
             "returncode": self.returncode,
             "log_count": len(self.lines),
+            "waiting_for_login": waiting,
         }
         if include_logs:
-            data["logs"] = list(self.lines)
+            data["logs"] = lines_list
         return data
 
 
@@ -460,73 +474,24 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_summary(job_manager: JobManager) -> dict[str, Any]:
-    records, bad_lines = read_jsonl(DETECTION_LOG_JSONL_FILE)
-    latest: dict[str, dict[str, Any]] = {}
-    for record in records:
-        app_no = normalize_app_no(record.get("application_no"))
-        if app_no:
-            latest[app_no] = record
+    # 从 SQLite 获取所有聚合数据（替代多次 JSONL 全表扫描）
+    db_summary = _patents_db.get_summary()
 
-    latest_records = list(latest.values())
-    success = sum(1 for item in latest_records if item.get("status_code") == 200)
-    failed = len(latest_records) - success
-    status_counter = Counter(item.get("anjianywzt") or "未知" for item in latest_records)
-    applicant_counter = Counter(item.get("shenqingrxm") or "未知" for item in latest_records)
-    rejection = sum(1 for item in latest_records if item.get("anjianywzt") == "驳回等复审请求")
-    fwxx_collected = sum(1 for item in latest_records if item.get("fwxx_list"))
-    fwxx_pending = sum(
-        1 for item in latest_records
-        if item.get("anjianywzt") == "驳回等复审请求" and item.get("fwxx_list") is None
-    )
-
+    # 策略分组（仍需读 focus_strategy.json + DB 记录）
     focus_strategy = safe_json_load(DATA_DIR / "focus_strategy.json", {})
     status_breakdown = focus_strategy.get("status_breakdown", {}) if isinstance(focus_strategy, dict) else {}
-    update_groups = build_update_groups(latest_records, status_breakdown)
+
+    # 策略分组计算（从 DB 读取最新一份记录用于计算 next_update）
+    if status_breakdown:
+        db_records_for_groups = _patents_db.get_all_records()
+        update_groups = build_update_groups(db_records_for_groups, status_breakdown)
+    else:
+        update_groups = []
 
     search_count = count_lines(SEARCH_LIST_FILE)
     dynamic_count = count_lines(DATA_DIR / "update_list_dynamic.txt")
     retry_count = count_lines(DATA_DIR / "retry_dynamic.txt")
     config = safe_json_load(CONFIG_FILE, {})
-
-    recent = sorted(records[-16:], key=lambda item: item.get("timestamp") or "", reverse=True)
-    recent_rows = [
-        {
-            "application_no": item.get("application_no"),
-            "status_code": item.get("status_code"),
-            "anjianywzt": item.get("anjianywzt"),
-            "zhuanlimc": item.get("zhuanlimc"),
-            "shenqingrxm": item.get("shenqingrxm"),
-            "timestamp": item.get("timestamp"),
-            "response_time_ms": item.get("response_time_ms"),
-        }
-        for item in recent
-    ]
-
-    # 7 天采集量趋势（按天统计写入事件数）
-    now_dt = utc_now()
-    daily_keys = [(now_dt - timedelta(days=6 - i)).strftime("%m-%d") for i in range(7)]
-    daily_cnt: dict[str, int] = {k: 0 for k in daily_keys}
-    for r in records:
-        ts = parse_timestamp(r.get("timestamp"))
-        if ts:
-            day = ts.strftime("%m-%d")
-            if day in daily_cnt:
-                daily_cnt[day] += 1
-
-    # 待补采发文申请号列表（最新 20 条）
-    fwxx_pending_list = sorted(
-        [
-            {
-                "application_no": item.get("application_no"),
-                "anjianywzt": item.get("anjianywzt"),
-                "timestamp": item.get("timestamp"),
-            }
-            for item in latest_records
-            if item.get("anjianywzt") == "驳回等复审请求" and item.get("fwxx_list") is None
-        ],
-        key=lambda x: x.get("timestamp") or "",
-        reverse=True,
-    )[:20]
 
     active_jobs = [j for j in job_manager.list_jobs() if j.get("status") in {"running", "stopping"}]
 
@@ -537,25 +502,24 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
         warnings.append("鼠标坐标配置不存在")
     elif config.get("input_x") == config.get("button_x") and config.get("input_y") == config.get("button_y"):
         warnings.append("输入框和查询按钮坐标相同，强制测试可能无法点击查询按钮")
-    if bad_lines:
-        warnings.append(f"日志中有 {bad_lines} 行解析失败")
     if dynamic_count == 0:
         warnings.append("动态更新清单为空")
 
+    unique = db_summary["unique_count"]
     return {
         "now": iso_now(),
         "records": {
-            "events": len(records),
-            "unique": len(latest_records),
-            "success": success,
-            "failed": failed,
-            "success_rate": round(success / len(latest_records) * 100, 2) if latest_records else 0,
-            "bad_lines": bad_lines,
+            "events": unique,
+            "unique": unique,
+            "success": db_summary["success"],
+            "failed": db_summary["failed"],
+            "success_rate": db_summary["success_rate"],
+            "bad_lines": 0,
         },
         "business": {
-            "rejection": rejection,
-            "fwxx_collected": fwxx_collected,
-            "fwxx_pending": fwxx_pending,
+            "rejection": db_summary["rejection"],
+            "fwxx_collected": db_summary["fwxx_collected"],
+            "fwxx_pending": db_summary["fwxx_pending"],
             "tracked_total": sum(group["total"] for group in update_groups),
             "update_due": sum(group["due"] for group in update_groups),
         },
@@ -571,14 +535,15 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
         },
         "config": config,
         "update_groups": update_groups,
-        "status_counts": status_counter.most_common(12),
-        "applicant_counts": applicant_counter.most_common(8),
-        "recent": recent_rows,
+        "status_counts": db_summary["status_counts"],
+        "applicant_counts": db_summary["applicant_counts"],
+        "recent": db_summary["recent"],
         "files": {key: file_info(path) for key, path in DOWNLOADS.items()},
         "jobs": active_jobs,
         "warnings": warnings,
-        "daily_counts": [{"date": k, "count": v} for k, v in daily_cnt.items()],
-        "fwxx_pending_list": fwxx_pending_list,
+        "daily_counts": db_summary["daily_counts"],
+        "fwxx_pending_list": db_summary["fwxx_pending_list"],
+        "pending_requests_count": len(_patents_db.list_requests(status='pending')),
     }
 
 
@@ -647,15 +612,16 @@ HTML = r"""<!doctype html>
       <span>CNIPA</span>
       <small>采集控制台</small>
     </div>
-    <a class="nav-item" data-tab="overview">  <span>📊</span>概览</a>
-    <a class="nav-item" data-tab="collection"><span>⚡</span>采集控制</a>
-    <a class="nav-item" data-tab="strategy">  <span>📅</span>策略管理</a>
-    <a class="nav-item" data-tab="fwxx">      <span>📋</span>发文采集</a>
-    <a class="nav-item" data-tab="public">    <span>🔍</span>公开查询</a>
-    <a class="nav-item" data-tab="analytics"> <span>📈</span>数据分析</a>
-    <a class="nav-item" data-tab="data">      <span>🗄</span>数据管理</a>
-    <a class="nav-item" data-tab="logs">      <span>📟</span>任务日志</a>
-    <a class="nav-item" data-tab="config">    <span>⚙</span>系统配置</a>
+    <a class="nav-item" data-tab="overview">               <span>📊</span>概览</a>
+    <a class="nav-item operator-only" data-tab="collection"><span>⚡</span>采集控制</a>
+    <a class="nav-item" data-tab="strategy">               <span>📅</span>策略管理</a>
+    <a class="nav-item" data-tab="fwxx">                   <span>📋</span>发文采集</a>
+    <a class="nav-item operator-only" data-tab="public">   <span>🔍</span>公开查询</a>
+    <a class="nav-item" data-tab="analytics">              <span>📈</span>数据分析</a>
+    <a class="nav-item operator-only" data-tab="data">     <span>🗄</span>数据管理</a>
+    <a class="nav-item operator-only" data-tab="logs">     <span>📟</span>任务日志</a>
+    <a class="nav-item operator-only" data-tab="config">   <span>⚙</span>系统配置</a>
+    <a class="nav-item viewer-only"   data-tab="requests"> <span>📥</span>提交需求</a>
   </nav>
 
   <!-- ── 主内容区 ── -->
@@ -676,6 +642,10 @@ HTML = r"""<!doctype html>
     </header>
 
     <section id="warnings" class="warnings hidden"></section>
+    <section id="loginBanner" class="login-banner hidden">
+      <span>🔐 浏览器正在等待您完成验证码并登录</span>
+      <button class="btn primary" id="loginDoneBtn">✅ 我已完成验证码</button>
+    </section>
 
     <!-- ═══ Tab 1：概览 ═══ -->
     <div id="tab-overview" class="tab-panel">
@@ -717,6 +687,11 @@ HTML = r"""<!doctype html>
       <article class="panel">
         <div class="panel-head"><h2>运行中任务</h2><span class="hint">实时</span></div>
         <div id="activeJobs"><span class="hint">暂无运行中的任务</span></div>
+      </article>
+
+      <article class="panel operator-only" style="margin-top:14px">
+        <div class="panel-head"><h2>需求队列</h2><span class="hint" id="reqQueueHint">—</span></div>
+        <div id="reqQueueList"><span class="hint">暂无待处理需求</span></div>
       </article>
     </div>
 
@@ -782,7 +757,7 @@ HTML = r"""<!doctype html>
           <div id="strategyGroups" class="group-list"></div>
         </article>
 
-        <article class="panel">
+        <article class="panel operator-only">
           <div class="panel-head"><h2>辅助操作</h2></div>
           <div class="control-grid" style="margin-bottom:12px">
             <label class="field">
@@ -834,7 +809,7 @@ HTML = r"""<!doctype html>
           </div>
         </article>
 
-        <article class="panel">
+        <article class="panel operator-only">
           <div class="panel-head"><h2>采集操作</h2><span class="hint">collect_fwxx</span></div>
           <div class="button-row" style="margin-bottom:14px">
             <button class="btn primary"   data-action="collect_fwxx">全量补采</button>
@@ -1010,6 +985,29 @@ HTML = r"""<!doctype html>
       </section>
     </div>
 
+    <!-- ═══ Tab 10：提交需求 ═══ -->
+    <div id="tab-requests" class="tab-panel">
+      <article class="panel" style="margin-bottom:14px">
+        <div class="panel-head"><h2>提交采集需求</h2><span class="hint">每行一个申请号</span></div>
+        <div class="control-grid" style="margin-bottom:12px">
+          <label class="field" style="grid-column:1/-1">
+            <span>申请号列表</span>
+            <textarea id="reqAppNos" class="codebox" rows="8" placeholder="每行填写一个申请号，例如：&#10;2023117765870&#10;2022108928573"></textarea>
+          </label>
+          <label class="field">
+            <span>备注（可选）</span>
+            <input id="reqNote" type="text" placeholder="说明采集原因或来源">
+          </label>
+          <button class="btn primary" id="submitReqBtn">提交需求</button>
+        </div>
+        <div id="reqSubmitResult" class="hint" style="margin-top:8px"></div>
+      </article>
+      <article class="panel viewer-only">
+        <div class="panel-head"><h2>我的提交记录</h2></div>
+        <div id="myReqList"><span class="hint">暂无记录</span></div>
+      </article>
+    </div>
+
   </div><!-- /main -->
 </div><!-- /layout -->
 
@@ -1130,6 +1128,11 @@ button, input, select, textarea { font: inherit; }
 /* ── Tab Panels ── */
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
+/* 角色控制：操作员默认显示，查看者模式下隐藏 */
+.operator-only { display: block; }
+.viewer-only   { display: none; }
+body.viewer-mode .operator-only { display: none !important; }
+body.viewer-mode .viewer-only   { display: block; }
 
 /* ── Type ── */
 h1, h2, h3, p { margin: 0; }
@@ -1165,6 +1168,27 @@ h3 { font-size: 13px; }
   font-size: 13px;
 }
 .hidden { display: none !important; }
+
+.login-banner {
+  margin-bottom: 14px;
+  border: 2px solid #147a63;
+  background: #e6f5f0;
+  color: #0e5d4d;
+  border-radius: 8px;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  animation: bannerPulse 2s infinite;
+}
+
+@keyframes bannerPulse {
+  0%, 100% { border-color: #147a63; }
+  50% { border-color: #1fa882; box-shadow: 0 0 0 3px rgba(20,122,99,.15); }
+}
 
 /* ── Grid / Panel ── */
 .grid { display: grid; gap: 14px; margin-bottom: 14px; }
@@ -1479,6 +1503,7 @@ JS = r"""const state = {
   selectedJobId: null,
   searchLoaded: false,
   configLoaded: false,
+  roleDetermined: false,
 };
 
 const $ = (s) => document.querySelector(s);
@@ -1575,6 +1600,10 @@ async function refreshJobs() {
   if (!state.selectedJobId && jobs.length) state.selectedJobId = jobs[0].id;
   renderJobList(jobs);
   await refreshJobLog();
+  // 全局登录横幅：任意运行中任务等待验证码时显示
+  const needLogin = jobs.some(j => j.waiting_for_login);
+  const banner = $('#loginBanner');
+  if (banner) banner.classList.toggle('hidden', !needLogin);
 }
 
 async function refreshJobLog() {
@@ -1588,7 +1617,7 @@ async function refreshJobLog() {
     // 检测是否正在等待登录
     const isWaiting = data.job.status === 'running' &&
       logs.some(l => l.includes('[WAITING_FOR_LOGIN]')) &&
-      !logs.some(l => l.includes('收到登录完成信号') || l.includes('等待') && l.includes('超时'));
+      !logs.some(l => l.includes('收到登录完成信号') || l.includes('秒超时，继续执行'));
     const btn = $('#resumeLoginBtn');
     if (btn) btn.classList.toggle('hidden', !isWaiting);
   } catch { state.selectedJobId = null; }
@@ -1636,8 +1665,12 @@ function renderSummary(data) {
 
   // 警告
   const wb = $('#warnings');
-  if (data.warnings && data.warnings.length) {
-    wb.textContent = data.warnings.join(' · ');
+  const pendingReqs = data.pending_requests_count || 0;
+  const msgs = [];
+  if (data.warnings && data.warnings.length) msgs.push(...data.warnings);
+  if (pendingReqs > 0) msgs.push(`📥 有 ${pendingReqs} 条待审采集需求` + (data.is_operator ? '，请前往 http://127.0.0.1:8765 批准' : '，等待操作员处理'));
+  if (msgs.length) {
+    wb.textContent = msgs.join(' · ');
     wb.classList.remove('hidden');
   } else {
     wb.classList.add('hidden');
@@ -1704,6 +1737,17 @@ function renderSummary(data) {
     const ct = $('#configText');
     if (ct) { ct.value = JSON.stringify(data.config || {}, null, 2); state.configLoaded = true; }
   }
+
+  // 角色切换：首次收到 is_operator 后设置 body class
+  if (!state.roleDetermined) {
+    state.roleDetermined = true;
+    if (!data.is_operator) {
+      document.body.classList.add('viewer-mode');
+    }
+  }
+
+  // 需求队列（操作员）
+  if (data.is_operator) refreshRequestQueue();
 }
 
 function set(sel, val) { const el = $(sel); if (el) el.textContent = val; }
@@ -1848,6 +1892,10 @@ function bindEvents() {
     btn.addEventListener('click', () => startJob(btn.dataset.action));
   });
 
+  // 提交需求按钮
+  const submitBtn = $('#submitReqBtn');
+  if (submitBtn) submitBtn.addEventListener('click', submitRequest);
+
   // 策略分组"采集"按钮（动态生成，使用委托）
   document.getElementById('strategyGroups').addEventListener('click', e => {
     const btn = e.target.closest('.btn-run-freq');
@@ -1921,6 +1969,92 @@ function bindEvents() {
       $('#resumeLoginBtn').classList.add('hidden');
     } catch (e) { showToast('发送失败：' + e.message); }
   });
+
+  $('#loginDoneBtn').addEventListener('click', async () => {
+    try {
+      await api('/api/login-ready', { method: 'POST', body: '{}' });
+      showToast('已发送登录完成信号，采集继续...');
+      $('#loginBanner').classList.add('hidden');
+    } catch (e) { showToast('发送失败：' + e.message); }
+  });
+}
+
+// ── 需求队列 ──────────────────────────────────────────────────────────
+async function refreshRequestQueue() {
+  try {
+    const data = await api('/api/requests');
+    renderRequestQueue(data.requests || []);
+  } catch (_) {}
+}
+
+function renderRequestQueue(reqs) {
+  const root = $('#reqQueueList');
+  const hint = $('#reqQueueHint');
+  if (!root) return;
+  const pending = reqs.filter(r => r.status === 'pending');
+  if (hint) hint.textContent = pending.length ? pending.length + ' 条待处理' : '暂无';
+  if (!reqs.length) { root.innerHTML = '<span class="hint">暂无需求</span>'; return; }
+  root.innerHTML = reqs.map(r => {
+    const nos = (r.payload || []).join(', ');
+    const badgeClass = {pending:'warn',executing:'ok',done:'ok',failed:'warn',rejected:'muted'}[r.status]||'muted';
+    const btns = r.status === 'pending'
+      ? '<button class="btn primary"   style="font-size:11px;min-height:24px;padding:0 8px" onclick="approveReq(\'' + escHtml(r.id) + '\')">批准</button>' +
+        '<button class="btn secondary" style="font-size:11px;min-height:24px;padding:0 8px;margin-left:4px" onclick="rejectReq(\'' + escHtml(r.id) + '\')">拒绝</button>'
+      : '';
+    return '<div class="info-row" style="align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid var(--line)">' +
+      '<span class="pill ' + badgeClass + '" style="flex-shrink:0">' + escHtml(r.status) + '</span>' +
+      '<div style="flex:1;min-width:0"><div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(nos) + '">' +
+        escHtml((r.payload||[]).length + ' 个申请号') + (r.note ? ' · ' + escHtml(r.note) : '') +
+      '</div><div class="hint" style="font-size:11px">' + escHtml(r.requester||'') + ' · ' + escHtml((r.created_at||'').substring(0,16)) + '</div></div>' +
+      '<div style="flex-shrink:0">' + btns + '</div></div>';
+  }).join('');
+}
+
+async function approveReq(id) {
+  try {
+    const data = await api('/api/requests/' + id + '/approve', { method: 'POST', body: '{}' });
+    const parts = [];
+    if (data.search_added > 0) parts.push(data.search_added + ' 个新申请号加入采集清单');
+    if (data.already_in_db > 0) parts.push(data.already_in_db + ' 个已存在记录（策略系统会自动跟进）');
+    showToast('已批准：' + (parts.length ? parts.join('，') : '无新增'));
+    await refreshRequestQueue();
+  } catch (e) { showToast('操作失败：' + e.message); }
+}
+
+async function rejectReq(id) {
+  try {
+    await api('/api/requests/' + id + '/reject', { method: 'POST', body: '{}' });
+    showToast('已拒绝');
+    await refreshRequestQueue();
+  } catch (e) { showToast('操作失败：' + e.message); }
+}
+
+// ── 提交需求表单 ────────────────────────────────────────────────────
+async function submitRequest() {
+  const ta = $('#reqAppNos');
+  const noteEl = $('#reqNote');
+  const resultEl = $('#reqSubmitResult');
+  const raw = (ta ? ta.value : '').trim();
+  if (!raw) { if (resultEl) resultEl.textContent = '请填写至少一个申请号'; return; }
+  // 过滤：只保留含数字的条目（排除"申请号"等纯文字表头）
+  const app_nos = raw.split(/[\n,；;]+/)
+    .map(s => s.trim())
+    .filter(s => s && /\d/.test(s));
+  try {
+    const data = await api('/api/requests', {
+      method: 'POST',
+      body: JSON.stringify({ app_nos, note: noteEl ? noteEl.value : '' })
+    });
+    if (data.ok) {
+      if (ta) ta.value = '';
+      if (noteEl) noteEl.value = '';
+      let msg = '✓ 已提交 ' + data.accepted + ' 个申请号，等待操作员审批';
+      if (data.filtered > 0) msg += `（已过滤 ${data.filtered} 个无效条目）`;
+      if (resultEl) resultEl.textContent = msg;
+    } else {
+      if (resultEl) resultEl.textContent = '⚠ ' + (data.error || '提交失败');
+    }
+  } catch (e) { if (resultEl) resultEl.textContent = '提交失败：' + e.message; }
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────
@@ -1948,6 +2082,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         timestamp = datetime.now().strftime("%H:%M:%S")
         print(f"[{timestamp}] {self.address_string()} {format % args}")
 
+    @property
+    def is_operator(self) -> bool:
+        return self.client_address[0] == '127.0.0.1'
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
@@ -1959,7 +2097,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif path == "/app.js":
                 self.send_text(JS, "application/javascript; charset=utf-8")
             elif path == "/api/summary":
-                self.send_json(build_summary(self.job_manager))
+                summary = build_summary(self.job_manager)
+                summary['is_operator'] = self.is_operator
+                self.send_json(summary)
+            elif path == "/api/requests":
+                if not self.is_operator:
+                    self.send_json({"error": "仅操作员可查看需求列表"}, status=403)
+                    return
+                reqs = _patents_db.list_requests()
+                for r in reqs:
+                    if r.get('status') == 'executing' and r.get('job_id'):
+                        job = self.job_manager.get_job(r['job_id'])
+                        if job:
+                            _patents_db.sync_request_status(r['id'], job.status, job.returncode)
+                            r['status'] = job.status if job.status != 'finished' else (
+                                'done' if job.returncode == 0 else 'failed'
+                            )
+                self.send_json({"requests": reqs})
             elif path == "/api/jobs":
                 self.send_json({"jobs": self.job_manager.list_jobs()})
             elif path.startswith("/api/jobs/"):
@@ -2011,6 +2165,65 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 flag = DATA_DIR / "login_ready.flag"
                 flag.parent.mkdir(parents=True, exist_ok=True)
                 flag.touch()
+                self.send_json({"ok": True})
+            elif path == "/api/requests":
+                payload = self.read_json_body()
+                raw_nos = [str(a).strip() for a in (payload.get("app_nos") or []) if str(a).strip()]
+                # 只接受含数字的条目，排除"申请号"等纯文字表头
+                app_nos = [a for a in raw_nos if any(c.isdigit() for c in a)]
+                filtered = len(raw_nos) - len(app_nos)
+                if not app_nos:
+                    self.send_json({"error": "app_nos 不能为空（纯文字条目已过滤）"}, status=400)
+                    return
+                note = str(payload.get("note", ""))
+                req_id = _patents_db.submit_request(app_nos, self.client_address[0], note)
+                if not req_id:
+                    self.send_json({"ok": False, "error": "申请号已在待处理队列中，请勿重复提交"}, status=409)
+                    return
+                self.send_json({"ok": True, "id": req_id, "filtered": filtered, "accepted": len(app_nos)}, status=201)
+            elif path.startswith("/api/requests/") and path.endswith("/approve"):
+                if not self.is_operator:
+                    self.send_json({"error": "仅操作员可批准需求"}, status=403)
+                    return
+                req_id = path.split("/")[3]
+                reqs = _patents_db.list_requests()
+                req = next((r for r in reqs if r['id'] == req_id), None)
+                if not req or req['status'] != 'pending':
+                    self.send_json({"error": "需求不存在或状态不是 pending"}, status=404)
+                    return
+                # 规范化申请号：只有不在 DB 中的才加入采集清单，已有记录由策略系统按节奏更新
+                all_in_db = _patents_db.get_all_app_nos()
+                to_search = []
+                for raw in req['payload']:
+                    norm = normalize_app_no(raw)
+                    if norm and norm not in all_in_db:
+                        to_search.append(norm)
+
+                already_in_db = len(req['payload']) - len(to_search)
+
+                def _atomic_append(file_path: Path, new_entries: list[str]) -> int:
+                    existing_set = set()
+                    if file_path.exists():
+                        existing_set = {l.strip() for l in file_path.read_text(encoding='utf-8').splitlines() if l.strip()}
+                    fresh = [e for e in new_entries if e not in existing_set]
+                    if fresh:
+                        merged = sorted(existing_set) + fresh
+                        tmp = file_path.with_suffix('.tmp')
+                        tmp.write_text('\n'.join(merged) + '\n', encoding='utf-8')
+                        tmp.replace(file_path)
+                    return len(fresh)
+
+                search_added = _atomic_append(SEARCH_LIST_FILE, to_search) if to_search else 0
+
+                _patents_db.approve_request(req_id, None)
+                _patents_db.sync_request_status(req_id, 'finished', 0)
+                self.send_json({"ok": True, "search_added": search_added, "already_in_db": already_in_db})
+            elif path.startswith("/api/requests/") and path.endswith("/reject"):
+                if not self.is_operator:
+                    self.send_json({"error": "仅操作员可拒绝需求"}, status=403)
+                    return
+                req_id = path.split("/")[3]
+                _patents_db.reject_request(req_id)
                 self.send_json({"ok": True})
             else:
                 self.send_error(HTTPStatus.NOT_FOUND, "Not found")
@@ -2089,7 +2302,7 @@ def run_server(host: str, port: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="启动 CNIPA 本地可视化控制台")
-    parser.add_argument("--host", default="127.0.0.1", help="监听地址，默认 127.0.0.1")
+    parser.add_argument("--host", default="0.0.0.0", help="监听地址，默认 0.0.0.0（局域网可访问）")
     parser.add_argument("--port", type=int, default=8765, help="监听端口，默认 8765")
     args = parser.parse_args()
     run_server(args.host, args.port)

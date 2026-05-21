@@ -37,23 +37,11 @@ def load_focus_strategy() -> Dict:
         return json.load(f)
 
 def load_detection_log() -> Dict:
-    """加载采集日志（JSONL 格式）"""
-    from settings import DETECTION_LOG_JSONL_FILE
-    log_file = str(DETECTION_LOG_JSONL_FILE)
-    if not os.path.exists(log_file):
-        print(f"❌ 找不到采集日志: {log_file}")
-        sys.exit(1)
-
-    records = []
-    with open(log_file, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    records.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
-    return {'records': records}
+    """加载采集日志（从 PatentsDB 读取，确保与 upsert_record 写入的最新状态一致）"""
+    from db_manager import PatentsDB
+    from settings import PATENTS_DB_FILE
+    db = PatentsDB(PATENTS_DB_FILE)
+    return {'records': db.get_all_records()}
 
 def parse_timestamp(timestamp_str: str) -> Optional[datetime]:
     """解析 ISO 格式的时间戳"""

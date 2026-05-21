@@ -12,7 +12,7 @@ import os
 import sys
 
 # 虚拟显示器必须在 pyautogui / Xlib 任何 import 之前启动，否则 PyAutoGUI 会缓存物理屏幕连接
-if os.getenv('USE_VIRTUAL_DISPLAY', '').lower() in ('true', '1', 'yes'):
+if os.getenv('USE_VIRTUAL_DISPLAY', '').lower() in ('true', '1', 'yes') and sys.platform.startswith('linux'):
     try:
         from pyvirtualdisplay import Display as _VD
         _vd_w = int(os.getenv('VIRTUAL_DISPLAY_WIDTH', '1920'))
@@ -51,8 +51,9 @@ from input_service import InputService
 from settings import (
     CNIPA_URL, SEARCH_LIST_FILE, CONFIG_FILE, FORCE_UPDATE_FLAG,
     PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE, MITM_TIMEOUT, MITM_POLL_INTERVAL,
-    PATENT_CACHE_FILE, USE_MITM_PROXY
+    PATENT_CACHE_FILE, USE_MITM_PROXY, PATENTS_DB_FILE, DETECTION_LOG_JSONL_FILE
 )
+from db_manager import PatentsDB
 
 # PyAutoGUI 配置
 pyautogui.PAUSE = PYAUTOGUI_PAUSE
@@ -340,6 +341,8 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
         if logger.get_stats()['total'] > 0:
             logger.export_to_excel(excel_file)
             print(f"✓ Excel 文件: {excel_file}")
+            PatentsDB(PATENTS_DB_FILE).export_to_jsonl(DETECTION_LOG_JSONL_FILE)
+            print(f"✓ JSONL 备份已刷新: {DETECTION_LOG_JSONL_FILE}")
 
 
 if __name__ == '__main__':

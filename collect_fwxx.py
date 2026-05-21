@@ -70,8 +70,9 @@ from settings import (
     PATENT_CACHE_FILE, PATENT_FWXX_CACHE_FILE, MARKER_FILE,
     FWXX_UNMATCHED_FILE, PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE,
     MITM_TIMEOUT, MITM_POLL_INTERVAL, USE_MITM_PROXY,
-    FWXX_TRIGGER_ANJIANYWZT
+    FWXX_TRIGGER_ANJIANYWZT, PATENTS_DB_FILE
 )
+from db_manager import PatentsDB
 
 # PyAutoGUI 配置
 pyautogui.PAUSE = PYAUTOGUI_PAUSE
@@ -113,50 +114,18 @@ def countdown(seconds: int, message: str = "请手动记录坐标，倒计时"):
 
 def load_target_applications() -> list:
     """
-    从 detection_log.json 中筛选待采集的目标申请号
+    从 PatentsDB 筛选待采集的目标申请号。
 
     筛选条件：
-    1. anjianywzt == '驳回等复审请求'（案件业务状态）
-    2. fwxx_list is None（支持断点续传）
-
-    Returns:
-        待采集的申请号列表
+    1. anjianywzt == '驳回等复审请求'
+    2. fwxx_list IS NULL（支持断点续传）
     """
-    if not os.path.exists(DETECTION_LOG_FILE):
-        print(f"[!] 采集日志文件不存在: {DETECTION_LOG_FILE}")
-        return []
+    db = PatentsDB(PATENTS_DB_FILE)
+    summary = db.get_summary()
+    total_bhsj = summary['rejection']
+    already_collected = summary['fwxx_collected']
+    targets = db.fwxx_uncollected_app_nos()
 
-    records = []
-    with open(DETECTION_LOG_FILE, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    records.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
-
-    # 统计各类型案件
-    total_bhsj = 0  # "驳回等复审请求" 总数
-    already_collected = 0  # 已采集发文信息
-    targets = []  # 待采集列表
-
-    for record in records:
-        anjianywzt = record.get('anjianywzt')  # 案件业务状态
-        fwxx_list = record.get('fwxx_list')
-        app_no = record.get('application_no')
-
-        # 筛选"驳回等复审请求"状态（使用 anjianywzt 而不是 falvzt）
-        if anjianywzt == '驳回等复审请求':
-            total_bhsj += 1
-
-            # 检查是否已采集
-            if fwxx_list is not None:
-                already_collected += 1
-            else:
-                targets.append(app_no)
-
-    # 打印统计信息
     print("\n" + "="*60)
     print("📊 发文信息采集统计")
     print("="*60)
@@ -412,34 +381,23 @@ def collect_one_fwxx(
 
 def update_detection_log(application_no: str, fwxx_data: dict) -> bool:
     """
-    更新 detection_log.jsonl，填充发文信息字段
-
-    Args:
-        application_no: 申请号
-        fwxx_data: 发文信息字典
+    将采集到的发文信息写回 PatentsDB。
 
     Returns:
-        成功返回 True；申请号不在 detection_log 中返回 False。
+        成功返回 True；申请号不在 DB 中返回 False。
     """
     try:
-        logger = DetectionLogger()
-        records = logger._load_records()
-
-        found = False
-        for record in records:
-            if record.get('application_no') == application_no:
-                record['fwxx_list'] = fwxx_data.get('fwxx_list')
-                record['bhsjtzs_xiazaisj'] = fwxx_data.get('bhsjtzs_xiazaisj')
-                record['bhsjtzs_data'] = fwxx_data.get('bhsjtzs_data')
-                found = True
-                break
-
-        if not found:
-            print(f"    [!] {application_no} 不在 detection_log 中，写入 {FWXX_UNMATCHED_FILE}")
+        db = PatentsDB(PATENTS_DB_FILE)
+        record = db.get_record(application_no)
+        if record is None:
+            print(f"    [!] {application_no} 不在 DB 中，写入 {FWXX_UNMATCHED_FILE}")
             _append_unmatched(application_no, fwxx_data)
             return False
 
-        logger._rewrite(records)
+        record['fwxx_list'] = fwxx_data.get('fwxx_list')
+        record['bhsjtzs_xiazaisj'] = fwxx_data.get('bhsjtzs_xiazaisj')
+        record['bhsjtzs_data'] = fwxx_data.get('bhsjtzs_data')
+        db.upsert(record)
         return True
     except Exception as e:
         print(f"    [!] 日志更新失败: {e}")

@@ -13,19 +13,13 @@ import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from settings import DETECTION_LOG_JSONL_FILE, DATA_DIR
+from settings import DATA_DIR, PATENTS_DB_FILE
+from db_manager import PatentsDB
 
 def load_logs():
-    """加载 JSONL 日志"""
-    records = []
-    with open(DETECTION_LOG_JSONL_FILE, 'r') as f:
-        for line in f:
-            try:
-                record = json.loads(line.strip())
-                records.append(record)
-            except json.JSONDecodeError:
-                pass
-    return records
+    """加载采集记录（从 PatentsDB 读取，确保与 upsert_record 写入的最新状态一致）"""
+    db = PatentsDB(PATENTS_DB_FILE)
+    return db.get_all_records()
 
 def load_retry_list():
     """加载待重试的申请号"""

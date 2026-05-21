@@ -8,6 +8,7 @@
   python sync.py push   # 采集后：上传本次进度
   python sync.py status # 查看当前同步状态
 """
+import shlex
 
 import json
 import os
@@ -21,7 +22,7 @@ LOG_FILE = str(DETECTION_LOG_JSONL_FILE)
 
 
 def run(cmd: str, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, shell=True, text=True,
+    return subprocess.run(shlex.split(cmd), text=True,
                           capture_output=True, check=check)
 
 

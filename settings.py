@@ -53,6 +53,9 @@ FORCE_UPDATE_FLAG = DATA_DIR / 'force_update.flag'
 DETECTION_LOG_FILE = RESULTS_DIR / 'detection_log.json'
 DETECTION_LOG_JSONL_FILE = RESULTS_DIR / 'detection_log.jsonl'
 
+# SQLite 数据库（主存储，替代 JSONL 查询）
+PATENTS_DB_FILE = DATA_DIR / 'patents.db'
+
 # Excel 导出文件
 PATENTS_EXCEL_FILE = RESULTS_DIR / 'patents_data.xlsx'
 
