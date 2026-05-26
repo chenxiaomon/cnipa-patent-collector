@@ -145,6 +145,54 @@ USE_MITM_PROXY=true python main_automation.py
 
 ---
 
+## 多机协作 & 数据同步
+
+跨机器运行时使用 `sync.py` 同步采集进度。核心原理：`patents.db`（SQLite，本地运行时主存储）通过 `data/results/detection_log.jsonl`（git 追踪）在多机之间共享。
+
+### 数据架构
+
+```
+patents.db  ←→  export_to_jsonl / import_from_jsonl  ←→  detection_log.jsonl  ←→  GitHub
+（本地主存储，不入 git）                                   （git 追踪，多机同步载体）
+```
+
+### 新机器初始化
+
+```bash
+git clone https://github.com/chenxiaomon/cnipa-patent-collector.git
+cd cnipa-patent-collector
+pip install -r requirements.txt
+python sync.py init          # git pull + 从 JSONL 重建本地 DB
+```
+
+### 每次采集前
+
+```bash
+python sync.py pull          # 拉取最新 JSONL → 重建本地 DB → 自动跳过已采记录
+```
+
+### 每次采集后
+
+```bash
+python sync.py push          # 导出 DB → 合并远端 → 提交 JSONL → git push
+```
+
+### 所有 sync 命令
+
+| 命令 | 说明 |
+|------|------|
+| `python sync.py pull` | 采集前：git pull + 重建 DB |
+| `python sync.py push` | 采集后：导出 DB + git push |
+| `python sync.py status` | 查看本地记录数和 git 状态 |
+| `python sync.py init` | 新机器：git pull + 重建 DB（DB 已存在时提示确认） |
+| `python sync.py rebuild` | 仅从现有 JSONL 重建 DB（DB 损坏 / 迁移 / 恢复用） |
+
+### 冲突处理
+
+`pull` / `push` 遇到 git 冲突时自动合并：以申请号为键，两边独有的记录全保留，同一申请号取 timestamp 较新的。无需人工介入。
+
+---
+
 ## 常见操作
 
 ### 1. 测试模式（采集前 N 条）

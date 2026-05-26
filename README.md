@@ -104,7 +104,8 @@ patents_data.xlsx (Excel 报表) + detection_log.jsonl (完整日志)
 
 | 文件 | 职责 | 状态 |
 |------|------|------|
-| `web_dashboard.py` | 本地 Web 控制台：采集概览、任务启动、日志查看、清单/配置编辑 | ✅ 新增 |
+| `web_dashboard.py` | 本地 Web 控制台：采集概览、任务启动、日志查看、清单/配置编辑 | ✅ 活跃 |
+| `sync.py` | 多机同步：导出 DB → 推送 / 拉取 → 重建 DB，5 个命令（见下方） | ✅ 活跃 |
 | `main_automation.py` | 主流程：浏览器控制、申请号循环、数据采集 | ✅ 活跃 |
 | `detection_logger.py` | 日志记录：JSONL 追加写入、Excel/JSON 导出 | ✅ 活跃 |
 | `patent_mitm_scraper.py` | MITM 插件：API 拦截、字段解析 | ✅ 活跃 |
@@ -124,16 +125,16 @@ patents_data.xlsx (Excel 报表) + detection_log.jsonl (完整日志)
 
 ```
 data/
+├── patents.db                # ⭐ 运行时主存储（SQLite，.gitignore 排除，所有读写经此）
 ├── search_list.txt           # 输入：申请号列表
-├── config.json               # 配置：鼠标坐标
+├── config.json               # 配置：鼠标坐标（本机专用，.gitignore 排除）
 ├── patent_cache.json         # 临时：MITM 缓存（可删除）
 ├── patent_fwxx_cache.json    # 临时：发文 MITM 缓存（可删除）
 ├── raw_responses/            # 公开查询原始响应
 ├── raw_searches/             # 公开查询 JSONL 记录
 └── results/
-    ├── detection_log.jsonl   # ⭐ 输出：主采集日志（JSONL）
-    ├── detection_log.json    # 兼容导出/备份 JSON
-    ├── patents_data.xlsx     # ⭐ 输出：最终报表（Excel）
+    ├── detection_log.jsonl   # ⭐ git 备份（由 sync.py push 刷新，多机同步载体）
+    ├── patents_data.xlsx     # 输出：最终报表（Excel，.gitignore 排除）
     └── public_search_results.xlsx/json
 ```
 
@@ -151,6 +152,46 @@ data/
 | **文档状态同步** | P1 | ✅ 本轮收口 | README 已同步成功率、JSONL 状态、手动采集入口 |
 
 **详见**: [docs/ai-context.md](docs/ai-context.md#当前风险--处理计划)
+
+---
+
+## 🖥️ 多机协作（GitHub 同步）
+
+跨机器运行时，通过 `sync.py` 同步采集进度，避免重复采集。
+
+**数据架构**：`patents.db`（SQLite，本地运行时主存储，`.gitignore` 排除）通过 `detection_log.jsonl`（git 追踪的文本备份）在多机之间流转。
+
+### 新机器一键初始化
+
+```bash
+git clone https://github.com/chenxiaomon/cnipa-patent-collector.git
+cd cnipa-patent-collector
+pip install -r requirements.txt
+
+# 从远端 JSONL 重建本地 DB（导入历史记录，避免重复采集）
+python sync.py init
+```
+
+### 每次采集前（拉取最新进度）
+
+```bash
+python sync.py pull        # git pull + 重建 DB（知道哪些已采）
+```
+
+### 每次采集后（推送本次进度）
+
+```bash
+python sync.py push        # 导出 DB → 提交 JSONL → git push
+```
+
+### 其他 sync 命令
+
+| 命令 | 说明 |
+|------|------|
+| `python sync.py status` | 查看本地记录数和同步状态 |
+| `python sync.py rebuild` | 从现有 JSONL 重建 DB（DB 损坏/迁移恢复用） |
+
+> `sync.py pull/push` 均支持冲突自动合并：以申请号为键，timestamp 较新的记录优先。
 
 ---
 
