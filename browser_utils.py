@@ -17,6 +17,7 @@ import random
 import socket
 
 import pyautogui
+from settings import MITM_HOST, MITM_PORT
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -81,7 +82,7 @@ def is_browser_alive(driver) -> bool:
         return False
 
 
-def check_mitm_proxy(host: str = "127.0.0.1", port: int = 8082) -> bool:
+def check_mitm_proxy(host: str = MITM_HOST, port: int = MITM_PORT) -> bool:
     """检查 MITM 代理是否在运行"""
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -182,8 +183,8 @@ def create_driver_with_retry(max_retries: int = 3, use_mitm: bool = None) -> uc.
                 options.add_argument("--start-maximized")
 
             if use_mitm:
-                print("[*] 启用 MITM 代理: 127.0.0.1:8082")
-                options.add_argument("--proxy-server=http://127.0.0.1:8082")
+                print(f"[*] 启用 MITM 代理: {MITM_HOST}:{MITM_PORT}")
+                options.add_argument(f"--proxy-server=http://{MITM_HOST}:{MITM_PORT}")
                 options.add_argument("--ignore-certificate-errors")
 
             kwargs = dict(headless=False, options=options)

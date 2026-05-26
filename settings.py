@@ -85,7 +85,7 @@ FWXX_STANDALONE_RESULTS_FILE = RESULTS_DIR / 'fwxx_standalone_results.json'
 # ============================================================================
 
 MITM_HOST = os.getenv('MITM_HOST', '127.0.0.1')
-MITM_PORT = int(os.getenv('MITM_PORT', '8082'))
+MITM_PORT = int(os.getenv('MITM_PORT', '8083'))
 
 # MITM 轮询超时（秒）：等待 MITM 代理返回数据的最长时间
 MITM_TIMEOUT = float(os.getenv('MITM_TIMEOUT', '8'))

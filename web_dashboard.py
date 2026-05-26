@@ -15,6 +15,7 @@ import argparse
 import json
 import mimetypes
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -52,6 +53,10 @@ APP_NAME = "CNIPA 采集控制台"
 SERVER_VERSION = "CNIPADashboard/0.2"
 MAX_LOG_LINES = 1600
 DEFAULT_LOGIN_WAIT_SECONDS = "75"
+MAX_BODY_BYTES = 1 * 1024 * 1024   # 1 MB：防止超大请求体撑爆内存
+MAX_REQUEST_APP_NOS = 500           # 单次提交申请号上限
+MAX_NOTE_LEN = 500                  # 备注字段长度上限
+_SAFE_ID_RE = re.compile(r'^[0-9a-f\-]{8,36}$')
 
 
 DOWNLOADS = {
@@ -62,6 +67,24 @@ DOWNLOADS = {
     "dynamic_7": DATA_DIR / "update_list_dynamic_7days.txt",
     "retry": DATA_DIR / "retry_dynamic.txt",
 }
+
+
+def _parse_path_segment(path: str, index: int) -> str:
+    """提取 URL 路径段，验证格式（仅小写十六进制和连字符）。"""
+    parts = path.split("/")
+    if len(parts) <= index:
+        raise ValueError("路径格式不正确")
+    segment = parts[index]
+    if not segment or not _SAFE_ID_RE.match(segment):
+        raise ValueError(f"ID 格式不正确: {segment!r}")
+    return segment
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    """原子写入文本文件（.tmp + replace 保证写入完整性）。"""
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    tmp.write_text(text, encoding='utf-8')
+    tmp.replace(path)
 
 
 def resolve_task_python() -> str:
@@ -263,6 +286,7 @@ class JobManager:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding='utf-8',
             bufsize=1,
         )
         job.process = process
@@ -276,12 +300,13 @@ class JobManager:
         return job
 
     def stop(self, job_id: str) -> bool:
-        job = self.get_job(job_id)
-        if not job or not job.process:
-            return False
-        if job.process.poll() is not None:
-            return False
-        job.status = "stopping"
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or not job.process:
+                return False
+            if job.process.poll() is not None:
+                return False
+            job.status = "stopping"
         job.append("[dashboard] 正在停止任务...")
         job.process.terminate()
         threading.Thread(target=self._force_kill_later, args=(job,), daemon=True).start()
@@ -305,14 +330,15 @@ class JobManager:
                 job.append(line)
         finally:
             returncode = job.process.wait()
-            job.returncode = returncode
-            job.finished_at = iso_now()
-            if job.status == "stopping":
-                job.status = "stopped"
-            elif returncode == 0:
-                job.status = "finished"
-            else:
-                job.status = "failed"
+            with self._lock:
+                job.returncode = returncode
+                job.finished_at = iso_now()
+                if job.status == "stopping":
+                    job.status = "stopped"
+                elif returncode == 0:
+                    job.status = "finished"
+                else:
+                    job.status = "failed"
             job.append(f"[dashboard] 任务结束，退出码: {returncode}")
 
     def _force_kill_later(self, job: Job) -> None:
@@ -2139,21 +2165,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 job = self.job_manager.start(payload.get("action", ""), payload.get("params") or {})
                 self.send_json({"job": job.to_dict(include_logs=True)}, status=201)
             elif path.startswith("/api/jobs/") and path.endswith("/stop"):
-                job_id = path.split("/")[3]
+                job_id = _parse_path_segment(path, 3)
                 ok = self.job_manager.stop(job_id)
                 self.send_json({"ok": ok})
             elif path == "/api/search-list":
                 payload = self.read_json_body()
                 text = str(payload.get("text", ""))
                 SEARCH_LIST_FILE.parent.mkdir(parents=True, exist_ok=True)
-                SEARCH_LIST_FILE.write_text(text, encoding="utf-8")
+                _write_text_atomic(SEARCH_LIST_FILE, text)
                 self.send_json({"ok": True, "lines": count_lines(SEARCH_LIST_FILE)})
             elif path == "/api/config":
                 payload = self.read_json_body()
                 text = str(payload.get("text", "{}"))
                 parsed_json = json.loads(text)
                 CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-                CONFIG_FILE.write_text(json.dumps(parsed_json, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                _write_text_atomic(CONFIG_FILE, json.dumps(parsed_json, ensure_ascii=False, indent=2) + "\n")
                 self.send_json({"ok": True})
             elif path == "/api/config/reset":
                 backup = None
@@ -2176,7 +2202,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if not app_nos:
                     self.send_json({"error": "app_nos 不能为空（纯文字条目已过滤）"}, status=400)
                     return
-                note = str(payload.get("note", ""))
+                if len(app_nos) > MAX_REQUEST_APP_NOS:
+                    self.send_json({"error": f"单次最多提交 {MAX_REQUEST_APP_NOS} 个申请号"}, status=400)
+                    return
+                note = str(payload.get("note", ""))[:MAX_NOTE_LEN]
                 req_id = _patents_db.submit_request(app_nos, self.client_address[0], note)
                 if not req_id:
                     self.send_json({"ok": False, "error": "申请号已在待处理队列中，请勿重复提交"}, status=409)
@@ -2186,7 +2215,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if not self.is_operator:
                     self.send_json({"error": "仅操作员可批准需求"}, status=403)
                     return
-                req_id = path.split("/")[3]
+                req_id = _parse_path_segment(path, 3)
                 reqs = _patents_db.list_requests()
                 req = next((r for r in reqs if r['id'] == req_id), None)
                 if not req or req['status'] != 'pending':
@@ -2223,7 +2252,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if not self.is_operator:
                     self.send_json({"error": "仅操作员可拒绝需求"}, status=403)
                     return
-                req_id = path.split("/")[3]
+                req_id = _parse_path_segment(path, 3)
                 _patents_db.reject_request(req_id)
                 self.send_json({"ok": True})
             else:
@@ -2236,7 +2265,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, status=500)
 
     def handle_get_job(self, path: str) -> None:
-        job_id = path.split("/")[3]
+        job_id = _parse_path_segment(path, 3)
         job = self.job_manager.get_job(job_id)
         if not job:
             self.send_json({"error": "任务不存在"}, status=404)
@@ -2262,6 +2291,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0") or "0")
         if length == 0:
             return {}
+        if length > MAX_BODY_BYTES:
+            raise ValueError(f"请求体超过大小限制（最大 {MAX_BODY_BYTES // 1024} KB）")
         body = self.rfile.read(length).decode("utf-8")
         payload = json.loads(body)
         if not isinstance(payload, dict):
