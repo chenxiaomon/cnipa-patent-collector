@@ -44,7 +44,7 @@ def print_recent_data(records, hours=24):
                 ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
                 if ts > cutoff:
                     recent.append(r)
-            except:
+            except Exception:
                 pass
 
     if not recent:

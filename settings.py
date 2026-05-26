@@ -11,7 +11,13 @@
 """
 
 import os
+import sys
 from pathlib import Path
+
+# Windows 控制台强制 UTF-8，避免 emoji/中文在 GBK 环境下崩溃
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # ============================================================================
 # 基础路径
@@ -79,7 +85,7 @@ FWXX_STANDALONE_RESULTS_FILE = RESULTS_DIR / 'fwxx_standalone_results.json'
 # ============================================================================
 
 MITM_HOST = os.getenv('MITM_HOST', '127.0.0.1')
-MITM_PORT = int(os.getenv('MITM_PORT', '8082'))
+MITM_PORT = int(os.getenv('MITM_PORT', '8083'))
 
 # MITM 轮询超时（秒）：等待 MITM 代理返回数据的最长时间
 MITM_TIMEOUT = float(os.getenv('MITM_TIMEOUT', '8'))

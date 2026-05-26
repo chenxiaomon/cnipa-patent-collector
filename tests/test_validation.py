@@ -32,6 +32,8 @@ class TestDetectionLogStructure(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.log_data = _load_log_data()
+        if not cls.log_data['records']:
+            raise unittest.SkipTest("生产 DB 为空，跳过数据质量断言（CI 环境预期行为）")
 
     def test_log_has_metadata(self):
         """日志包含 metadata"""
@@ -97,6 +99,8 @@ class TestDetectionLogStructure(unittest.TestCase):
         """发文覆盖率统计（应 > 90%）"""
         records = self.log_data['records']
         huihe = [r for r in records if r.get('anjianywzt') == '驳回等复审请求']
+        if not huihe:
+            self.skipTest("无驳回案件记录，跳过发文覆盖率断言")
         with_fwxx = [r for r in huihe if r.get('fwxx_list')]
         coverage = len(with_fwxx) / len(huihe) * 100
         self.assertGreater(coverage, 90, f"发文覆盖率过低: {coverage:.2f}%")
@@ -108,6 +112,8 @@ class TestRecordCompletion(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.log_data = _load_log_data()
+        if not cls.log_data['records']:
+            raise unittest.SkipTest("生产 DB 为空，跳过记录完整性断言（CI 环境预期行为）")
 
     def test_successful_records_have_patent_fields(self):
         """成功的记录应该有专利字段"""

@@ -9,8 +9,15 @@ import sys
 import os
 import subprocess
 
+# 在任何 print 之前强制 UTF-8，防止 emoji/中文在 GBK 终端崩溃
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # 确保我们在正确的目录
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
+from settings import MITM_HOST, MITM_PORT
 
 print("="*70)
 print("🔐 MITM 代理服务器启动")
@@ -21,12 +28,12 @@ try:
     from mitmproxy.tools import main
 
     print("[+] 启动 mitmproxy...")
-    print("[*] 监听地址: 127.0.0.1:8082")
+    print(f"[*] 监听地址: {MITM_HOST}:{MITM_PORT}")
     print("[*] 脚本文件: patent_mitm_scraper.py")
     print()
     print("📝 配置浏览器代理:")
-    print("  - 代理地址: 127.0.0.1")
-    print("  - 端口: 8082")
+    print(f"  - 代理地址: {MITM_HOST}")
+    print(f"  - 端口: {MITM_PORT}")
     print("  - 协议: HTTP 和 HTTPS")
     print()
     print("⚠️  HTTPS 需要信任 mitmproxy 的 CA 证书:")
@@ -40,7 +47,8 @@ try:
     sys.argv = [
         "mitmdump",
         "-s", "patent_mitm_scraper.py",
-        "-p", "8082",
+        "-p", str(MITM_PORT),
+        "--listen-host", MITM_HOST,
         "--mode", "regular",
     ]
 

@@ -12,6 +12,7 @@ import os
 import sys
 import time
 import undetected_chromedriver as uc
+from settings import MITM_HOST, MITM_PORT
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -30,8 +31,8 @@ def create_driver():
         options.add_argument("--disable-dev-shm-usage")
 
         # 配置 MITM 代理
-        print("[*] 配置代理: 127.0.0.1:8082")
-        options.add_argument("--proxy-server=http://127.0.0.1:8082")
+        print(f"[*] 配置代理: {MITM_HOST}:{MITM_PORT}")
+        options.add_argument(f"--proxy-server=http://{MITM_HOST}:{MITM_PORT}")
         options.add_argument("--ignore-certificate-errors")
 
         driver = uc.Chrome(
@@ -74,7 +75,7 @@ def is_next_page_available(driver) -> bool:
             ".ant-pagination-next[aria-disabled='false']"
         )
         return True
-    except:
+    except Exception:
         return False
 
 
@@ -96,7 +97,7 @@ def wait_for_page_load(driver, timeout: int = 5):
             EC.presence_of_all_elements_located((By.XPATH, "//table/tbody/tr"))
         )
         return True
-    except:
+    except Exception:
         return False
 
 
@@ -209,7 +210,7 @@ def main():
         try:
             driver.quit()
             print("[✓] 浏览器已关闭")
-        except:
+        except Exception:
             pass
 
 

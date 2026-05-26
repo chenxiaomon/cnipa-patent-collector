@@ -30,10 +30,11 @@ import time
 
 import undetected_chromedriver as uc
 from browser_utils import check_mitm_proxy, create_driver_with_retry, auto_fill_login, load_credentials
+from settings import MITM_HOST, MITM_PORT
 
 
 def launch_browser_with_proxy(
-    proxy_url: str = "http://127.0.0.1:8082",
+    proxy_url: str | None = None,
     target_url: str = "https://cpquery.cponline.cnipa.gov.cn",
     max_retries: int = 3
 ) -> uc.Chrome:
@@ -48,6 +49,8 @@ def launch_browser_with_proxy(
     Returns:
         uc.Chrome 驱动实例
     """
+    if proxy_url is None:
+        proxy_url = f"http://{MITM_HOST}:{MITM_PORT}"
     # create_driver_with_retry 内部处理重试和本地 chromedriver 检测
     driver = create_driver_with_retry(max_retries=max_retries, use_mitm=True)
 
@@ -105,7 +108,7 @@ def main():
         print("[⚠️ ] MITM 代理未响应")
         print("请先在另一个终端运行：python start_mitm_proxy.py")
         sys.exit(1)
-    print("[✓] MITM 代理 (127.0.0.1:8082) 已启动")
+    print(f"[✓] MITM 代理 ({MITM_HOST}:{MITM_PORT}) 已启动")
 
     # 启动浏览器
     print("\n[*] 启动浏览器...")
@@ -122,7 +125,7 @@ def main():
                 # 尝试获取窗口句柄，如果失败说明浏览器已关闭
                 _ = driver.window_handles
                 time.sleep(1)
-            except:
+            except Exception:
                 print("\n[✓] 浏览器已关闭")
                 break
 
@@ -134,7 +137,7 @@ def main():
     finally:
         try:
             driver.quit()
-        except:
+        except Exception:
             pass
 
     print("\n" + "="*70)
