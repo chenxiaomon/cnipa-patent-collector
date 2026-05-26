@@ -8,6 +8,7 @@ JSON 缓存工具函数（跨脚本复用）
 """
 
 import json
+import os
 import time
 from typing import Any, Callable, Optional
 
@@ -34,9 +35,11 @@ def read_json_cache(cache_file: str) -> dict:
 
 
 def write_json_cache(cache_file: str, data: dict) -> None:
-    """写入 JSON 缓存文件"""
-    with open(cache_file, 'w', encoding='utf-8') as f:
+    """原子写入 JSON 缓存文件（.tmp + os.replace 保证写入完整性）"""
+    tmp = cache_file + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, cache_file)
 
 
 def clear_cache_key(cache_file: str, key: str) -> bool:
@@ -74,13 +77,12 @@ def poll_cache_for_key(
     Returns:
         找到的数据；超时返回 None
     """
-    elapsed = 0.0
-    while elapsed < max_wait:
+    deadline = time.monotonic() + max_wait
+    while time.monotonic() < deadline:
         data = read_json_cache(cache_file)
         value = data.get(key)
         if value is not None:
             if validate is None or validate(value):
                 return value
         time.sleep(interval)
-        elapsed += interval
     return None

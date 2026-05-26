@@ -127,8 +127,7 @@ class DetectionLogger:
         self.log_dir = os.path.dirname(log_file)
         os.makedirs(self.log_dir, exist_ok=True)
 
-        if not os.path.exists(self.log_file):
-            open(self.log_file, 'a').close()
+        Path(self.log_file).touch()
 
         self._db = PatentsDB(PATENTS_DB_FILE)
 

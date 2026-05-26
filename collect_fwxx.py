@@ -204,7 +204,7 @@ def _load_standalone_collected() -> set:
     try:
         logger = DetectionLogger()
         return {r['application_no'] for r in logger._load_records() if r.get('fwxx_list') is not None}
-    except:
+    except Exception:
         return set()
 
 
@@ -285,7 +285,7 @@ def collect_one_fwxx(
                 print(f"    [!] 搜索无结果或出现异常提示")
                 print(f"    [*] 跳过此申请号，继续下一个...")
                 return None
-        except:
+        except Exception:
             pass
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -370,7 +370,7 @@ def collect_one_fwxx(
                 pyautogui.hotkey('ctrl', 'w')
                 time.sleep(0.5)
             driver.switch_to.window(driver.window_handles[0])
-        except:
+        except Exception:
             pass
         return None
 
@@ -578,7 +578,7 @@ def run_fwxx_collection(args) -> None:
         if driver:
             try:
                 driver.quit()
-            except:
+            except Exception:
                 pass
 
         print("\n[✓] 程序结束")

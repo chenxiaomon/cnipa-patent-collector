@@ -125,7 +125,7 @@ class PublicSearchMITMAddon:
 
             # 如果没有找到，返回页码计数
             return self.page_count + 1
-        except:
+        except Exception:
             return self.page_count + 1
 
     def _save_raw_response(self, resp_json: dict, page_no: int) -> None:
