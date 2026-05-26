@@ -88,23 +88,38 @@ def calculate_needs_update(last_update_time: datetime, frequency_days: int) -> t
 
     return needs_update, days_until, next_update_time
 
+def _build_update_info(record: dict, freq_days: int, needs_update: bool) -> dict:
+    """将 DB 记录转换为 analyze_updates 所需的更新状态字典。"""
+    timestamp_str = record.get('timestamp')
+    last_update_time = parse_timestamp(timestamp_str)
+    _, days_until, next_update_time = calculate_needs_update(last_update_time, freq_days)
+    days_since = (utc_now() - last_update_time).days if last_update_time else None
+    return {
+        'app_no': record.get('application_no'),
+        'status': record.get('anjianywzt'),
+        'last_update': timestamp_str,
+        'last_update_time': last_update_time,
+        'next_update_time': next_update_time,
+        'days_since': days_since,
+        'days_until': days_until,
+        'needs_update': needs_update,
+    }
+
+
 def analyze_updates(show_all: bool = False):
     """
-    分析所有申请号，计算哪些需要更新
+    分析所有申请号，计算哪些需要更新。
 
     Args:
         show_all: 如果为 True，显示所有申请号的状态；否则只显示需要更新的
     """
+    from db_manager import PatentsDB
+    from settings import PATENTS_DB_FILE
+
     focus_strategy = load_focus_strategy()
-    detection_log = load_detection_log()
-
     status_breakdown = focus_strategy.get('status_breakdown', {})
-    records = detection_log.get('records', [])
+    db = PatentsDB(PATENTS_DB_FILE)
 
-    # 创建一个按 application_no 索引的字典方便查找
-    records_dict = {r.get('application_no'): r for r in records}
-
-    # 统计各频率的更新情况
     results = {}
     for status, info in status_breakdown.items():
         freq_days = info['frequency_days']
@@ -113,46 +128,15 @@ def analyze_updates(show_all: bool = False):
                 'status_list': [],
                 'needs_update': [],
                 'no_update_needed': [],
-                'status_names': []
+                'status_names': [],
             }
-
         results[freq_days]['status_names'].append(status)
 
-    # 遍历所有申请号，计算更新状态
-    for record in records:
-        app_no = record.get('application_no')
-        status = record.get('anjianywzt')
-        timestamp_str = record.get('timestamp')
-
-        # 检查状态是否在关注列表中
-        if status not in status_breakdown:
-            continue
-
-        freq_days = status_breakdown[status]['frequency_days']
-        last_update_time = parse_timestamp(timestamp_str)
-        needs_update, days_until, next_update_time = calculate_needs_update(last_update_time, freq_days)
-
-        # 计算上次更新距今的天数
-        if last_update_time:
-            days_since = (utc_now() - last_update_time).days
-        else:
-            days_since = None
-
-        update_info = {
-            'app_no': app_no,
-            'status': status,
-            'last_update': timestamp_str,
-            'last_update_time': last_update_time,
-            'next_update_time': next_update_time,
-            'days_since': days_since,
-            'days_until': days_until,
-            'needs_update': needs_update
-        }
-
-        if needs_update:
-            results[freq_days]['needs_update'].append(update_info)
-        else:
-            results[freq_days]['no_update_needed'].append(update_info)
+        needs_records, pending_records = db.query_update_candidates(status, freq_days)
+        for r in needs_records:
+            results[freq_days]['needs_update'].append(_build_update_info(r, freq_days, True))
+        for r in pending_records:
+            results[freq_days]['no_update_needed'].append(_build_update_info(r, freq_days, False))
 
     return results
 

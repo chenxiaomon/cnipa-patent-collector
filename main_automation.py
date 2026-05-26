@@ -51,7 +51,10 @@ from input_service import InputService
 from settings import (
     CNIPA_URL, SEARCH_LIST_FILE, CONFIG_FILE, FORCE_UPDATE_FLAG,
     PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE, MITM_TIMEOUT, MITM_POLL_INTERVAL,
-    PATENT_CACHE_FILE, USE_MITM_PROXY, PATENTS_DB_FILE, DETECTION_LOG_JSONL_FILE
+    PATENT_CACHE_FILE, USE_MITM_PROXY, PATENTS_DB_FILE, DETECTION_LOG_JSONL_FILE,
+    AUTOMATION_CONFIG_LOAD_WAIT, AUTOMATION_STARTUP_COUNTDOWN,
+    AUTOMATION_ANTI_CRAWL_BATCH_SIZE, AUTOMATION_STATS_PRINT_INTERVAL,
+    AUTOMATION_ANTI_CRAWL_WAIT_MIN, AUTOMATION_ANTI_CRAWL_WAIT_MAX,
 )
 from db_manager import PatentsDB
 
@@ -189,7 +192,7 @@ def search_application(
 
     except Exception as e:
         record = DetectionRecord(
-            application_no=application_no,
+            application_no=normalize_app_no(application_no),
             error_message=str(e),
             response_summary=f'Error: {str(e)[:50]}'
         )
@@ -265,12 +268,12 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
 
         # 加载或记录鼠标位置
         print("\n⏳ 正在加载鼠标位置配置...")
-        time.sleep(1)
+        time.sleep(AUTOMATION_CONFIG_LOAD_WAIT)
         input_x, input_y, button_x, button_y = CoordinateService.load_or_record_search_coordinates()
 
         # 倒计时
-        print("\n⏳ 5秒后开始自动操作，请不要动鼠标！")
-        for i in range(5, 0, -1):
+        print(f"\n⏳ {AUTOMATION_STARTUP_COUNTDOWN}秒后开始自动操作，请不要动鼠标！")
+        for i in range(AUTOMATION_STARTUP_COUNTDOWN, 0, -1):
             print(f"  {i}...", end="\r")
             time.sleep(1)
         print()
@@ -299,14 +302,14 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
                 force_update=bool(update_list),
             )
 
-            # 每处理 10 个后随机等待（优化：每条省 ~0.25s）
-            if i % 10 == 0:
-                wait_time = random.uniform(2, 5)
+            # 每处理 N 个后随机等待（优化：每条省 ~0.25s）
+            if i % AUTOMATION_ANTI_CRAWL_BATCH_SIZE == 0:
+                wait_time = random.uniform(AUTOMATION_ANTI_CRAWL_WAIT_MIN, AUTOMATION_ANTI_CRAWL_WAIT_MAX)
                 print(f"  防爬虫等待 {wait_time:.1f}秒...")
                 time.sleep(wait_time)
 
-            # 每处理 20 个打印一次统计
-            if i % 20 == 0:
+            # 每处理 N 个打印一次统计
+            if i % AUTOMATION_STATS_PRINT_INTERVAL == 0:
                 stats = logger.get_stats()
                 print(f"\n📊 进度: 已处理 {stats['total']} 个，成功 {stats['success']} 个")
 

@@ -930,13 +930,40 @@ HTML = r"""<!doctype html>
           </div>
         </article>
       </section>
-      <article class="panel">
-        <div class="panel-head"><h2>多机同步</h2><span class="hint">sync</span></div>
+      <article class="panel" style="margin-bottom:14px">
+        <div class="panel-head"><h2>多机同步</h2><span class="hint">sync（git）</span></div>
         <div class="button-row">
           <button class="btn secondary" data-action="sync_status">查看同步状态</button>
           <button class="btn secondary" data-action="sync_pull">从远端拉取</button>
           <button class="btn secondary" data-action="sync_push">推送到远端</button>
         </div>
+      </article>
+      <article class="panel operator-only">
+        <div class="panel-head"><h2>增量数据互通</h2><span class="hint">跨机最小化传输</span></div>
+        <section class="grid two">
+          <div>
+            <div class="panel-head" style="margin-bottom:8px"><h3 style="font-size:13px">导出（发给其他机器）</h3></div>
+            <div class="control-grid">
+              <label class="field">
+                <span>起始时间</span>
+                <input id="deltaFrom" type="datetime-local">
+              </label>
+              <button class="btn primary" id="exportDeltaBtn">下载增量 JSONL</button>
+            </div>
+            <div id="deltaExportHint" class="hint" style="margin-top:6px"></div>
+          </div>
+          <div>
+            <div class="panel-head" style="margin-bottom:8px"><h3 style="font-size:13px">导入（接收其他机器的数据）</h3></div>
+            <div class="control-grid">
+              <label class="field">
+                <span>选择 JSONL 文件</span>
+                <input id="deltaFileInput" type="file" accept=".jsonl,.json">
+              </label>
+              <button class="btn primary" id="importDeltaBtn">导入合并</button>
+            </div>
+            <div id="deltaImportHint" class="hint" style="margin-top:6px"></div>
+          </div>
+        </section>
       </article>
     </div>
 
@@ -962,7 +989,7 @@ HTML = r"""<!doctype html>
 
     <!-- ═══ Tab 9：系统配置 ═══ -->
     <div id="tab-config" class="tab-panel">
-      <section class="grid two">
+      <section class="grid two" style="margin-bottom:14px">
         <article class="panel">
           <div class="panel-head">
             <h2>鼠标坐标配置</h2>
@@ -983,6 +1010,23 @@ HTML = r"""<!doctype html>
           </div>
         </article>
       </section>
+      <article class="panel operator-only">
+        <div class="panel-head">
+          <h2>登录凭证</h2>
+          <button class="btn primary" id="saveCreds">保存</button>
+        </div>
+        <div class="control-grid">
+          <label class="field">
+            <span>代理机构代码</span>
+            <input id="credsUser" type="text" placeholder="CNIPA_USERNAME" autocomplete="username">
+          </label>
+          <label class="field">
+            <span>密码</span>
+            <input id="credsPass" type="password" placeholder="CNIPA_PASSWORD（留空则不修改）" autocomplete="current-password">
+          </label>
+        </div>
+        <div id="credsStatus" class="hint" style="margin-top:8px"></div>
+      </article>
     </div>
 
     <!-- ═══ Tab 10：提交需求 ═══ -->
@@ -1896,6 +1940,16 @@ function bindEvents() {
   const submitBtn = $('#submitReqBtn');
   if (submitBtn) submitBtn.addEventListener('click', submitRequest);
 
+  // 凭证保存
+  const saveCreds = $('#saveCreds');
+  if (saveCreds) saveCreds.addEventListener('click', saveCredentials);
+
+  // 增量导出/导入
+  const exportBtn = $('#exportDeltaBtn');
+  if (exportBtn) exportBtn.addEventListener('click', exportDelta);
+  const importBtn = $('#importDeltaBtn');
+  if (importBtn) importBtn.addEventListener('click', importDelta);
+
   // 策略分组"采集"按钮（动态生成，使用委托）
   document.getElementById('strategyGroups').addEventListener('click', e => {
     const btn = e.target.closest('.btn-run-freq');
@@ -2057,11 +2111,66 @@ async function submitRequest() {
   } catch (e) { if (resultEl) resultEl.textContent = '提交失败：' + e.message; }
 }
 
+// ── 登录凭证 ──────────────────────────────────────────────────────────
+async function loadCredentials() {
+  try {
+    const d = await api('/api/credentials');
+    const u = $('#credsUser'); if (u) u.value = d.username || '';
+    const s = $('#credsStatus');
+    if (s) s.textContent = d.password_set ? '✓ 密码已设置' : '⚠ 密码未设置';
+  } catch (_) {}
+}
+
+async function saveCredentials() {
+  const u = $('#credsUser'); const p = $('#credsPass'); const s = $('#credsStatus');
+  try {
+    await api('/api/credentials', { method: 'POST', body: JSON.stringify({
+      username: u ? u.value : '',
+      password: p ? p.value : ''
+    })});
+    if (p) p.value = '';
+    if (s) s.textContent = '✓ 已保存';
+    showToast('凭证已更新');
+  } catch (e) { showToast('保存失败：' + e.message); }
+}
+
+// ── 增量数据互通 ───────────────────────────────────────────────────────
+function exportDelta() {
+  const inp = $('#deltaFrom');
+  const hint = $('#deltaExportHint');
+  if (!inp || !inp.value) { if (hint) hint.textContent = '请选择起始时间'; return; }
+  const since = new Date(inp.value).toISOString();
+  const url = '/api/export/delta?since=' + encodeURIComponent(since);
+  if (hint) hint.textContent = '正在准备下载...';
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'delta_' + inp.value.slice(0,10) + '.jsonl';
+  a.click();
+  if (hint) hint.textContent = '已触发下载';
+}
+
+async function importDelta() {
+  const fi = $('#deltaFileInput');
+  const hint = $('#deltaImportHint');
+  if (!fi || !fi.files || !fi.files[0]) { if (hint) hint.textContent = '请先选择文件'; return; }
+  if (hint) hint.textContent = '正在导入...';
+  const text = await fi.files[0].text();
+  try {
+    const d = await api('/api/import/delta', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-ndjson' },
+      body: text
+    });
+    if (hint) hint.textContent = `✓ 已导入 ${d.imported} 条` + (d.bad_lines > 0 ? `，${d.bad_lines} 行格式错误` : '');
+    showToast('导入完成：' + d.imported + ' 条');
+  } catch (e) { if (hint) hint.textContent = '导入失败：' + e.message; }
+}
+
 // ── Boot ─────────────────────────────────────────────────────────────
 async function boot() {
   initTabRouting();
   bindEvents();
-  await Promise.all([refreshSummary(), refreshJobs(), loadSearchList()]);
+  await Promise.all([refreshSummary(), refreshJobs(), loadSearchList(), loadCredentials()]);
   setInterval(refreshSummary, 5000);
   setInterval(refreshJobs, 2500);
 }
@@ -2122,6 +2231,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"text": safe_read_text(SEARCH_LIST_FILE), "path": str(SEARCH_LIST_FILE)})
             elif path == "/api/config":
                 self.send_json({"text": safe_read_text(CONFIG_FILE, "{}"), "path": str(CONFIG_FILE)})
+            elif path == "/api/credentials":
+                if not self.is_operator:
+                    self.send_json({"error": "仅操作员可查看凭证"}, status=403)
+                    return
+                env_file = BASE_DIR / ".env"
+                username, password_set = "", False
+                if env_file.exists():
+                    for line in env_file.read_text(encoding="utf-8").splitlines():
+                        if line.startswith("CNIPA_USERNAME="):
+                            username = line.split("=", 1)[1].strip()
+                        elif line.startswith("CNIPA_PASSWORD=") and line.split("=", 1)[1].strip():
+                            password_set = True
+                self.send_json({"username": username, "password_set": password_set})
+            elif path.startswith("/api/export/delta"):
+                qs = parse_qs(parsed.query)
+                since = (qs.get("since") or [""])[0].strip()
+                if not since:
+                    self.send_json({"error": "缺少 since 参数（格式：2026-05-01T00:00:00Z）"}, status=400)
+                    return
+                records = _patents_db.export_delta(since)
+                lines = "\n".join(json.dumps(r, ensure_ascii=False) for r in records)
+                data = lines.encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+                self.send_header("Content-Disposition", f'attachment; filename="delta_{since[:10]}.jsonl"')
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
             elif path.startswith("/download/"):
                 self.handle_download(path)
             else:
@@ -2166,6 +2303,45 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 flag.parent.mkdir(parents=True, exist_ok=True)
                 flag.touch()
                 self.send_json({"ok": True})
+            elif path == "/api/credentials":
+                if not self.is_operator:
+                    self.send_json({"error": "仅操作员可修改凭证"}, status=403)
+                    return
+                payload = self.read_json_body()
+                username = str(payload.get("username", "")).strip()
+                password = str(payload.get("password", "")).strip()
+                env_file = BASE_DIR / ".env"
+                lines: dict[str, str] = {}
+                if env_file.exists():
+                    for line in env_file.read_text(encoding="utf-8").splitlines():
+                        if "=" in line:
+                            k, v = line.split("=", 1)
+                            lines[k.strip()] = v.strip()
+                if username:
+                    lines["CNIPA_USERNAME"] = username
+                if password:
+                    lines["CNIPA_PASSWORD"] = password
+                tmp = env_file.with_suffix(".tmp")
+                tmp.write_text("\n".join(f"{k}={v}" for k, v in lines.items()) + "\n", encoding="utf-8")
+                tmp.replace(env_file)
+                self.send_json({"ok": True})
+            elif path == "/api/import/delta":
+                if not self.is_operator:
+                    self.send_json({"error": "仅操作员可导入数据"}, status=403)
+                    return
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode("utf-8")
+                records, bad = [], 0
+                for line in body.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        records.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        bad += 1
+                imported = _patents_db.upsert_batch(records)
+                self.send_json({"ok": True, "imported": imported, "bad_lines": bad})
             elif path == "/api/requests":
                 payload = self.read_json_body()
                 raw_nos = [str(a).strip() for a in (payload.get("app_nos") or []) if str(a).strip()]

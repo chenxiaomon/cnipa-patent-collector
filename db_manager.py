@@ -166,10 +166,44 @@ class PatentsDB:
             rows = conn.execute("SELECT application_no FROM patents").fetchall()
         return {r[0] for r in rows}
 
+    def export_delta(self, since: str) -> list[dict]:
+        """返回 timestamp > since 的全部记录，用于增量跨机同步。ISO 格式字符串可直接比较。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM patents WHERE timestamp > ? ORDER BY timestamp ASC",
+                (since,)
+            ).fetchall()
+        return [self._decode(r) for r in rows]
+
     def get_all_records(self) -> list[dict]:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM patents ORDER BY timestamp ASC").fetchall()
         return [self._decode(r) for r in rows]
+
+    def query_update_candidates(self, status: str, freq_days: int) -> tuple[list[dict], list[dict]]:
+        """
+        Return records with anjianywzt=status, split by whether the update interval has elapsed.
+        NULL timestamps are treated as overdue (needs update).
+
+        Returns: (needs_update_records, not_yet_due_records)
+        """
+        interval = f'+{freq_days} days'
+        with self._connect() as conn:
+            needs_rows = conn.execute(
+                """SELECT * FROM patents WHERE anjianywzt=?
+                   AND (timestamp IS NULL
+                        OR datetime(timestamp, ?) <= datetime('now'))
+                   ORDER BY timestamp ASC""",
+                (status, interval)
+            ).fetchall()
+            pending_rows = conn.execute(
+                """SELECT * FROM patents WHERE anjianywzt=?
+                   AND timestamp IS NOT NULL
+                   AND datetime(timestamp, ?) > datetime('now')
+                   ORDER BY timestamp ASC""",
+                (status, interval)
+            ).fetchall()
+        return [self._decode(r) for r in needs_rows], [self._decode(r) for r in pending_rows]
 
     def get_record(self, app_no: str) -> dict | None:
         with self._connect() as conn:

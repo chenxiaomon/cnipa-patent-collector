@@ -70,7 +70,12 @@ from settings import (
     PATENT_CACHE_FILE, PATENT_FWXX_CACHE_FILE, MARKER_FILE,
     FWXX_UNMATCHED_FILE, PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE,
     MITM_TIMEOUT, MITM_POLL_INTERVAL, USE_MITM_PROXY,
-    FWXX_TRIGGER_ANJIANYWZT, PATENTS_DB_FILE
+    FWXX_TRIGGER_ANJIANYWZT, PATENTS_DB_FILE,
+    FWXX_PAGE_LOAD_WAIT, FWXX_STARTUP_COUNTDOWN,
+    FWXX_INPUT_DELAY_MIN, FWXX_INPUT_DELAY_MAX, FWXX_INPUT_PAUSE_PROB,
+    FWXX_POST_SEARCH_WAIT, FWXX_DETAIL_CLICK_WAIT, FWXX_TAB_SWITCH_WAIT,
+    FWXX_MENU_CLICK_WAIT, FWXX_CACHE_POLL_TIMEOUT, FWXX_DETAIL_CLOSE_WAIT,
+    FWXX_ANTI_CRAWL_BATCH_SIZE, FWXX_ANTI_CRAWL_WAIT_MIN, FWXX_ANTI_CRAWL_WAIT_MAX,
 )
 from db_manager import PatentsDB
 
@@ -204,7 +209,7 @@ def _load_standalone_collected() -> set:
     try:
         logger = DetectionLogger()
         return {r['application_no'] for r in logger._load_records() if r.get('fwxx_list') is not None}
-    except:
+    except Exception:
         return set()
 
 
@@ -274,7 +279,9 @@ def collect_one_fwxx(
         print(f"    [*] 点击查询按钮...")
         InputService.type_in_search(
             input_x, input_y, button_x, button_y, application_no,
-            delay_range=(0.05, 0.18), pause_prob=0.15, post_search_wait=3,
+            delay_range=(FWXX_INPUT_DELAY_MIN, FWXX_INPUT_DELAY_MAX),
+            pause_prob=FWXX_INPUT_PAUSE_PROB,
+            post_search_wait=FWXX_POST_SEARCH_WAIT,
         )
 
         # 验证搜索结果是否正常（检查页面是否有异常提示）
@@ -285,7 +292,7 @@ def collect_one_fwxx(
                 print(f"    [!] 搜索无结果或出现异常提示")
                 print(f"    [*] 跳过此申请号，继续下一个...")
                 return None
-        except:
+        except Exception:
             pass
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -298,7 +305,7 @@ def collect_one_fwxx(
         # 记录点击前的标签数量（用于检测是否成功打开新标签）
         tabs_before = len(driver.window_handles)
 
-        InputService.move_and_click(link_x, link_y, post_click_wait=4)
+        InputService.move_and_click(link_x, link_y, post_click_wait=FWXX_DETAIL_CLICK_WAIT)
 
         # 检查是否打开了新标签页
         tabs_after = len(driver.window_handles)
@@ -310,7 +317,7 @@ def collect_one_fwxx(
 
         # Selenium 切换到新标签页（⚠️ 关键）
         driver.switch_to.window(driver.window_handles[-1])
-        time.sleep(0.5)
+        time.sleep(FWXX_TAB_SWITCH_WAIT)
         print(f"    [✓] 已切换到详情页标签")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -327,14 +334,14 @@ def collect_one_fwxx(
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
         print(f"    [*] 点击'发文信息'菜单...")
-        InputService.move_and_click(fwxx_menu_x, fwxx_menu_y, post_click_wait=3)
+        InputService.move_and_click(fwxx_menu_x, fwxx_menu_y, post_click_wait=FWXX_MENU_CLICK_WAIT)
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 步骤 5：从缓存读取发文信息（轮询等待）
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
         print(f"    [*] 从 MITM 缓存读取发文信息...")
-        fwxx_data = poll_cache_for_key(PATENT_FWXX_CACHE_FILE, application_no, max_wait=10)
+        fwxx_data = poll_cache_for_key(PATENT_FWXX_CACHE_FILE, application_no, max_wait=FWXX_CACHE_POLL_TIMEOUT)
 
         if not fwxx_data:
             print(f"    [!] 未从缓存中获得发文信息")
@@ -350,11 +357,11 @@ def collect_one_fwxx(
         if len(driver.window_handles) > 1:
             print(f"    [*] 关闭详情页标签...")
             pyautogui.hotkey('ctrl', 'w')
-            time.sleep(1)
+            time.sleep(FWXX_DETAIL_CLOSE_WAIT)
 
             # Selenium 切回搜索页标签
             driver.switch_to.window(driver.window_handles[0])
-            time.sleep(0.5)
+            time.sleep(FWXX_TAB_SWITCH_WAIT)
             print(f"    [✓] 已回到搜索页")
         else:
             print(f"    [⚠️ ] 没有多余标签可关闭")
@@ -368,9 +375,9 @@ def collect_one_fwxx(
             while len(driver.window_handles) > 1:
                 driver.switch_to.window(driver.window_handles[-1])
                 pyautogui.hotkey('ctrl', 'w')
-                time.sleep(0.5)
+                time.sleep(FWXX_TAB_SWITCH_WAIT)
             driver.switch_to.window(driver.window_handles[0])
-        except:
+        except Exception:
             pass
         return None
 
@@ -481,7 +488,7 @@ def run_fwxx_collection(args) -> None:
     try:
         # 步骤 3：创建浏览器，打开搜索页，等待用户登录
         print(f"\n[*] 打开搜索页: {args.url}")
-        driver = BrowserService.launch_and_login(args.url, page_load_wait=3)
+        driver = BrowserService.launch_and_login(args.url, page_load_wait=FWXX_PAGE_LOAD_WAIT)
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 步骤 4：加载坐标配置
@@ -501,7 +508,7 @@ def run_fwxx_collection(args) -> None:
         # 步骤 5：倒计时
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-        countdown(8, "坐标已记录，即将开始自动采集，倒计时")
+        countdown(FWXX_STARTUP_COUNTDOWN, "坐标已记录，即将开始自动采集，倒计时")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 步骤 6：主循环 - 逐个采集
@@ -549,9 +556,9 @@ def run_fwxx_collection(args) -> None:
                 print(f"  ❌ 未采集到数据")
                 failed_count += 1
 
-            # 申请号之间的随机延迟（防反爬，每 3 个随机等待 2~5 秒）
-            if idx % 3 == 0 and idx < len(targets):
-                wait_time = random.uniform(2, 5)
+            # 申请号之间的随机延迟（防反爬）
+            if idx % FWXX_ANTI_CRAWL_BATCH_SIZE == 0 and idx < len(targets):
+                wait_time = random.uniform(FWXX_ANTI_CRAWL_WAIT_MIN, FWXX_ANTI_CRAWL_WAIT_MAX)
                 print(f"\n  [*] 防爬虫等待 {wait_time:.1f} 秒...")
                 time.sleep(wait_time)
 
@@ -578,7 +585,7 @@ def run_fwxx_collection(args) -> None:
         if driver:
             try:
                 driver.quit()
-            except:
+            except Exception:
                 pass
 
         print("\n[✓] 程序结束")

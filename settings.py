@@ -121,6 +121,34 @@ CNIPA_QUERY_API = 'https://cpquery.cponline.cnipa.gov.cn/txtSearch'
 FWXX_TRIGGER_ANJIANYWZT = '驳回等复审请求'
 
 # ============================================================================
+# 自动化行为参数
+# ============================================================================
+
+# 主采集流程（main_automation.py）
+AUTOMATION_CONFIG_LOAD_WAIT       = float(os.getenv('AUTOMATION_CONFIG_LOAD_WAIT', '1'))
+AUTOMATION_STARTUP_COUNTDOWN      = int(os.getenv('AUTOMATION_STARTUP_COUNTDOWN', '5'))
+AUTOMATION_ANTI_CRAWL_BATCH_SIZE  = int(os.getenv('AUTOMATION_ANTI_CRAWL_BATCH_SIZE', '10'))
+AUTOMATION_STATS_PRINT_INTERVAL   = int(os.getenv('AUTOMATION_STATS_PRINT_INTERVAL', '20'))
+AUTOMATION_ANTI_CRAWL_WAIT_MIN    = float(os.getenv('AUTOMATION_ANTI_CRAWL_WAIT_MIN', '2'))
+AUTOMATION_ANTI_CRAWL_WAIT_MAX    = float(os.getenv('AUTOMATION_ANTI_CRAWL_WAIT_MAX', '5'))
+
+# 发文信息采集流程（collect_fwxx.py）
+FWXX_PAGE_LOAD_WAIT        = float(os.getenv('FWXX_PAGE_LOAD_WAIT', '3'))
+FWXX_STARTUP_COUNTDOWN     = int(os.getenv('FWXX_STARTUP_COUNTDOWN', '8'))
+FWXX_INPUT_DELAY_MIN       = float(os.getenv('FWXX_INPUT_DELAY_MIN', '0.05'))
+FWXX_INPUT_DELAY_MAX       = float(os.getenv('FWXX_INPUT_DELAY_MAX', '0.18'))
+FWXX_INPUT_PAUSE_PROB      = float(os.getenv('FWXX_INPUT_PAUSE_PROB', '0.15'))
+FWXX_POST_SEARCH_WAIT      = float(os.getenv('FWXX_POST_SEARCH_WAIT', '3'))
+FWXX_DETAIL_CLICK_WAIT     = float(os.getenv('FWXX_DETAIL_CLICK_WAIT', '4'))
+FWXX_TAB_SWITCH_WAIT       = float(os.getenv('FWXX_TAB_SWITCH_WAIT', '0.5'))
+FWXX_MENU_CLICK_WAIT       = float(os.getenv('FWXX_MENU_CLICK_WAIT', '3'))
+FWXX_CACHE_POLL_TIMEOUT    = float(os.getenv('FWXX_CACHE_POLL_TIMEOUT', '10'))
+FWXX_DETAIL_CLOSE_WAIT     = float(os.getenv('FWXX_DETAIL_CLOSE_WAIT', '1'))
+FWXX_ANTI_CRAWL_BATCH_SIZE = int(os.getenv('FWXX_ANTI_CRAWL_BATCH_SIZE', '3'))
+FWXX_ANTI_CRAWL_WAIT_MIN   = float(os.getenv('FWXX_ANTI_CRAWL_WAIT_MIN', '2'))
+FWXX_ANTI_CRAWL_WAIT_MAX   = float(os.getenv('FWXX_ANTI_CRAWL_WAIT_MAX', '5'))
+
+# ============================================================================
 # 验证工具函数
 # ============================================================================
 
