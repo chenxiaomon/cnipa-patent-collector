@@ -253,6 +253,7 @@ class JobManager:
         env = os.environ.copy()
         env.update(job.env_overrides)
         env.setdefault("PYTHONUNBUFFERED", "1")
+        env.setdefault("PYTHONIOENCODING", "utf-8")
 
         process = subprocess.Popen(
             job.command,

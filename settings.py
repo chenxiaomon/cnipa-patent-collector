@@ -11,7 +11,13 @@
 """
 
 import os
+import sys
 from pathlib import Path
+
+# Windows 控制台强制 UTF-8，避免 emoji/中文在 GBK 环境下崩溃
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # ============================================================================
 # 基础路径
