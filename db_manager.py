@@ -316,7 +316,7 @@ class PatentsDB:
         """
         with self._connect() as conn:
             # 1. 主聚合
-            agg = conn.execute(f"""
+            agg = conn.execute("""
                 SELECT
                     COUNT(*) AS unique_count,
                     SUM(CASE WHEN status_code=200 THEN 1 ELSE 0 END) AS success,
@@ -358,7 +358,7 @@ class PatentsDB:
             """).fetchall()
 
             # 6. 待补采发文 TOP 20
-            pending_rows = conn.execute(f"""
+            pending_rows = conn.execute("""
                 SELECT application_no, anjianywzt, timestamp FROM patents
                 WHERE anjianywzt=? AND fwxx_list IS NULL
                 ORDER BY timestamp DESC LIMIT 20

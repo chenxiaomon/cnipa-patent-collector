@@ -45,6 +45,18 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 
+# 虚拟显示器必须在 pyautogui / Xlib 任何 import 之前启动
+if os.getenv('USE_VIRTUAL_DISPLAY', '').lower() in ('true', '1', 'yes') and sys.platform.startswith('linux'):
+    try:
+        from pyvirtualdisplay import Display as _VD
+        _vd_w = int(os.getenv('VIRTUAL_DISPLAY_WIDTH', '1920'))
+        _vd_h = int(os.getenv('VIRTUAL_DISPLAY_HEIGHT', '1080'))
+        _vd_inst = _VD(visible=False, size=(_vd_w, _vd_h), color_depth=24)
+        _vd_inst.start()
+        print(f"✓ 虚拟显示器已启动 ({_vd_w}x{_vd_h})")
+    except ImportError:
+        print("⚠️  pyvirtualdisplay 未安装，使用物理桌面")
+
 # PyAutoGUI 和 Selenium
 import pyautogui
 from selenium import webdriver

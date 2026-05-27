@@ -87,6 +87,20 @@ def _write_text_atomic(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
+def _parse_env_file(env_path: Path) -> dict[str, str]:
+    """解析 .env 文件为 key→value 字典，跳过空行和注释行。"""
+    if not env_path.exists():
+        return {}
+    pairs: dict[str, str] = {}
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        k, _, v = line.partition('=')
+        pairs[k.strip()] = v.strip()
+    return pairs
+
+
 def resolve_task_python() -> str:
     """后台任务优先使用项目虚拟环境，避免系统 Python 缺依赖。"""
     override = os.getenv("DASHBOARD_TASK_PYTHON")
@@ -295,6 +309,8 @@ class JobManager:
             **extra_kwargs,
         )
         job.process = process
+        if process.stdin:
+            process.stdin.close()
         job.append(f"$ {printable_command(job.command)}")
 
         with self._lock:
@@ -334,6 +350,7 @@ class JobManager:
             for line in job.process.stdout:
                 job.append(line)
         finally:
+            job.process.stdout.close()
             returncode = job.process.wait()
             with self._lock:
                 job.returncode = returncode
@@ -2269,15 +2286,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if not self.is_operator:
                     self.send_json({"error": "仅操作员可查看凭证"}, status=403)
                     return
-                env_file = BASE_DIR / ".env"
-                username, password_set = "", False
-                if env_file.exists():
-                    for line in env_file.read_text(encoding="utf-8").splitlines():
-                        if line.startswith("CNIPA_USERNAME="):
-                            username = line.split("=", 1)[1].strip()
-                        elif line.startswith("CNIPA_PASSWORD=") and line.split("=", 1)[1].strip():
-                            password_set = True
-                self.send_json({"username": username, "password_set": password_set})
+                pairs = _parse_env_file(BASE_DIR / ".env")
+                self.send_json({
+                    "username": pairs.get("CNIPA_USERNAME", ""),
+                    "password_set": bool(pairs.get("CNIPA_PASSWORD")),
+                })
             elif path.startswith("/api/export/delta"):
                 qs = parse_qs(parsed.query)
                 since = (qs.get("since") or [""])[0].strip()
@@ -2345,19 +2358,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 username = str(payload.get("username", "")).strip()
                 password = str(payload.get("password", "")).strip()
                 env_file = BASE_DIR / ".env"
-                lines: dict[str, str] = {}
-                if env_file.exists():
-                    for line in env_file.read_text(encoding="utf-8").splitlines():
-                        if "=" in line:
-                            k, v = line.split("=", 1)
-                            lines[k.strip()] = v.strip()
+                pairs = _parse_env_file(env_file)
                 if username:
-                    lines["CNIPA_USERNAME"] = username
+                    pairs["CNIPA_USERNAME"] = username
                 if password:
-                    lines["CNIPA_PASSWORD"] = password
-                tmp = env_file.with_suffix(".tmp")
-                tmp.write_text("\n".join(f"{k}={v}" for k, v in lines.items()) + "\n", encoding="utf-8")
-                tmp.replace(env_file)
+                    pairs["CNIPA_PASSWORD"] = password
+                _write_text_atomic(env_file, "\n".join(f"{k}={v}" for k, v in pairs.items()) + "\n")
                 self.send_json({"ok": True})
             elif path == "/api/import/delta":
                 if not self.is_operator:
@@ -2472,11 +2478,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def read_json_body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0") or "0")
-        if length == 0:
+        if length <= 0:
             return {}
         if length > MAX_BODY_BYTES:
             raise ValueError(f"请求体超过大小限制（最大 {MAX_BODY_BYTES // 1024} KB）")
-        body = self.rfile.read(length).decode("utf-8")
+        body = self.rfile.read(length).decode("utf-8", errors="replace")
         payload = json.loads(body)
         if not isinstance(payload, dict):
             raise ValueError("请求体必须是 JSON 对象")
