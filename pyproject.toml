@@ -10,7 +10,7 @@ dependencies = [
     "mitmproxy>=10.0.0",
     "pandas>=2.0.0",
     "openpyxl>=3.1.0",
-    "pyvirtualdisplay>=3.0",
+    "pyvirtualdisplay>=3.0; sys_platform != 'win32'",
     "setuptools",
 ]
 

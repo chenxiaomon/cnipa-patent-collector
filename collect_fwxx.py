@@ -1,11 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import sys
-import io
 # 解决 Windows 控制台编码问题
 if sys.platform == 'win32':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 """
 发文信息采集模块 (FWXX Collection Module)
@@ -40,7 +39,6 @@ if sys.platform == 'win32':
 
 import json
 import os
-import sys
 import time
 import random
 import argparse

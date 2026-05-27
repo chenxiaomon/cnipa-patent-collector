@@ -278,6 +278,10 @@ class JobManager:
         env.setdefault("PYTHONUNBUFFERED", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")
 
+        extra_kwargs = {}
+        if sys.platform == 'win32':
+            extra_kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+
         process = subprocess.Popen(
             job.command,
             cwd=str(BASE_DIR),
@@ -288,6 +292,7 @@ class JobManager:
             text=True,
             encoding='utf-8',
             bufsize=1,
+            **extra_kwargs,
         )
         job.process = process
         job.append(f"$ {printable_command(job.command)}")
@@ -496,6 +501,8 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         return {"action": action, "title": "从远端拉取数据", "command": [py, "-u", "sync.py", "pull"]}
     if action == "sync_push":
         return {"action": action, "title": "推送数据到远端", "command": [py, "-u", "sync.py", "push"]}
+    if action == "upgrade_code":
+        return {"action": action, "title": "更新系统代码", "command": [py, "-u", "upgrade.py"]}
 
     raise ValueError(f"未知操作: {action}")
 

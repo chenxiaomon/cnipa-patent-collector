@@ -28,6 +28,24 @@ def _get_chrome_major_version() -> int | None:
     """检测系统 Chrome 主版本号，供 undetected_chromedriver 使用"""
     import subprocess
     import re
+
+    if sys.platform == 'win32':
+        win_candidates = [
+            r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+            r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+            os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe'),
+        ]
+        for path in win_candidates:
+            if os.path.isfile(path):
+                try:
+                    r = subprocess.run([path, '--version'], capture_output=True, text=True, timeout=5)
+                    m = re.search(r'(\d+)\.\d+', r.stdout)
+                    if m:
+                        return int(m.group(1))
+                except subprocess.TimeoutExpired:
+                    pass
+        return None
+
     for cmd in ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium']:
         try:
             r = subprocess.run([cmd, '--version'], capture_output=True, text=True, timeout=5)
