@@ -1,0 +1,30 @@
+.git
+__pycache__
+*.pyc
+*.pyo
+.venv
+venv
+.env
+
+# 数据文件由卷挂载提供，不打进镜像
+data/patents.db
+data/patents.db-shm
+data/patents.db-wal
+data/results/*.xlsx
+data/results/*.jsonl
+data/results/*.json
+data/patent_cache.json
+data/patent_fwxx_cache.json
+data/config*.json
+data/config*.bak
+
+# 本机专用配置
+chromedriver-win64/
+chromedriver-linux64/
+
+# 开发产物
+.claude
+.codex
+docs/
+tests/
+*.md
