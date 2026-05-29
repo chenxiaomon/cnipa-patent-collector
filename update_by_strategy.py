@@ -230,19 +230,18 @@ def get_status_change_type(prev_status: Optional[str], curr_status: Optional[str
 
 
 def prepare_for_update():
-    """在执行采集前，保存当前状态到 previous_status，用于采集后的对比分析。"""
-    detection_log = load_detection_log()
-    records = detection_log.get('records', [])
+    """在执行采集前，将当前 anjianywzt 快照到 DB 的 previous_status 字段，用于采集后对比分析。"""
+    from db_manager import PatentsDB
+    from settings import PATENTS_DB_FILE
+    db = PatentsDB(PATENTS_DB_FILE)
+    records = db.get_all_records()
 
     count = 0
     for record in records:
         current_status = record.get('anjianywzt')
         if current_status:
-            record['previous_status'] = current_status
+            db.update_fields(record['application_no'], {'previous_status': current_status})
             count += 1
-
-    # 保存
-    save_detection_log_with_previous_status(detection_log)
 
     print("\n" + "=" * 100)
     print("🔄 采集前准备 - 状态快照已保存")
@@ -422,21 +421,22 @@ def generate_update_list(frequency_days: int = None) -> List[str]:
 
     return update_list
 
-def get_update_list_filename(frequency_days: int = None) -> tuple:
-    """返回动态清单文件名和标题。"""
+def _update_list_path_and_title(frequency_days: int = None) -> tuple:
+    """返回动态清单绝对路径（Path）和标题。"""
+    from settings import DATA_DIR
     if frequency_days is None:
-        return "data/update_list_dynamic.txt", "所有现在需要检查状态的申请号"
+        return DATA_DIR / 'update_list_dynamic.txt', "所有现在需要检查状态的申请号"
     return (
-        f"data/update_list_dynamic_{frequency_days}days.txt",
+        DATA_DIR / f'update_list_dynamic_{frequency_days}days.txt',
         f"{frequency_days}天内部规则 - 现在需要检查状态的申请号"
     )
 
-def do_generate(frequency_days: int = None):
-    """生成更新列表文件"""
+def write_update_list_file(frequency_days: int = None):
+    """生成更新列表文件并写入磁盘。"""
     update_list = generate_update_list(frequency_days)
 
-    filename, title = get_update_list_filename(frequency_days)
-    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    filepath, title = _update_list_path_and_title(frequency_days)
+    filename = str(filepath)
 
     # 即使清单为空也写入文件，避免后续误用旧清单。
     with open(filename, 'w', encoding='utf-8') as f:
@@ -736,12 +736,12 @@ if __name__ == '__main__':
         if len(sys.argv) > 2:
             try:
                 frequency_days = int(sys.argv[2])
-                do_generate(frequency_days)
+                write_update_list_file(frequency_days)
             except ValueError:
                 print(f"❌ 频率必须是数字")
                 sys.exit(1)
         else:
-            do_generate()
+            write_update_list_file()
     elif command == 'check':
         if len(sys.argv) < 3:
             print("❌ 请提供申请号")

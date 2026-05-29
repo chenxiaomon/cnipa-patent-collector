@@ -142,6 +142,18 @@ class PatentsDB:
             conn.execute(sql, [row[c] for c in cols])
             conn.commit()
 
+    def update_fields(self, app_no: str, fields: dict) -> None:
+        """对已有记录做部分字段更新（不影响其他列），记录不存在时静默跳过。"""
+        if not fields:
+            return
+        encoded = self._encode({'application_no': app_no, **fields})
+        encoded.pop('application_no', None)
+        set_clause = ', '.join(f'{col}=?' for col in encoded)
+        sql = f"UPDATE patents SET {set_clause} WHERE application_no=?"
+        with self._lock, self._connect() as conn:
+            conn.execute(sql, [*encoded.values(), app_no])
+            conn.commit()
+
     def upsert_batch(self, records: list[dict]) -> int:
         """批量 upsert，用于初始迁移"""
         if not records:

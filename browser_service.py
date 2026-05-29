@@ -113,7 +113,8 @@ class BrowserService:
         if sys.stdin.isatty():
             input("登录完成后按 Enter 继续...")
         else:
-            wait_seconds = float(os.getenv('CNIPA_LOGIN_WAIT_SECONDS', '0') or '0')
+            from settings import CNIPA_LOGIN_WAIT_SECONDS as _login_wait
+            wait_seconds = _login_wait
             if wait_seconds > 0:
                 from settings import DATA_DIR as _DATA_DIR
                 flag_file = _DATA_DIR / 'login_ready.flag'

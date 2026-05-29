@@ -9,6 +9,7 @@ CNIPA 专利数据 MITM 拦截脚本
 
 import json
 import os
+import threading
 from datetime import datetime
 from mitmproxy import http
 
@@ -29,6 +30,8 @@ class PatentMITMScraper:
     def __init__(self):
         self.logger = DetectionLogger()
         self.processed_count = 0
+        # mitmproxy 在线程池中并发回调 response()，缓存读-改-写必须加锁
+        self._cache_lock = threading.Lock()
 
     def response(self, flow: http.HTTPFlow) -> None:
         """
@@ -55,8 +58,8 @@ class PatentMITMScraper:
         print(f"\n[+] 拦截到 JSON 响应: {flow.request.pretty_url[:100]}")
 
         try:
-            # 获取响应的 JSON 数据
-            response_text = flow.response.get_text()
+            # 显式 UTF-8 解码，避免 mitmproxy 在响应头无 charset 时回退到 latin-1
+            response_text = flow.response.content.decode('utf-8', errors='replace')
             data = json.loads(response_text)
 
             # 智能检测数据位置
@@ -134,14 +137,7 @@ class PatentMITMScraper:
                 print(f"  [→] 跳过已处理: {application_no}")
                 return
 
-            # ⭐ 关键改进：写入文件系统而非内存缓存
-            # 原因：两个不同进程，内存无法共享，但文件可以
             cache_file = str(PATENT_CACHE_FILE)
-
-            # 读取现有缓存文件
-            cache_data = read_json_cache(cache_file)
-
-            # 准备新数据
             patent_data = {
                 'zhuanlisqh': api_record.get('zhuanlisqh'),
                 'famingzlsqgbg': api_record.get('famingzlsqgbg'),
@@ -159,9 +155,11 @@ class PatentMITMScraper:
                 'anjianywzt': api_record.get('anjianywzt'),
             }
 
-            # 更新缓存
-            cache_data[application_no] = patent_data
-            write_json_cache(cache_file, cache_data)
+            # 加锁：读-改-写必须原子，防止并发回调互相覆盖
+            with self._cache_lock:
+                cache_data = read_json_cache(cache_file)
+                cache_data[application_no] = patent_data
+                write_json_cache(cache_file, cache_data)
 
             self.processed_count += 1
             print(f"  [✓] 已缓存: {application_no} - {api_record.get('zhuanlimc', 'N/A')}")
@@ -177,7 +175,7 @@ class PatentMITMScraper:
             flow: mitmproxy 的 HTTP 流对象
         """
         try:
-            response_text = flow.response.get_text()
+            response_text = flow.response.content.decode('utf-8', errors='replace')
             data = json.loads(response_text)
 
             # 检查 API 响应状态
@@ -210,22 +208,17 @@ class PatentMITMScraper:
                 print(f"[-] 无法提取申请号")
                 return
 
-            # 写入缓存
-            cache_file = str(PATENT_FWXX_CACHE_FILE)
-
-            # 读取现有缓存
-            cache_data = read_json_cache(cache_file)
-
-            # 准备数据
             fwxx_cache_data = {
                 'fwxx_list': fwxx_list,
                 'bhsjtzs_xiazaisj': bhsj_data.get('xiazaisj') if bhsj_data else None,
                 'bhsjtzs_data': bhsj_data
             }
 
-            # 更新缓存
-            cache_data[application_no] = fwxx_cache_data
-            write_json_cache(cache_file, cache_data)
+            cache_file = str(PATENT_FWXX_CACHE_FILE)
+            with self._cache_lock:
+                cache_data = read_json_cache(cache_file)
+                cache_data[application_no] = fwxx_cache_data
+                write_json_cache(cache_file, cache_data)
 
             print(f"[✓] 发文信息已缓存: {application_no}")
 
@@ -261,28 +254,9 @@ class PatentMITMScraper:
                 print(f"[✓] 从标记文件获取申请号: {app_no}")
                 return app_no
 
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # 方案 1：从 Referer 中提取
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            referer = flow.request.headers.get('referer', '')
-            if referer:
-                print(f"[*] Referer: {referer}")
-                # 如果 Referer 包含申请号，可以从这里提取
-
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # 方案 2：从最近修改的 patent_cache.json 推断
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            patent_cache = read_json_cache(str(PATENT_CACHE_FILE))
-            if patent_cache:
-                # 取字典的最后一个键（最近添加的）
-                application_no = list(patent_cache.keys())[-1]
-                print(f"[*] 从 patent_cache 推断申请号: {application_no}")
-                return application_no
-
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # 如果都失败，返回 None（不崩溃）
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            print(f"[-] 无法自动提取申请号，跳过此响应")
+            # 方案 1（唯一回退）：标记文件为空，记录告警，不猜测申请号
+            # 猜测 patent_cache 最后一个键在并发写入下不可靠，会静默关联错误数据
+            print(f"[-] 标记文件为空，无法确定当前申请号，跳过此发文响应")
             return None
 
         except Exception as e:

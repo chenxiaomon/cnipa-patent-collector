@@ -52,6 +52,7 @@ from settings import (
     CNIPA_URL, SEARCH_LIST_FILE, CONFIG_FILE, FORCE_UPDATE_FLAG,
     PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE, MITM_TIMEOUT, MITM_POLL_INTERVAL,
     PATENT_CACHE_FILE, USE_MITM_PROXY, PATENTS_DB_FILE, DETECTION_LOG_JSONL_FILE,
+    DATA_DIR,
     AUTOMATION_CONFIG_LOAD_WAIT, AUTOMATION_STARTUP_COUNTDOWN,
     AUTOMATION_ANTI_CRAWL_BATCH_SIZE, AUTOMATION_STATS_PRINT_INTERVAL,
     AUTOMATION_ANTI_CRAWL_WAIT_MIN, AUTOMATION_ANTI_CRAWL_WAIT_MAX,
@@ -260,7 +261,8 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
     driver = None
     try:
         if update_list:
-            open(FORCE_UPDATE_FLAG, 'w').close()
+            with open(FORCE_UPDATE_FLAG, 'w'):
+                pass
             print(f"[*] 已写入强制更新信号: {FORCE_UPDATE_FLAG}")
 
         # 创建浏览器并登录
@@ -286,8 +288,14 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
         for i, app_no in enumerate(pending, 1):
             # 检测浏览器是否还活着
             if not is_browser_alive(driver):
+                remaining = pending[i - 1:]
                 print("\n⚠️  浏览器已关闭，停止采集")
-                print(f"\n已采集 {i-1} 条，还有 {len(pending) - i + 1} 条未采集")
+                print(f"已采集 {i-1} 条，还有 {len(remaining)} 条未采集")
+                if remaining:
+                    checkpoint = DATA_DIR / 'checkpoint_resume.txt'
+                    checkpoint.write_text('\n'.join(remaining) + '\n', encoding='utf-8')
+                    print(f"[*] 未完成列表已写入: {checkpoint}")
+                    print(f"    续跑命令: python main_automation.py --update-list {checkpoint}")
                 break
 
             print(f"\n[{i}/{len(pending)}]")
@@ -316,9 +324,12 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
     except KeyboardInterrupt:
         print("\n\n⚠️  用户中断")
     finally:
-        if update_list and os.path.exists(FORCE_UPDATE_FLAG):
-            os.remove(FORCE_UPDATE_FLAG)
-            print("[*] 已清除强制更新信号")
+        if update_list:
+            try:
+                os.remove(FORCE_UPDATE_FLAG)
+                print("[*] 已清除强制更新信号")
+            except FileNotFoundError:
+                pass
 
         # 安全关闭浏览器（处理 undetected_chromedriver 的清理问题）
         if driver:

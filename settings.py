@@ -154,6 +154,9 @@ FWXX_ANTI_CRAWL_BATCH_SIZE = int(os.getenv('FWXX_ANTI_CRAWL_BATCH_SIZE', '3'))
 FWXX_ANTI_CRAWL_WAIT_MIN   = float(os.getenv('FWXX_ANTI_CRAWL_WAIT_MIN', '2'))
 FWXX_ANTI_CRAWL_WAIT_MAX   = float(os.getenv('FWXX_ANTI_CRAWL_WAIT_MAX', '5'))
 
+# 非交互模式登录等待时间（Docker/无人值守时需设为 >0，推荐 75）
+CNIPA_LOGIN_WAIT_SECONDS = float(os.getenv('CNIPA_LOGIN_WAIT_SECONDS', '0'))
+
 # ============================================================================
 # 验证工具函数
 # ============================================================================
