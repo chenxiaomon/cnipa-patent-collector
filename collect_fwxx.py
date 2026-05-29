@@ -46,7 +46,10 @@ from datetime import datetime
 from pathlib import Path
 
 # 虚拟显示器必须在 pyautogui / Xlib 任何 import 之前启动
-if os.getenv('USE_VIRTUAL_DISPLAY', '').lower() in ('true', '1', 'yes') and sys.platform.startswith('linux'):
+# XVFB_EXTERNAL=true 表示 Xvfb 已由外部（docker-entrypoint.sh）管理，跳过重复启动
+if os.getenv('USE_VIRTUAL_DISPLAY', '').lower() in ('true', '1', 'yes') \
+        and sys.platform.startswith('linux') \
+        and os.getenv('XVFB_EXTERNAL', '').lower() not in ('true', '1', 'yes'):
     try:
         from pyvirtualdisplay import Display as _VD
         _vd_w = int(os.getenv('VIRTUAL_DISPLAY_WIDTH', '1920'))

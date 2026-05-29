@@ -4,9 +4,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai \
     PYTHONUNBUFFERED=1 \
     PYTHONIOENCODING=utf-8 \
+    DISPLAY=:99 \
     USE_VIRTUAL_DISPLAY=true \
     VIRTUAL_DISPLAY_WIDTH=1920 \
     VIRTUAL_DISPLAY_HEIGHT=1080 \
+    XVFB_EXTERNAL=true \
     USE_MITM_PROXY=true \
     MITM_HOST=127.0.0.1 \
     MITM_PORT=8083 \
@@ -47,9 +49,11 @@ COPY . .
 # 初始化数据目录结构（实际数据由卷挂载提供）
 RUN mkdir -p data/results data/raw_responses data/raw_searches
 
+# entrypoint：启动 Xvfb 后再启动 Dashboard
+RUN chmod +x docker-entrypoint.sh
+
 EXPOSE 8765
 
 VOLUME ["/app/data"]
 
-# Dashboard 默认监听 0.0.0.0，可从宿主机浏览器直接访问
-CMD ["python3", "web_dashboard.py"]
+ENTRYPOINT ["./docker-entrypoint.sh"]
