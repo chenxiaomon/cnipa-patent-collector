@@ -9,11 +9,4 @@ services:
       - ./data:/app/data
     env_file:
       - .env          # CNIPA_USERNAME / CNIPA_PASSWORD 从此文件读取
-    environment:
-      DISPLAY: ":99"
-      USE_VIRTUAL_DISPLAY: "true"
-      XVFB_EXTERNAL: "true"
-      USE_MITM_PROXY: "true"
-      PYAUTOGUI_FAILSAFE: "false"
     restart: unless-stopped
-    shm_size: 256m    # Chrome 在容器内需要更大的共享内存
