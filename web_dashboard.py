@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 import uuid
-from collections import Counter, deque
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
@@ -41,8 +41,8 @@ from settings import (
     MITM_PORT,
     PATENTS_DB_FILE,
     PATENTS_EXCEL_FILE,
-    RESULTS_DIR,
     SEARCH_LIST_FILE,
+    CNIPA_LOGIN_WAIT_SECONDS,
 )
 from db_manager import PatentsDB
 
@@ -52,7 +52,8 @@ _patents_db = PatentsDB(PATENTS_DB_FILE)
 APP_NAME = "CNIPA 采集控制台"
 SERVER_VERSION = "CNIPADashboard/0.2"
 MAX_LOG_LINES = 1600
-DEFAULT_LOGIN_WAIT_SECONDS = "75"
+# 传给采集子进程的登录等待时间，与 settings.CNIPA_LOGIN_WAIT_SECONDS 保持一致
+DEFAULT_LOGIN_WAIT_SECONDS = str(int(CNIPA_LOGIN_WAIT_SECONDS))
 MAX_BODY_BYTES = 1 * 1024 * 1024   # 1 MB：防止超大请求体撑爆内存
 MAX_REQUEST_APP_NOS = 500           # 单次提交申请号上限
 MAX_NOTE_LEN = 500                  # 备注字段长度上限
@@ -64,7 +65,6 @@ DOWNLOADS = {
     "jsonl": DETECTION_LOG_JSONL_FILE,
     "json": DETECTION_LOG_FILE,
     "dynamic": DATA_DIR / "update_list_dynamic.txt",
-    "dynamic_7": DATA_DIR / "update_list_dynamic_7days.txt",
     "retry": DATA_DIR / "retry_dynamic.txt",
 }
 
@@ -486,6 +486,8 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         return {"action": action, "title": "Phase 0 浏览器", "command": [py, "-u", "start_browser_for_phase0.py"]}
     if action == "import_cache":
         return {"action": action, "title": "导入 MITM 缓存", "command": [py, "-u", "import_from_cache.py"]}
+    if action == "import_public_search":
+        return {"action": action, "title": "导入公开查询结果", "command": [py, "-u", "import_public_search.py"]}
     if action == "public_browser":
         return {"action": action, "title": "公开查询浏览器", "command": [py, "-u", "launch_browser_with_proxy.py"]}
     if action == "public_auto_paginate":
@@ -508,16 +510,18 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         return {"action": action, "title": "验证采集结果", "command": [py, "-u", "validate_results.py"]}
     if action == "analyze_recent":
         return {"action": action, "title": "分析采集状态", "command": [py, "-u", "analyze_collection_status.py"]}
-    if action == "merge_logs":
-        return {"action": action, "title": "合并检测日志", "command": [py, "-u", "merge_detection_logs.py"]}
-    if action == "merge_fwxx":
-        return {"action": action, "title": "合并发文缓存", "command": [py, "-u", "merge_fwxx_cache.py"]}
+    if action == "db_rebuild":
+        # 从 detection_log.jsonl 重建 patents.db（DB 损坏或迁移场景）
+        return {"action": action, "title": "从 JSONL 重建 DB", "command": [py, "-u", "sync.py", "rebuild"]}
     if action == "sync_status":
         return {"action": action, "title": "查看同步状态", "command": [py, "-u", "sync.py", "status"]}
     if action == "sync_pull":
         return {"action": action, "title": "从远端拉取数据", "command": [py, "-u", "sync.py", "pull"]}
     if action == "sync_push":
         return {"action": action, "title": "推送数据到远端", "command": [py, "-u", "sync.py", "push"]}
+    if action == "sync_from_jsonl":
+        # 从本地 detection_log.jsonl 导入到 patents.db（git pull 后同步另一台机器的数据）
+        return {"action": action, "title": "从 JSONL 备份导入", "command": [py, "-u", "sync_from_jsonl.py"]}
     if action == "upgrade_code":
         return {"action": action, "title": "更新系统代码", "command": [py, "-u", "upgrade.py"]}
 
@@ -772,7 +776,6 @@ HTML = r"""<!doctype html>
               <span>更新清单</span>
               <select id="updateFile">
                 <option value="data/update_list_dynamic.txt">动态清单</option>
-                <option value="data/update_list_dynamic_7days.txt">7 天动态清单</option>
                 <option value="data/retry_dynamic.txt">动态重试清单</option>
                 <option value="data/retry_failed.txt">失败重试清单</option>
               </select>
@@ -906,14 +909,24 @@ HTML = r"""<!doctype html>
               <label class="field"><span>最大页数</span><input id="maxPages" type="number" min="1" max="10000" value="50"></label>
               <button class="btn primary" id="autoPaginate">自动翻页</button>
             </div>
+            <div style="margin-top:10px;padding:10px;background:var(--bg2);border-radius:6px;font-size:13px">
+              启动后在浏览器中设置查询条件并点击查询，出现结果后点击下方按钮：
+              <div style="margin-top:8px">
+                <button class="btn secondary" id="signalQueryReady">✅ 我已完成查询设置</button>
+              </div>
+            </div>
           </div>
         </article>
         <article class="panel step-panel">
           <div class="step-num">3</div>
           <div style="flex:1">
-            <h3 style="margin-bottom:10px">导出结果</h3>
+            <h3 style="margin-bottom:10px">导出 &amp; 入库</h3>
             <div class="button-row" style="margin-bottom:12px">
               <button class="btn secondary" data-action="public_export">导出公开结果</button>
+              <button class="btn primary"   data-action="import_public_search">导入系统库</button>
+            </div>
+            <div style="font-size:12px;color:var(--text2);margin-bottom:10px">
+              「导入系统库」将采集数据写入 patents.db，可在概览和数据分析中查看
             </div>
             <div class="downloads">
               <a href="/download/excel">Excel ↓</a>
@@ -971,14 +984,14 @@ HTML = r"""<!doctype html>
           </div>
         </article>
         <article class="panel">
-          <div class="panel-head"><h2>日志维护</h2></div>
+          <div class="panel-head"><h2>数据库维护</h2></div>
           <div class="info-grid" style="margin-bottom:14px">
             <div class="info-row"><span>JSONL 日志</span><span id="jsonlSize">—</span></div>
           </div>
           <div class="button-row">
-            <button class="btn secondary" data-action="merge_logs">合并检测日志</button>
-            <button class="btn secondary" data-action="merge_fwxx">合并发文缓存</button>
+            <button class="btn secondary" data-action="db_rebuild">从 JSONL 重建 DB</button>
           </div>
+          <div class="hint" style="margin-top:6px">patents.db 损坏或迁移时，从 detection_log.jsonl 重建</div>
         </article>
       </section>
       <article class="panel" style="margin-bottom:14px">
@@ -987,6 +1000,10 @@ HTML = r"""<!doctype html>
           <button class="btn secondary" data-action="sync_status">查看同步状态</button>
           <button class="btn secondary" data-action="sync_pull">从远端拉取</button>
           <button class="btn secondary" data-action="sync_push">推送到远端</button>
+        </div>
+        <div class="hint" style="margin-top:8px">git pull 后，另一台机器的采集数据已随 JSONL 备份一并拉下</div>
+        <div class="button-row" style="margin-top:8px">
+          <button class="btn primary" data-action="sync_from_jsonl">📥 从 JSONL 备份导入到本地库</button>
         </div>
       </article>
       <article class="panel operator-only">
@@ -2028,6 +2045,11 @@ function bindEvents() {
   $('#autoPaginate').addEventListener('click', () =>
     startJob('public_auto_paginate', { delay: $('#pageDelay').value, max_pages: $('#maxPages').value }));
 
+  $('#signalQueryReady').addEventListener('click', async () => {
+    await api('/api/signal-query-ready', { method: 'POST', body: '{}' });
+    showToast('已通知自动翻页脚本开始翻页');
+  });
+
   $('#fwxxTestBtn').addEventListener('click', () =>
     startJob('collect_fwxx', { count: 5 }));
 
@@ -2347,6 +2369,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "backup": str(backup) if backup else None})
             elif path == "/api/login-ready":
                 flag = DATA_DIR / "login_ready.flag"
+                flag.parent.mkdir(parents=True, exist_ok=True)
+                flag.touch()
+                self.send_json({"ok": True})
+            elif path == "/api/signal-query-ready":
+                # 向 auto_paginate.py 发出"查询已就绪"信号，与 login-ready 机制对称
+                flag = DATA_DIR / "public_query_ready.flag"
                 flag.parent.mkdir(parents=True, exist_ok=True)
                 flag.touch()
                 self.send_json({"ok": True})

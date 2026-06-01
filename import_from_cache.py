@@ -214,8 +214,8 @@ def import_from_cache() -> bool:
     print(f"✗ 失败: {failed} 条")
     print(f"📈 总处理: {imported + skipped + failed} 条")
 
-    # 导入成功后清空缓存
-    if imported > 0:
+    # 只要处理过（无论新增还是跳过）就清空缓存，避免旧数据下次重复扫描
+    if imported > 0 or skipped > 0:
         print("\n[*] 清理缓存...")
         clear_cache()
 
@@ -232,7 +232,7 @@ if __name__ == '__main__':
     success = import_from_cache()
 
     if success:
-        print("\n✅ 导入完成！检查 data/results/detection_log.json")
+        print("\n✅ 导入完成！数据已写入 patents.db")
         sys.exit(0)
     else:
         print("\n[!] 导入失败或无数据")

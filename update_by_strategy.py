@@ -44,19 +44,25 @@ def load_detection_log() -> Dict:
     return {'records': db.get_all_records()}
 
 def parse_timestamp(timestamp_str: str) -> Optional[datetime]:
-    """解析 ISO 格式的时间戳"""
+    """
+    解析 ISO 8601 时间戳，统一返回 UTC aware datetime。
+
+    Python < 3.11 的 fromisoformat 不识别末尾 'Z'，手动替换为 '+00:00'。
+    无时区信息的时间戳一律视作 UTC（DB 写入端约定）。
+    """
     try:
         if not timestamp_str:
             return None
-        timestamp_str = str(timestamp_str).strip()
-        if timestamp_str.endswith('Z'):
-            timestamp_str = timestamp_str[:-1] + '+00:00'
-        parsed = datetime.fromisoformat(timestamp_str)
+        ts = str(timestamp_str).strip()
+        # 兼容 Python 3.9/3.10：'Z' → '+00:00'
+        if ts.upper().endswith('Z'):
+            ts = ts[:-1] + '+00:00'
+        parsed = datetime.fromisoformat(ts)
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed.astimezone(timezone.utc)
     except Exception as e:
-        print(f"❌ 无法解析时间戳 {timestamp_str}: {e}")
+        print(f"❌ 无法解析时间戳 {timestamp_str!r}: {e}")
         return None
 
 def calculate_needs_update(last_update_time: datetime, frequency_days: int) -> tuple:
@@ -110,8 +116,11 @@ def analyze_updates(show_all: bool = False):
     """
     分析所有申请号，计算哪些需要更新。
 
+    一次查询拉取 (application_no, anjianywzt, timestamp) 快照，
+    在 Python 侧按 focus_strategy 分组，避免 N 个状态 = N 次全表扫描。
+
     Args:
-        show_all: 如果为 True，显示所有申请号的状态；否则只显示需要更新的
+        show_all: 保留参数，供调用方兼容（当前实现未过滤，始终返回完整结果）
     """
     from db_manager import PatentsDB
     from settings import PATENTS_DB_FILE
@@ -120,7 +129,14 @@ def analyze_updates(show_all: bool = False):
     status_breakdown = focus_strategy.get('status_breakdown', {})
     db = PatentsDB(PATENTS_DB_FILE)
 
+    # 构建 status → freq_days 映射，供后续 O(1) 查找
+    status_to_freq: dict = {
+        status: info['frequency_days']
+        for status, info in status_breakdown.items()
+    }
+
     results = {}
+    # 初始化所有频率分组（确保输出键顺序与策略一致）
     for status, info in status_breakdown.items():
         freq_days = info['frequency_days']
         if freq_days not in results:
@@ -132,11 +148,32 @@ def analyze_updates(show_all: bool = False):
             }
         results[freq_days]['status_names'].append(status)
 
-        needs_records, pending_records = db.query_update_candidates(status, freq_days)
-        for r in needs_records:
-            results[freq_days]['needs_update'].append(_build_update_info(r, freq_days, True))
-        for r in pending_records:
-            results[freq_days]['no_update_needed'].append(_build_update_info(r, freq_days, False))
+    # 一次查询，Python 侧分组
+    now = utc_now()
+    for snap in db.get_status_timestamp_snapshot():
+        status = snap.get('anjianywzt')
+        freq_days = status_to_freq.get(status)
+        if freq_days is None:
+            # 不在 focus_strategy 中的状态（如已失效），跳过
+            continue
+
+        last_update_time = parse_timestamp(snap.get('timestamp'))
+        needs_update, days_until, next_update_time = calculate_needs_update(
+            last_update_time, freq_days
+        )
+        days_since = (now - last_update_time).days if last_update_time else None
+        update_info = {
+            'app_no': snap['application_no'],
+            'status': status,
+            'last_update': snap.get('timestamp'),
+            'last_update_time': last_update_time,
+            'next_update_time': next_update_time,
+            'days_since': days_since,
+            'days_until': days_until,
+            'needs_update': needs_update,
+        }
+        bucket = 'needs_update' if needs_update else 'no_update_needed'
+        results[freq_days][bucket].append(update_info)
 
     return results
 
@@ -190,11 +227,14 @@ def sort_by_update_time(items: List[Dict], ascending: bool = True) -> List[Dict]
 
 
 def ensure_previous_status(detection_log: Dict) -> Dict:
-    """确保所有记录都有 previous_status 字段。初始化为当前状态的副本。"""
+    """确保所有记录都有 previous_status 字段。
+    初始化为 None（而非当前状态），表示"从未做过基准快照"，
+    这样首次运行 prepare→采集→diff 时不会产生误报的"无变化"结论。
+    """
     records = detection_log.get('records', [])
     for record in records:
         if 'previous_status' not in record:
-            record['previous_status'] = record.get('anjianywzt')
+            record['previous_status'] = None
     return detection_log
 
 
@@ -276,7 +316,9 @@ def show_status_changes():
         'INVALID': [],
         'REEXAMINATION': [],
         'OTHER': [],
-        'NO_CHANGE': []
+        'NO_CHANGE': [],
+        # previous_status=None 表示从未执行过 prepare，无法做对比
+        'NO_BASELINE': [],
     }
 
     for record in records:
@@ -284,15 +326,19 @@ def show_status_changes():
         curr_status = record.get('anjianywzt')
         prev_status = record.get('previous_status')
 
-        change_type = get_status_change_type(prev_status, curr_status)
-
         change_info = {
             'app_no': app_no,
-            'prev_status': prev_status or 'N/A',
+            'prev_status': prev_status if prev_status is not None else '（无基准）',
             'curr_status': curr_status or 'N/A',
             'timestamp': record.get('timestamp')
         }
 
+        # previous_status=None 意味着此条记录导入后尚未执行 prepare，不计入变化统计
+        if prev_status is None:
+            changes_by_type['NO_BASELINE'].append(change_info)
+            continue
+
+        change_type = get_status_change_type(prev_status, curr_status)
         if change_type:
             changes_by_type[change_type].append(change_info)
         else:
@@ -305,7 +351,8 @@ def show_status_changes():
         'INVALID': ('❌ 失效/撤回', 'INVALID'),
         'REEXAMINATION': ('🔄 进入复审程序', 'REEXAMINATION'),
         'OTHER': ('⚠️  其他状态变化', 'OTHER'),
-        'NO_CHANGE': ('➡️  状态无变化', 'NO_CHANGE')
+        'NO_CHANGE': ('➡️  状态无变化', 'NO_CHANGE'),
+        'NO_BASELINE': ('🆕 尚无基准快照（需先运行 prepare）', 'NO_BASELINE'),
     }
 
     total_changed = 0

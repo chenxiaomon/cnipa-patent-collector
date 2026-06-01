@@ -34,8 +34,8 @@ class PublicSearchMITMAddon:
     def response(self, flow: http.HTTPFlow) -> None:
         """拦截响应的钩子函数"""
 
-        # 检测 publicSearch API
-        if 'publicSearch' not in flow.request.pretty_url:
+        # 只处理 CNIPA 域名下的请求（同时覆盖 cpquery 和 cponline 两个子域）
+        if 'cponline.cnipa.gov.cn' not in flow.request.pretty_url:
             return
 
         # 跳过非 200 响应
@@ -47,7 +47,7 @@ class PublicSearchMITMAddon:
         if 'application/json' not in content_type:
             return
 
-        print(f"\n[+] 拦截到公开搜索 API: {flow.request.pretty_url[:120]}")
+        print(f"\n[+] 拦截到 API: {flow.request.pretty_url[:120]}")
 
         try:
             # 解析响应 JSON

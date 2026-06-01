@@ -10,7 +10,7 @@ CNIPA 专利数据 MITM 拦截脚本
 import json
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from mitmproxy import http
 
 # 导入日志模块
@@ -251,6 +251,19 @@ class PatentMITMScraper:
             marker = read_json_cache(str(MARKER_FILE))
             app_no = marker.get('application_no')
             if app_no:
+                # TTL 检查：标记必须在 5 秒内写入，超时视为上一轮遗留的陈旧标记
+                written_at_str = marker.get('written_at')
+                if written_at_str:
+                    try:
+                        written_at = datetime.fromisoformat(
+                            written_at_str.replace('Z', '+00:00')
+                        )
+                        age = datetime.now(timezone.utc) - written_at
+                        if age > timedelta(seconds=5):
+                            print(f"[-] 标记文件已过期（{age.total_seconds():.1f}s 前写入），跳过此发文响应")
+                            return None
+                    except Exception:
+                        pass  # 解析失败时不拒绝，降级为无 TTL 行为
                 print(f"[✓] 从标记文件获取申请号: {app_no}")
                 return app_no
 

@@ -17,7 +17,7 @@ import random
 import socket
 
 import pyautogui
-from settings import MITM_HOST, MITM_PORT
+from settings import MITM_HOST, MITM_PORT, USE_MITM_PROXY, USE_VIRTUAL_DISPLAY
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -175,7 +175,7 @@ def create_driver_with_retry(max_retries: int = 3, use_mitm: bool = None) -> uc.
         use_mitm: 是否启用 MITM 代理；None 时读取 USE_MITM_PROXY 环境变量
     """
     if use_mitm is None:
-        use_mitm = os.getenv('USE_MITM_PROXY', '').lower() in ('true', '1', 'yes')
+        use_mitm = USE_MITM_PROXY
 
     # 自动检测本地 ChromeDriver
     local_driver_path = None
@@ -195,7 +195,7 @@ def create_driver_with_retry(max_retries: int = 3, use_mitm: bool = None) -> uc.
             options.add_argument("--disable-dev-shm-usage")
             options.add_argument("--disable-gpu")
 
-            if os.getenv('USE_VIRTUAL_DISPLAY', '').lower() in ('true', '1', 'yes'):
+            if USE_VIRTUAL_DISPLAY:
                 options.add_argument("--disable-software-rasterizer")
                 options.add_argument("--no-first-run")
                 options.add_argument("--start-maximized")

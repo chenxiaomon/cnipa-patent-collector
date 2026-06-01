@@ -10,7 +10,7 @@ JSON 缓存工具函数（跨脚本复用）
 import json
 import os
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Tuple
 
 
 def normalize_app_no(app_no: str) -> Optional[str]:
@@ -86,3 +86,39 @@ def poll_cache_for_key(
                 return value
         time.sleep(interval)
     return None
+
+
+def poll_cache_with_retry(
+    cache_file: str,
+    key: str,
+    base_wait: float = 8.0,
+    interval: float = 0.5,
+    max_attempts: int = 3,
+    validate: Callable[[Any], bool] = None,
+) -> Tuple[Optional[Any], int]:
+    """
+    带指数退避重试的缓存轮询。
+
+    每次重试超时窗口翻倍（base_wait → base_wait*2 → base_wait*4），
+    用于抵御短暂网络抖动导致的误报失败。
+
+    Args:
+        cache_file:    缓存文件路径
+        key:           要查找的键（申请号）
+        base_wait:     第一次尝试的最长等待秒数
+        interval:      轮询间隔秒数
+        max_attempts:  最大尝试次数（含首次）
+        validate:      可选校验函数
+
+    Returns:
+        (数据 或 None, 实际尝试次数)
+    """
+    for attempt in range(1, max_attempts + 1):
+        wait = base_wait * (2 ** (attempt - 1))
+        result = poll_cache_for_key(cache_file, key, max_wait=wait,
+                                    interval=interval, validate=validate)
+        if result is not None:
+            return result, attempt
+        if attempt < max_attempts:
+            print(f"  ⚠ MITM 轮询第 {attempt} 次超时（等待 {wait:.0f}s），重试...")
+    return None, max_attempts

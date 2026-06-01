@@ -42,7 +42,7 @@ import os
 import time
 import random
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # 虚拟显示器必须在 pyautogui / Xlib 任何 import 之前启动
@@ -335,9 +335,9 @@ def collect_one_fwxx(
         # 步骤 3：写入申请号标记文件（解决 MITM 关联问题）
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-        # ⚠️ 在点击"发文信息"之前标记申请号
-        with open(MARKER_FILE, 'w', encoding='utf-8') as f:
-            json.dump({'application_no': application_no}, f)
+        # ⚠️ 在点击"发文信息"之前标记申请号（带时间戳，MITM 端通过 TTL 丢弃陈旧标记）
+        written_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+        write_json_cache(MARKER_FILE, {'application_no': application_no, 'written_at': written_at})
         print(f"    [*] 标记申请号: {application_no}")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -635,7 +635,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # 检查环境变量
-    if not os.getenv('USE_MITM_PROXY', '').lower() in ('true', '1', 'yes'):
+    if not USE_MITM_PROXY:
         print("\n警告: MITM 代理未启用")
         print("提示: 如果采集失败，可以启动代理后重试")
         print("  1. 启动代理: python start_mitm_proxy.py")

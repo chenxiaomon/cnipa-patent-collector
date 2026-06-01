@@ -17,7 +17,7 @@ if sys.platform == "win32":
 # 确保我们在正确的目录
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-from settings import MITM_HOST, MITM_PORT
+from settings import MITM_HOST, PUBLIC_MITM_PORT
 
 print("=" * 70)
 print("🔐 MITM 代理服务器启动 - 公开搜索模式")
@@ -32,13 +32,13 @@ try:
     os.makedirs('data/raw_searches', exist_ok=True)
 
     print("[+] 启动 mitmproxy 公开搜索模式...")
-    print(f"[*] 监听地址: {MITM_HOST}:{MITM_PORT}")
+    print(f"[*] 监听地址: {MITM_HOST}:{PUBLIC_MITM_PORT}")
     print("[*] 脚本文件: mitm_addon_public_search.py")
     print("[*] 输出目录: data/raw_responses/")
     print()
     print("📝 配置浏览器代理:")
     print(f"  - 代理地址: {MITM_HOST}")
-    print(f"  - 端口: {MITM_PORT}")
+    print(f"  - 端口: {PUBLIC_MITM_PORT}")
     print("  - 协议: HTTP 和 HTTPS")
     print()
     print("⚠️  HTTPS 需要信任 mitmproxy 的 CA 证书:")
@@ -53,11 +53,11 @@ try:
     print("按 Ctrl+C 停止服务器")
     print()
 
-    # 启动 mitmdump
+    # 启动 mitmdump（使用独立端口，避免与主采集代理 MITM_PORT 冲突）
     sys.argv = [
         "mitmdump",
         "-s", "mitm_addon_public_search.py",
-        "-p", str(MITM_PORT),
+        "-p", str(PUBLIC_MITM_PORT),
         "--listen-host", MITM_HOST,
         "--mode", "regular",
         "--ssl-insecure",  # 忽略上游证书错误

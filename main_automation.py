@@ -45,7 +45,7 @@ from detection_logger import DetectionLogger, DetectionRecord
 from browser_utils import (
     fill_vue_input, is_browser_alive, create_driver_with_retry,
 )
-from cache_utils import normalize_app_no, poll_cache_for_key
+from cache_utils import normalize_app_no, poll_cache_with_retry
 from coordinate_service import CoordinateService
 from browser_service import BrowserService, stop_virtual_display
 from input_service import InputService
@@ -144,23 +144,25 @@ def search_application(
         # 输入申请号并点击查询
         InputService.type_in_search(input_x, input_y, button_x, button_y, application_no)
 
-        # 等待并轮询缓存，最多 MITM_TIMEOUT 秒
+        # 等待并轮询缓存，首次超时后最多重试两次（指数退避：8s → 16s → 32s）
         # ⭐ 核心原则：宁可不采集，也不要采集错误的数据
         normalized_app_no = normalize_app_no(application_no)
-        patent_data = poll_cache_for_key(
+        patent_data, attempts = poll_cache_with_retry(
             str(PATENT_CACHE_FILE),
             normalized_app_no,
-            max_wait=MITM_TIMEOUT,
+            base_wait=MITM_TIMEOUT,
             interval=MITM_POLL_INTERVAL,
+            max_attempts=3,
             validate=_is_patent_data_complete,
         )
 
         if patent_data:
             # ✅ MITM 代理运行，成功拦截了 API 数据
+            retry_note = f'（第 {attempts} 次尝试）' if attempts > 1 else ''
             record = DetectionRecord(
                 application_no=normalized_app_no,
                 status_code=200,
-                response_summary='Patent data from MITM proxy',
+                response_summary=f'Patent data from MITM proxy{retry_note}',
                 detected=False,
                 # 14 个专利字段
                 famingzlsqgbg=patent_data.get('famingzlsqgbg'),
@@ -177,17 +179,17 @@ def search_application(
                 anjianbh=patent_data.get('anjianbh'),
                 anjianywzt=patent_data.get('anjianywzt'),
             )
-            print(f"  ✓ 获得专利数据: {patent_data.get('zhuanlimc', 'N/A')}")
+            print(f"  ✓ 获得专利数据: {patent_data.get('zhuanlimc', 'N/A')}{retry_note}")
         else:
-            # ❌ 采集失败：未能在 8 秒内获得完整的专利字段
+            # ❌ 采集失败：3 次重试均超时，网络问题或 MITM 未启动
             record = DetectionRecord(
                 application_no=normalized_app_no,
                 status_code=0,
-                response_summary='Failed to collect patent data (MITM timeout or incomplete data)',
+                response_summary=f'Failed after {attempts} attempts (MITM timeout or incomplete data)',
                 detected=False,
                 # 不填充专利字段，保持空白
             )
-            print(f"  ✗ 未采集数据（网络超时或 MITM 未启动）")
+            print(f"  ✗ 未采集数据（{attempts} 次重试均超时，网络异常或 MITM 未启动）")
 
         record.response_time_ms = round((time.time() - start_time) * 1000, 2)
         print(f"  ✓ 状态: {record.status_code}, 耗时: {record.response_time_ms}ms")

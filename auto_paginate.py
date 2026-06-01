@@ -12,11 +12,17 @@ import os
 import sys
 import time
 import undetected_chromedriver as uc
-from settings import MITM_HOST, MITM_PORT
+from pathlib import Path
+from settings import MITM_HOST, PUBLIC_MITM_PORT, DATA_DIR, CNIPA_PUBLIC_SEARCH_URL
+from browser_utils import _get_chrome_major_version
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
+
+# Dashboard 通过写入此文件向本进程发出"查询已就绪"信号，
+# 与 login_ready.flag 的机制完全对称。
+QUERY_READY_FLAG: Path = DATA_DIR / "public_query_ready.flag"
 
 
 def create_driver():
@@ -30,14 +36,18 @@ def create_driver():
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
 
-        # 配置 MITM 代理
-        print(f"[*] 配置代理: {MITM_HOST}:{MITM_PORT}")
-        options.add_argument(f"--proxy-server=http://{MITM_HOST}:{MITM_PORT}")
+        # 配置公开查询 MITM 代理（PUBLIC_MITM_PORT，与主采集代理 MITM_PORT 独立）
+        print(f"[*] 配置代理: {MITM_HOST}:{PUBLIC_MITM_PORT}")
+        options.add_argument(f"--proxy-server=http://{MITM_HOST}:{PUBLIC_MITM_PORT}")
         options.add_argument("--ignore-certificate-errors")
 
+        chrome_ver = _get_chrome_major_version()
+        if chrome_ver:
+            print(f"[*] 检测到 Chrome {chrome_ver}，固定匹配 ChromeDriver 版本")
         driver = uc.Chrome(
             headless=False,
             options=options,
+            version_main=chrome_ver,  # 固定匹配本机 Chrome 版本
         )
 
         print("[✓] 浏览器创建成功!")
@@ -48,22 +58,44 @@ def create_driver():
         sys.exit(1)
 
 
-def wait_for_user_input():
-    """等待用户手动输入查询条件并点击查询"""
+def wait_for_query_ready(timeout: int = 300) -> None:
+    """等待"查询已就绪"信号，然后开始自动翻页。
+
+    交互模式（命令行直接运行）：提示用户按 Enter，Enter 后写入标记文件。
+    非交互模式（Dashboard subprocess）：stdin 已关闭，改为轮询标记文件；
+        Dashboard 前端的"我已完成查询设置"按钮负责调用
+        /api/signal-query-ready 写入该文件。
+
+    timeout 超时后抛出 TimeoutError，由调用方决定是否退出。
+    """
     print("\n" + "=" * 60)
     print("⏸️  用户交互阶段")
     print("=" * 60)
     print()
     print("请在浏览器中执行以下操作:")
     print("1. 输入查询条件（申请人、技术分类等）")
-    print("2. 点击'查询'按钮")
-    print()
-    print("完成后，在此终端按 Enter 键开始自动翻页...")
+    print("2. 点击'查询'按钮，确认结果已出现")
     print()
 
-    input()  # 阻塞等待用户按 Enter
+    # 清理上次可能残留的标记文件，避免立即误触发
+    QUERY_READY_FLAG.unlink(missing_ok=True)
 
-    print("\n[*] 开始自动翻页...")
+    if sys.stdin.isatty():
+        # 命令行交互模式：用户按 Enter 后写标记文件
+        input("完成后，在此终端按 Enter 键开始自动翻页...")
+        QUERY_READY_FLAG.touch()
+    else:
+        # Dashboard 非交互模式：轮询标记文件
+        print(f"[*] 等待 Dashboard 发出就绪信号（最多 {timeout} 秒）...")
+        print("[*] 请在 Dashboard 点击「我已完成查询设置」按钮")
+        deadline = time.time() + timeout
+        while not QUERY_READY_FLAG.exists():
+            if time.time() > deadline:
+                raise TimeoutError(f"等待查询就绪超时（{timeout}s），请重新启动")
+            time.sleep(1)
+
+    QUERY_READY_FLAG.unlink(missing_ok=True)
+    print("\n[*] 收到就绪信号，开始自动翻页...")
 
 
 def is_next_page_available(driver) -> bool:
@@ -180,15 +212,18 @@ def main():
     try:
         # 打开 CNIPA 公开搜索页面
         print("\n[*] 打开 CNIPA 公开搜索页面...")
-        cnipa_url = "https://cponline.cnipa.gov.cn/publicSearch"
-        driver.get(cnipa_url)
+        driver.get(CNIPA_PUBLIC_SEARCH_URL)
 
         # 等待页面加载
         time.sleep(3)
         print("[✓] 页面加载完成")
 
-        # 等待用户交互
-        wait_for_user_input()
+        # 等待用户交互（命令行按 Enter / Dashboard 点按钮）
+        try:
+            wait_for_query_ready(timeout=300)
+        except TimeoutError as exc:
+            print(f"\n[❌] {exc}")
+            return
 
         # 自动翻页循环
         paginate_loop(driver, delay, max_pages)

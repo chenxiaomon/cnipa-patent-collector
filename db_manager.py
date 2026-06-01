@@ -217,6 +217,18 @@ class PatentsDB:
             ).fetchall()
         return [self._decode(r) for r in needs_rows], [self._decode(r) for r in pending_rows]
 
+    def get_status_timestamp_snapshot(self) -> list[dict]:
+        """
+        轻量快照：只返回每条记录的 (application_no, anjianywzt, timestamp)。
+        供 update_by_strategy.analyze_updates 一次拉完所有记录后在 Python 侧分组，
+        避免按每个状态分别发起全表扫描（N 个状态 = N 次查询的问题）。
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT application_no, anjianywzt, timestamp FROM patents ORDER BY timestamp ASC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_record(self, app_no: str) -> dict | None:
         with self._connect() as conn:
             row = conn.execute(

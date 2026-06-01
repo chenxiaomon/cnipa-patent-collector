@@ -86,6 +86,8 @@ FWXX_STANDALONE_RESULTS_FILE = RESULTS_DIR / 'fwxx_standalone_results.json'
 
 MITM_HOST = os.getenv('MITM_HOST', '127.0.0.1')
 MITM_PORT = int(os.getenv('MITM_PORT', '8083'))
+# 公开查询专用 MITM 代理端口（start_mitm_public_search.py 监听此端口）
+PUBLIC_MITM_PORT = int(os.getenv('PUBLIC_MITM_PORT', '8082'))
 
 # MITM 轮询超时（秒）：等待 MITM 代理返回数据的最长时间
 MITM_TIMEOUT = float(os.getenv('MITM_TIMEOUT', '8'))
@@ -118,6 +120,7 @@ VIRTUAL_DISPLAY_HEIGHT = int(os.getenv('VIRTUAL_DISPLAY_HEIGHT', '1080'))
 
 CNIPA_URL = 'https://cpquery.cponline.cnipa.gov.cn/'
 CNIPA_QUERY_API = 'https://cpquery.cponline.cnipa.gov.cn/txtSearch'
+CNIPA_PUBLIC_SEARCH_URL = 'https://cpquery.cponline.cnipa.gov.cn/chinesepatent/index'
 
 # ============================================================================
 # 业务规则
@@ -154,8 +157,9 @@ FWXX_ANTI_CRAWL_BATCH_SIZE = int(os.getenv('FWXX_ANTI_CRAWL_BATCH_SIZE', '3'))
 FWXX_ANTI_CRAWL_WAIT_MIN   = float(os.getenv('FWXX_ANTI_CRAWL_WAIT_MIN', '2'))
 FWXX_ANTI_CRAWL_WAIT_MAX   = float(os.getenv('FWXX_ANTI_CRAWL_WAIT_MAX', '5'))
 
-# 非交互模式登录等待时间（Docker/无人值守时需设为 >0，推荐 75）
-CNIPA_LOGIN_WAIT_SECONDS = float(os.getenv('CNIPA_LOGIN_WAIT_SECONDS', '0'))
+# 非交互模式登录等待时间（秒）：Dashboard/Docker 场景下等待用户完成验证码的上限。
+# 默认 75 秒与 web_dashboard.py 传子进程的值对齐；命令行交互模式不受此限制（stdin.isatty）。
+CNIPA_LOGIN_WAIT_SECONDS = float(os.getenv('CNIPA_LOGIN_WAIT_SECONDS', '75'))
 
 # ============================================================================
 # 验证工具函数
