@@ -11,6 +11,7 @@
   python sync.py rebuild  # 从现有 JSONL 重建 DB（DB 损坏/迁移/恢复用）
 """
 import shlex
+import shutil
 
 import json
 import os
@@ -24,9 +25,38 @@ from db_manager import PatentsDB
 LOG_FILE = str(DETECTION_LOG_JSONL_FILE)
 
 
+def _find_git() -> str:
+    """返回 git 可执行文件路径；找不到时打印提示并退出。"""
+    found = shutil.which('git')
+    if found:
+        return found
+
+    # Windows 常见安装位置（git 未加入 PATH 时兜底）
+    if sys.platform == 'win32':
+        candidates = [
+            r'C:\Program Files\Git\cmd\git.exe',
+            r'C:\Program Files (x86)\Git\cmd\git.exe',
+            r'D:\Program Files\Git\cmd\git.exe',
+            os.path.join(os.environ.get('LOCALAPPDATA', ''), r'Programs\Git\cmd\git.exe'),
+            os.path.join(os.environ.get('PROGRAMFILES', ''), r'Git\cmd\git.exe'),
+        ]
+        for path in candidates:
+            if os.path.isfile(path):
+                return path
+
+    print("[✗] 找不到 git，请安装 Git 或将其加入系统 PATH")
+    print("    下载地址: https://git-scm.com/download/win")
+    sys.exit(1)
+
+
+_GIT = _find_git()
+
+
 def run(cmd: str, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(shlex.split(cmd), text=True,
-                          capture_output=True, check=check)
+    parts = shlex.split(cmd)
+    if parts and parts[0] == 'git':
+        parts[0] = _GIT
+    return subprocess.run(parts, text=True, capture_output=True, check=check)
 
 
 def record_count() -> int:

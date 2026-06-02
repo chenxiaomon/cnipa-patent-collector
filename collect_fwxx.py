@@ -586,6 +586,12 @@ def run_fwxx_collection(args) -> None:
         if logger.export_to_excel():
             print("[✓] Excel 导出成功!")
 
+        # 刷新 JSONL 备份（含本次写入的 fwxx 数据），保证 sync push 时内容完整
+        from settings import PATENTS_DB_FILE, DETECTION_LOG_JSONL_FILE
+        from db_manager import PatentsDB
+        exported = PatentsDB(PATENTS_DB_FILE).export_to_jsonl(DETECTION_LOG_JSONL_FILE)
+        print(f"[✓] JSONL 备份已刷新：{exported} 条（含发文信息）")
+
     except Exception as e:
         print(f"\n[!] 采集过程出错: {e}")
         import traceback
