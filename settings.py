@@ -42,6 +42,7 @@ for directory in [DATA_DIR, RESULTS_DIR, RAW_RESPONSES_DIR, RAW_SEARCHES_DIR]:
 
 SEARCH_LIST_FILE = DATA_DIR / 'search_list.txt'
 FWXX_LIST_FILE = DATA_DIR / 'fwxx_list.txt'
+RETRY_FAILED_FILE = DATA_DIR / 'retry_failed.txt'
 
 # ============================================================================
 # 配置文件（鼠标坐标等）

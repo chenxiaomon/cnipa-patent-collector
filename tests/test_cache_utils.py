@@ -7,7 +7,7 @@
 """
 
 import unittest
-from cache_utils import normalize_app_no
+from cache_utils import normalize_app_no, parse_app_no_list
 
 
 class TestNormalizeAppNo(unittest.TestCase):
@@ -104,13 +104,33 @@ class TestEdgeCases(unittest.TestCase):
     def test_only_spaces(self):
         """只有空格（保留空格）"""
         result = normalize_app_no('   ')
-        # normalize_app_no 不移除空格，所以返回 '   '
-        self.assertEqual(result, '   ')
+        self.assertIsNone(result)
+
+    def test_strips_surrounding_spaces(self):
+        result = normalize_app_no('  CN202411006597.0  ')
+        self.assertEqual(result, '2024110065970')
 
     def test_none_input(self):
         """None 输入返回 None"""
         result = normalize_app_no(None)
         self.assertIsNone(result)
+
+
+class TestParseAppNoList(unittest.TestCase):
+    def test_normalizes_pasted_list(self):
+        text = """申请号
+CN202411006597.0
+CN202110795062.6
+CN202111504942.X
+"""
+        self.assertEqual(
+            parse_app_no_list(text),
+            ['2024110065970', '2021107950626', '202111504942X'],
+        )
+
+    def test_deduplicates_and_accepts_common_separators(self):
+        text = 'CN202411006597.0, 2024110065970；cn202111504942.x'
+        self.assertEqual(parse_app_no_list(text), ['2024110065970', '202111504942X'])
 
 
 if __name__ == '__main__':

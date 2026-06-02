@@ -45,7 +45,7 @@ from detection_logger import DetectionLogger, DetectionRecord
 from browser_utils import (
     fill_vue_input, is_browser_alive, create_driver_with_retry,
 )
-from cache_utils import normalize_app_no, poll_cache_with_retry
+from cache_utils import normalize_app_no, parse_app_no_list, poll_cache_with_retry
 from coordinate_service import CoordinateService
 from browser_service import BrowserService, stop_virtual_display
 from input_service import InputService
@@ -72,7 +72,7 @@ def load_search_list() -> list:
         sys.exit(1)
 
     with open(SEARCH_LIST_FILE, 'r', encoding='utf-8') as f:
-        applications = [line.strip() for line in f if line.strip()]
+        applications = parse_app_no_list(f.read())
 
     print(f"✓ 已加载 {len(applications)} 个申请号")
     return applications
@@ -243,7 +243,7 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
             print(f"❌ 找不到更新列表: {update_list}")
             return
         with open(update_list, encoding='utf-8') as f:
-            pending = [line.strip() for line in f if line.strip()]
+            pending = parse_app_no_list(f.read())
         print(f"⏳ 强制更新: {len(pending)} 个申请号")
     else:
         # 正常模式：跳过已处理

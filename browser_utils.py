@@ -15,6 +15,9 @@ import sys
 import time
 import random
 import socket
+import re
+import glob
+import subprocess
 
 import pyautogui
 from settings import MITM_HOST, MITM_PORT, USE_MITM_PROXY, USE_VIRTUAL_DISPLAY
@@ -24,12 +27,56 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 
+def _major_version_from_text(version_text: str) -> int | None:
+    version_match = re.search(r'(\d+)\.\d+', version_text or '')
+    if version_match:
+        return int(version_match.group(1))
+    return None
+
+
+def _get_windows_chrome_major_version() -> int | None:
+    try:
+        import winreg
+    except ImportError:
+        return None
+
+    registry_locations = [
+        (winreg.HKEY_CURRENT_USER, r'Software\Google\Chrome\BLBeacon'),
+        (winreg.HKEY_LOCAL_MACHINE, r'Software\Google\Chrome\BLBeacon'),
+        (winreg.HKEY_LOCAL_MACHINE, r'Software\WOW6432Node\Google\Chrome\BLBeacon'),
+    ]
+    for registry_root, registry_path in registry_locations:
+        try:
+            with winreg.OpenKey(registry_root, registry_path) as key:
+                version_text, _ = winreg.QueryValueEx(key, 'version')
+            chrome_major_version = _major_version_from_text(version_text)
+            if chrome_major_version:
+                return chrome_major_version
+        except OSError:
+            continue
+
+    chrome_roots = [
+        r'C:\Program Files\Google\Chrome\Application',
+        r'C:\Program Files (x86)\Google\Chrome\Application',
+        os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\Application'),
+    ]
+    for chrome_root in chrome_roots:
+        if not os.path.isdir(chrome_root):
+            continue
+        for folder_name in os.listdir(chrome_root):
+            chrome_major_version = _major_version_from_text(folder_name)
+            if chrome_major_version:
+                return chrome_major_version
+    return None
+
+
 def _get_chrome_major_version() -> int | None:
     """检测系统 Chrome 主版本号，供 undetected_chromedriver 使用"""
-    import subprocess
-    import re
-
     if sys.platform == 'win32':
+        registry_major_version = _get_windows_chrome_major_version()
+        if registry_major_version:
+            return registry_major_version
+
         win_candidates = [
             r'C:\Program Files\Google\Chrome\Application\chrome.exe',
             r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
@@ -39,9 +86,9 @@ def _get_chrome_major_version() -> int | None:
             if os.path.isfile(path):
                 try:
                     r = subprocess.run([path, '--version'], capture_output=True, text=True, timeout=5)
-                    m = re.search(r'(\d+)\.\d+', r.stdout)
-                    if m:
-                        return int(m.group(1))
+                    chrome_major_version = _major_version_from_text(r.stdout)
+                    if chrome_major_version:
+                        return chrome_major_version
                 except subprocess.TimeoutExpired:
                     pass
         return None
@@ -50,17 +97,58 @@ def _get_chrome_major_version() -> int | None:
         try:
             r = subprocess.run([cmd, '--version'], capture_output=True, text=True, timeout=5)
             if r.returncode == 0:
-                m = re.search(r'(\d+)\.\d+', r.stdout)
-                if m:
-                    return int(m.group(1))
+                chrome_major_version = _major_version_from_text(r.stdout)
+                if chrome_major_version:
+                    return chrome_major_version
         except (FileNotFoundError, subprocess.TimeoutExpired):
             continue
+    return None
+
+
+def _get_chromedriver_major_version(driver_path: str) -> int | None:
+    try:
+        completed_process = subprocess.run(
+            [driver_path, '--version'],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return _major_version_from_text(completed_process.stdout)
+
+
+def _find_matching_chromedriver(chrome_major_version: int | None) -> str | None:
+    if not chrome_major_version:
+        return None
+
+    if sys.platform == 'win32':
+        driver_patterns = [
+            os.path.join(os.path.dirname(__file__), 'chromedriver-win64', 'chromedriver.exe'),
+            os.path.expandvars(
+                r'%LOCALAPPDATA%\Temp\chromedriver-win64-*\chromedriver-win64\chromedriver.exe'
+            ),
+        ]
+    else:
+        driver_patterns = [
+            os.path.join(os.path.dirname(__file__), 'chromedriver-linux64', 'chromedriver'),
+            '/tmp/chromedriver-linux64-*/chromedriver-linux64/chromedriver',
+        ]
+
+    for driver_pattern in driver_patterns:
+        for driver_path in glob.glob(driver_pattern):
+            if not os.path.exists(driver_path):
+                continue
+            driver_major_version = _get_chromedriver_major_version(driver_path)
+            if driver_major_version == chrome_major_version:
+                return driver_path
     return None
 
 
 def load_credentials() -> tuple[str, str]:
     """从 .env 文件或环境变量加载登录凭证，返回 (username, password)"""
     env_file = os.path.join(os.path.dirname(__file__), '.env')
+    credentials = {}
     if os.path.exists(env_file):
         with open(env_file, 'r', encoding='utf-8') as f:
             for line in f:
@@ -68,8 +156,11 @@ def load_credentials() -> tuple[str, str]:
                 if line.startswith('#') or '=' not in line:
                     continue
                 key, _, val = line.partition('=')
-                os.environ.setdefault(key.strip(), val.strip())
-    return os.getenv('CNIPA_USERNAME', ''), os.getenv('CNIPA_PASSWORD', '')
+                credentials[key.strip()] = val.strip()
+    return (
+        credentials.get('CNIPA_USERNAME') or os.getenv('CNIPA_USERNAME', ''),
+        credentials.get('CNIPA_PASSWORD') or os.getenv('CNIPA_PASSWORD', ''),
+    )
 
 
 def clear_input_field() -> None:
@@ -178,13 +269,8 @@ def create_driver_with_retry(max_retries: int = 3, use_mitm: bool = None) -> uc.
         use_mitm = USE_MITM_PROXY
 
     # 自动检测本地 ChromeDriver
-    local_driver_path = None
-    if sys.platform == 'win32':
-        candidate = os.path.join(os.path.dirname(__file__), 'chromedriver-win64', 'chromedriver.exe')
-    else:
-        candidate = os.path.join(os.path.dirname(__file__), 'chromedriver-linux64', 'chromedriver')
-    if os.path.exists(candidate):
-        local_driver_path = candidate
+    chrome_ver = _get_chrome_major_version()
+    matching_driver_path = _find_matching_chromedriver(chrome_ver)
 
     for attempt in range(max_retries):
         try:
@@ -206,14 +292,15 @@ def create_driver_with_retry(max_retries: int = 3, use_mitm: bool = None) -> uc.
                 options.add_argument("--ignore-certificate-errors")
 
             kwargs = dict(headless=False, options=options)
-            if local_driver_path:
-                print(f"[*] 使用本地 ChromeDriver: {local_driver_path}")
-                kwargs['driver_executable_path'] = local_driver_path
+            if matching_driver_path:
+                print(f"[*] 使用 Chrome {chrome_ver} 匹配的 ChromeDriver: {matching_driver_path}")
+                kwargs['driver_executable_path'] = matching_driver_path
             else:
-                chrome_ver = _get_chrome_major_version()
                 if chrome_ver:
                     kwargs['version_main'] = chrome_ver
                     print(f"[*] Chrome {chrome_ver}，指定匹配的 ChromeDriver")
+                else:
+                    print("[*] 未检测到 Chrome 主版本，使用 UC 默认驱动")
 
             driver = uc.Chrome(**kwargs)
             print("[✓] 浏览器创建成功!")
