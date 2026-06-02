@@ -15,15 +15,13 @@ import sys
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 
+from cache_utils import normalize_app_no, parse_timestamp
+
 
 def utc_now() -> datetime:
     """返回带 UTC 时区的当前时间。"""
     return datetime.now(timezone.utc)
 
-
-def normalize_app_no(app_no: str) -> str:
-    """统一申请号格式，便于单号查询。"""
-    return str(app_no).upper().replace('CN', '').replace('.', '') if app_no else ''
 
 def load_focus_strategy() -> Dict:
     """加载关注策略配置"""
@@ -42,28 +40,6 @@ def load_detection_log() -> Dict:
     from settings import PATENTS_DB_FILE
     db = PatentsDB(PATENTS_DB_FILE)
     return {'records': db.get_all_records()}
-
-def parse_timestamp(timestamp_str: str) -> Optional[datetime]:
-    """
-    解析 ISO 8601 时间戳，统一返回 UTC aware datetime。
-
-    Python < 3.11 的 fromisoformat 不识别末尾 'Z'，手动替换为 '+00:00'。
-    无时区信息的时间戳一律视作 UTC（DB 写入端约定）。
-    """
-    try:
-        if not timestamp_str:
-            return None
-        ts = str(timestamp_str).strip()
-        # 兼容 Python 3.9/3.10：'Z' → '+00:00'
-        if ts.upper().endswith('Z'):
-            ts = ts[:-1] + '+00:00'
-        parsed = datetime.fromisoformat(ts)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
-    except Exception as e:
-        print(f"❌ 无法解析时间戳 {timestamp_str!r}: {e}")
-        return None
 
 def calculate_needs_update(last_update_time: datetime, frequency_days: int) -> tuple:
     """

@@ -41,10 +41,12 @@ from settings import (
     MITM_PORT,
     PATENTS_DB_FILE,
     PATENTS_EXCEL_FILE,
+    RETRY_FAILED_FILE,
     SEARCH_LIST_FILE,
     CNIPA_LOGIN_WAIT_SECONDS,
 )
 from db_manager import PatentsDB
+from cache_utils import normalize_app_no, parse_app_no_list, parse_timestamp
 
 _patents_db = PatentsDB(PATENTS_DB_FILE)
 
@@ -127,27 +129,6 @@ def iso_now() -> str:
     return utc_now().isoformat().replace("+00:00", "Z")
 
 
-def parse_timestamp(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        text = str(value).strip()
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        parsed = datetime.fromisoformat(text)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
-    except (TypeError, ValueError):
-        return None
-
-
-def normalize_app_no(app_no: str | None) -> str:
-    if not app_no:
-        return ""
-    return str(app_no).upper().replace("CN", "").replace(".", "").strip()
-
-
 def safe_read_text(path: Path, default: str = "") -> str:
     try:
         return path.read_text(encoding="utf-8")
@@ -160,27 +141,6 @@ def safe_json_load(path: Path, default: Any) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return default
-
-
-def read_jsonl(path: Path) -> tuple[list[dict[str, Any]], int]:
-    records: list[dict[str, Any]] = []
-    bad_lines = 0
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    item = json.loads(line)
-                except json.JSONDecodeError:
-                    bad_lines += 1
-                    continue
-                if isinstance(item, dict):
-                    records.append(item)
-    except FileNotFoundError:
-        return [], 0
-    return records, bad_lines
 
 
 def count_lines(path: Path) -> int:
@@ -505,7 +465,7 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         return {"action": action, "title": "导出公开查询结果", "command": [py, "-u", "export_public_search.py"]}
     # ── 数据管理类（新增）──────────────────────────────────────────
     if action == "retry_failed":
-        return {"action": action, "title": "重试失败记录", "command": [py, "-u", "retry_failed.py"]}
+        return {"action": action, "title": "生成失败重试清单", "command": [py, "-u", "retry_failed.py", "--write-list"]}
     if action == "validate_results":
         return {"action": action, "title": "验证采集结果", "command": [py, "-u", "validate_results.py"]}
     if action == "analyze_recent":
@@ -543,9 +503,13 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
     else:
         update_groups = []
 
-    search_count = count_lines(SEARCH_LIST_FILE)
+    search_app_nos = parse_app_no_list(safe_read_text(SEARCH_LIST_FILE))
+    stored_app_nos = _patents_db.get_all_app_nos()
+    search_count = len(search_app_nos)
+    search_collected = sum(1 for app_no in search_app_nos if app_no in stored_app_nos)
     dynamic_count = count_lines(DATA_DIR / "update_list_dynamic.txt")
     retry_count = count_lines(DATA_DIR / "retry_dynamic.txt")
+    failed_retry_count = count_lines(RETRY_FAILED_FILE)
     config = safe_json_load(CONFIG_FILE, {})
 
     active_jobs = [j for j in job_manager.list_jobs() if j.get("status") in {"running", "stopping"}]
@@ -580,8 +544,10 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
         },
         "lists": {
             "search": search_count,
+            "search_collected": search_collected,
             "dynamic": dynamic_count,
             "retry": retry_count,
+            "failed_retry": failed_retry_count,
         },
         "proxy": {
             "host": MITM_HOST,
@@ -1807,7 +1773,7 @@ function renderSummary(data) {
 
   // 采集控制 Tab
   const total = data.lists.search;
-  const collected = data.records.unique;
+  const collected = data.lists.search_collected ?? 0;
   const pct = total > 0 ? Math.min(100, Math.round(collected / total * 100)) : 0;
   setStyle('#collectProgBar', 'width', pct + '%');
   set('#collectProgressHint', '已采集 ' + fmtNumber(collected) + ' / 输入 ' + fmtNumber(total) + '（' + pct + '%）');
@@ -1835,7 +1801,7 @@ function renderSummary(data) {
   renderRecent(data.recent || []);
 
   // 数据管理 Tab
-  set('#retryCount', fmtNumber(data.lists.retry) + ' 条');
+  set('#retryCount', fmtNumber(data.lists.failed_retry ?? 0) + ' 条');
   const jinfo = data.files && data.files.jsonl;
   set('#jsonlSize', jinfo ? fmtBytes(jinfo.size) : '—');
 
@@ -2068,6 +2034,7 @@ function bindEvents() {
     if (!sl) return;
     await api('/api/search-list', { method: 'POST', body: JSON.stringify({ text: sl.value }) });
     showToast('申请号列表已保存');
+    await loadSearchList();
     await refreshSummary();
   });
 
@@ -2349,10 +2316,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": ok})
             elif path == "/api/search-list":
                 payload = self.read_json_body()
-                text = str(payload.get("text", ""))
+                search_app_nos = parse_app_no_list(str(payload.get("text", "")))
+                text = "\n".join(search_app_nos)
+                if text:
+                    text += "\n"
                 SEARCH_LIST_FILE.parent.mkdir(parents=True, exist_ok=True)
                 _write_text_atomic(SEARCH_LIST_FILE, text)
-                self.send_json({"ok": True, "lines": count_lines(SEARCH_LIST_FILE)})
+                self.send_json({"ok": True, "lines": len(search_app_nos)})
             elif path == "/api/config":
                 payload = self.read_json_body()
                 text = str(payload.get("text", "{}"))

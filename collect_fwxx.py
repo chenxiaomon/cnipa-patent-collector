@@ -401,21 +401,26 @@ def update_detection_log(application_no: str, fwxx_data: dict) -> bool:
     """
     将采集到的发文信息写回 PatentsDB。
 
+    使用 update_fields（字段级更新）而非 upsert（整行覆盖），
+    避免与 main_automation.py 的并发写入互相覆盖。
+    同时更新 timestamp，防止策略系统误判为过期需要重采。
+
     Returns:
         成功返回 True；申请号不在 DB 中返回 False。
     """
     try:
         db = PatentsDB(PATENTS_DB_FILE)
-        record = db.get_record(application_no)
-        if record is None:
+        if db.get_record(application_no) is None:
             print(f"    [!] {application_no} 不在 DB 中，写入 {FWXX_UNMATCHED_FILE}")
             _append_unmatched(application_no, fwxx_data)
             return False
 
-        record['fwxx_list'] = fwxx_data.get('fwxx_list')
-        record['bhsjtzs_xiazaisj'] = fwxx_data.get('bhsjtzs_xiazaisj')
-        record['bhsjtzs_data'] = fwxx_data.get('bhsjtzs_data')
-        db.upsert(record)
+        db.update_fields(application_no, {
+            'fwxx_list':        fwxx_data.get('fwxx_list'),
+            'bhsjtzs_xiazaisj': fwxx_data.get('bhsjtzs_xiazaisj'),
+            'bhsjtzs_data':     fwxx_data.get('bhsjtzs_data'),
+            'timestamp':        datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+        })
         return True
     except Exception as e:
         print(f"    [!] 日志更新失败: {e}")

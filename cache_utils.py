@@ -9,8 +9,13 @@ JSON 缓存工具函数（跨脚本复用）
 
 import json
 import os
+import re
 import time
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional, Tuple
+
+
+_APP_NO_SPLIT_RE = re.compile(r'[\s,;；，]+')
 
 
 def normalize_app_no(app_no: str) -> Optional[str]:
@@ -21,8 +26,44 @@ def normalize_app_no(app_no: str) -> Optional[str]:
     """
     if not app_no:
         return None
-    normalized = str(app_no).upper().replace('CN', '').replace('.', '')
+    normalized = str(app_no).strip().upper().replace('CN', '').replace('.', '')
     return normalized if normalized else None
+
+
+def parse_app_no_list(text: str) -> list[str]:
+    normalized_app_nos: list[str] = []
+    seen_app_nos: set[str] = set()
+    for token in _APP_NO_SPLIT_RE.split(str(text)):
+        raw_app_no = token.strip()
+        if not raw_app_no or not any(ch.isdigit() for ch in raw_app_no):
+            continue
+        normalized_app_no = normalize_app_no(raw_app_no)
+        if normalized_app_no and normalized_app_no not in seen_app_nos:
+            seen_app_nos.add(normalized_app_no)
+            normalized_app_nos.append(normalized_app_no)
+    return normalized_app_nos
+
+
+def parse_timestamp(value: Any) -> Optional[datetime]:
+    """
+    解析 ISO 8601 时间戳，统一返回 UTC aware datetime。
+
+    兼容 Python 3.9/3.10：'Z' 结尾替换为 '+00:00'。
+    无时区信息的时间戳一律视作 UTC（DB 写入端约定）。
+    返回 None 表示解析失败或输入为空。
+    """
+    if not value:
+        return None
+    try:
+        ts = str(value).strip()
+        if ts.upper().endswith('Z'):
+            ts = ts[:-1] + '+00:00'
+        parsed = datetime.fromisoformat(ts)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
 
 
 def read_json_cache(cache_file: str) -> dict:

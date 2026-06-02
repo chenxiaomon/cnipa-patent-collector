@@ -17,11 +17,7 @@ from typing import Optional, Dict, Any
 
 from settings import DETECTION_LOG_JSONL_FILE, RESULTS_DIR, PATENTS_DB_FILE
 from db_manager import PatentsDB
-
-
-def _normalize_app_no(app_no: str) -> str:
-    """移除 CN 前缀和点号，统一申请号格式。"""
-    return str(app_no).upper().replace('CN', '').replace('.', '') if app_no else app_no
+from cache_utils import normalize_app_no as _normalize_app_no
 
 
 try:
@@ -209,7 +205,7 @@ class DetectionLogger:
 
     def get_pending_applications(self, all_applications: list) -> list:
         processed = self.get_processed_applications()
-        return [a for a in all_applications if a not in processed]
+        return [a for a in all_applications if _normalize_app_no(a) not in processed]
 
     def get_stats(self) -> Dict[str, Any]:
         return self._db.get_stats()
