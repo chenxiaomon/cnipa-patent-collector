@@ -132,12 +132,15 @@ def cmd_pull():
     dirty = run('git status --porcelain data/results/detection_log.jsonl').stdout.strip()
     if dirty:
         print(f"[!] 本地有未提交的修改（{before} 条），先提交再拉取")
-        ans = input("    是否先提交本地数据？(y/N): ").strip().lower()
-        if ans == 'y':
-            cmd_push()
+        if sys.stdin.isatty():
+            ans = input("    是否先提交本地数据？(y/N): ").strip().lower()
+            if ans != 'y':
+                print("[!] 已取消，请手动处理后重试")
+                sys.exit(1)
         else:
-            print("[!] 已取消，请手动处理后重试")
-            sys.exit(1)
+            # 非交互模式（Dashboard 子进程）：自动提交，避免 stdin 关闭导致 EOFError
+            print("[*] 非交互模式，自动提交本地数据后拉取...")
+        cmd_push()
 
     result = run('git pull', check=False)
     if result.returncode != 0:
@@ -234,10 +237,16 @@ def cmd_init():
 
     db_path = str(PATENTS_DB_FILE)
     if os.path.exists(db_path) and os.path.getsize(db_path) > 0:
-        ans = input(f"[!] DB 文件已存在 ({db_path})，是否覆盖重建？(y/N): ").strip().lower()
-        if ans != 'y':
-            print("[!] 已取消")
-            sys.exit(0)
+        if sys.stdin.isatty():
+            ans = input(f"[!] DB 文件已存在 ({db_path})，是否覆盖重建？(y/N): ").strip().lower()
+            if ans != 'y':
+                print("[!] 已取消")
+                sys.exit(0)
+        else:
+            # 非交互模式：init 不应从 Dashboard 触发（无按钮），此处保险起见拒绝执行
+            print(f"[!] 非交互模式下不允许覆盖已有 DB（{db_path}）")
+            print("    请在终端中手动执行：python sync.py init")
+            sys.exit(1)
 
     print("[*] 拉取最新进度...")
     result = run('git pull', check=False)

@@ -647,12 +647,10 @@ if __name__ == "__main__":
 
     # 检查环境变量
     if not USE_MITM_PROXY:
-        print("\n警告: MITM 代理未启用")
-        print("提示: 如果采集失败，可以启动代理后重试")
-        print("  1. 启动代理: python start_mitm_proxy.py")
-        print("  2. 重新运行: USE_MITM_PROXY=true python collect_fwxx.py\n")
-        response = input("是否继续不使用代理？(y/N): ").strip().lower()
-        if response != 'y':
-            sys.exit(1)
+        print("\n[!] MITM 代理未启用，发文采集依赖代理拦截，无法继续")
+        print("    请先启动代理后重试：")
+        print("      python start_mitm_proxy.py")
+        print("    或设置环境变量：USE_MITM_PROXY=true python collect_fwxx.py")
+        sys.exit(1)
 
     run_fwxx_collection(args=args)

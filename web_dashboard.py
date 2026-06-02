@@ -484,6 +484,8 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         return {"action": action, "title": "从 JSONL 备份导入", "command": [py, "-u", "sync_from_jsonl.py"]}
     if action == "upgrade_code":
         return {"action": action, "title": "更新系统代码", "command": [py, "-u", "upgrade.py"]}
+    if action == "fetch_update":
+        return {"action": action, "title": "无 git 更新代码", "command": [py, "-u", "fetch_update.py"]}
 
     raise ValueError(f"未知操作: {action}")
 
@@ -1044,6 +1046,14 @@ HTML = r"""<!doctype html>
           </div>
         </article>
       </section>
+      <article class="panel operator-only" style="margin-bottom:14px">
+        <div class="panel-head"><h2>代码更新</h2><span class="hint">upgrade.py / fetch_update.py</span></div>
+        <div class="button-row">
+          <button class="btn primary" data-action="upgrade_code">🔄 更新系统代码（git）</button>
+          <button class="btn secondary" data-action="fetch_update">📥 无 git 更新（HTTP）</button>
+        </div>
+        <div class="hint" style="margin-top:6px">有网络时从 GitHub 拉取最新代码；无 git 环境可用 HTTP 方式</div>
+      </article>
       <article class="panel operator-only">
         <div class="panel-head">
           <h2>登录凭证</h2>
