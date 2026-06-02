@@ -8,6 +8,7 @@
   python upgrade.py --check  # 仅检查是否有更新，不做任何修改
 """
 import os
+import shutil
 import subprocess
 import sys
 
@@ -22,7 +23,37 @@ _CWD = str(BASE_DIR)
 _DEP_FILES = {'pyproject.toml', 'requirements.txt'}
 
 
+def _find_git() -> str:
+    """返回 git 可执行文件路径；找不到时打印提示并退出。"""
+    found = shutil.which('git')
+    if found:
+        return found
+
+    # Windows 常见安装位置（git 未加入 PATH 时兜底）
+    if sys.platform == 'win32':
+        candidates = [
+            r'C:\Program Files\Git\cmd\git.exe',
+            r'C:\Program Files (x86)\Git\cmd\git.exe',
+            r'D:\Program Files\Git\cmd\git.exe',
+            os.path.join(os.environ.get('LOCALAPPDATA', ''), r'Programs\Git\cmd\git.exe'),
+            os.path.join(os.environ.get('PROGRAMFILES', ''), r'Git\cmd\git.exe'),
+        ]
+        for path in candidates:
+            if os.path.isfile(path):
+                return path
+
+    print("[✗] 找不到 git，请安装 Git 或将其加入系统 PATH")
+    print("    下载地址: https://git-scm.com/download/win")
+    sys.exit(1)
+
+
+_GIT = _find_git()
+
+
 def _run(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
+    # 将命令列表中的 'git' 替换为实际路径
+    if args and args[0] == 'git':
+        args = [_GIT] + args[1:]
     return subprocess.run(
         args, text=True, capture_output=True, check=check,
         cwd=_CWD, encoding='utf-8',
