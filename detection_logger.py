@@ -53,6 +53,8 @@ class DetectionRecord:
         fwxx_list: Optional[list] = None,
         bhsjtzs_xiazaisj: Optional[str] = None,
         bhsjtzs_data: Optional[dict] = None,
+        daili_jg: Optional[str] = None,
+        daili_r: Optional[str] = None,
     ):
         self.application_no = application_no
         self.status_code = status_code
@@ -79,6 +81,8 @@ class DetectionRecord:
         self.fwxx_list = fwxx_list
         self.bhsjtzs_xiazaisj = bhsjtzs_xiazaisj
         self.bhsjtzs_data = bhsjtzs_data
+        self.daili_jg = daili_jg
+        self.daili_r = daili_r
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -105,6 +109,8 @@ class DetectionRecord:
             'fwxx_list': self.fwxx_list,
             'bhsjtzs_xiazaisj': self.bhsjtzs_xiazaisj,
             'bhsjtzs_data': self.bhsjtzs_data,
+            'daili_jg': self.daili_jg,
+            'daili_r': self.daili_r,
         }
 
 
@@ -258,6 +264,8 @@ class DetectionLogger:
                 'fwxx_list': '发文列表',
                 'bhsjtzs_xiazaisj': '驳回时间',
                 'bhsjtzs_data': '驳回决定详情',
+                'daili_jg': '代理机构',
+                'daili_r': '代理人',
             }
 
             df = pd.DataFrame(records)

@@ -58,7 +58,9 @@ CREATE TABLE IF NOT EXISTS patents (
     bhsjtzs_xiazaisj    TEXT,
     bhsjtzs_data        TEXT,
     previous_status     TEXT,
-    updated_at          TEXT
+    updated_at          TEXT,
+    daili_jg            TEXT,
+    daili_r             TEXT
 )
 """
 
@@ -69,7 +71,7 @@ _COLUMNS = [
     'zhuanlilx', 'shenqingr', 'gongkaiggh', 'falvzt', 'gongkaiggr',
     'shouquanggr', 'zhufenlh', 'anjianbh', 'anjianywzt',
     'fwxx_list', 'bhsjtzs_xiazaisj', 'bhsjtzs_data', 'previous_status',
-    'updated_at',
+    'updated_at', 'daili_jg', 'daili_r',
 ]
 
 
@@ -100,6 +102,12 @@ class PatentsDB:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_shenqingrxm ON patents(shenqingrxm)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_status_code ON patents(status_code)")
             conn.execute(_CREATE_REQUESTS_TABLE)
+            # 对已有数据库做无损迁移：新列已存在时 SQLite 抛 OperationalError，忽略即可
+            for col in ('daili_jg TEXT', 'daili_r TEXT'):
+                try:
+                    conn.execute(f"ALTER TABLE patents ADD COLUMN {col}")
+                except sqlite3.OperationalError:
+                    pass  # 列已存在
             conn.commit()
 
     @staticmethod

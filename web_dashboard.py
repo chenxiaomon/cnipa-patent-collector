@@ -12,6 +12,7 @@ CNIPA 采集系统本地可视化控制台。
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import mimetypes
 import os
@@ -973,6 +974,21 @@ HTML = r"""<!doctype html>
         <div class="button-row" style="margin-top:8px">
           <button class="btn primary" data-action="sync_from_jsonl">📥 从 JSONL 备份导入到本地库</button>
         </div>
+      </article>
+      <article class="panel operator-only" style="margin-bottom:14px">
+        <div class="panel-head"><h2>代理机构导入</h2><span class="hint">CSV / Excel → patents.db</span></div>
+        <div class="control-grid">
+          <label class="field">
+            <span>选择名单文件</span>
+            <input id="agencyFileInput" type="file" accept=".csv,.xlsx,.xls">
+          </label>
+          <button class="btn primary" id="importAgencyBtn">导入代理机构</button>
+        </div>
+        <div class="hint" style="margin-top:6px">
+          文件需包含「申请号」和「代理机构」两列（支持中英文列名）；
+          发文专利的代理机构由 MITM 自动采集，无需手动上传。
+        </div>
+        <div id="agencyImportHint" class="hint" style="margin-top:6px"></div>
       </article>
       <article class="panel operator-only">
         <div class="panel-head"><h2>增量数据互通</h2><span class="hint">跨机最小化传输</span></div>
@@ -2081,6 +2097,26 @@ function bindEvents() {
       $('#loginBanner').classList.add('hidden');
     } catch (e) { showToast('发送失败：' + e.message); }
   });
+
+  $('#importAgencyBtn').addEventListener('click', async () => {
+    const fi = $('#agencyFileInput');
+    const hint = $('#agencyImportHint');
+    if (!fi || !fi.files || !fi.files[0]) { if (hint) hint.textContent = '请先选择文件'; return; }
+    if (hint) hint.textContent = '正在上传...';
+    const formData = new FormData();
+    formData.append('file', fi.files[0]);
+    try {
+      const res = await fetch('/api/import/agency', { method: 'POST', body: formData });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || res.statusText);
+      if (hint) hint.textContent =
+        `✓ 更新 ${d.updated} 条` +
+        (d.skipped_missing > 0 ? `，${d.skipped_missing} 条申请号不在库中` : '') +
+        (d.skipped_no_app  > 0 ? `，${d.skipped_no_app} 条字段为空` : '') +
+        (d.bad_rows        > 0 ? `，${d.bad_rows} 行格式错误` : '');
+      showToast('代理机构导入完成：' + d.updated + ' 条');
+    } catch (e) { if (hint) hint.textContent = '导入失败：' + e.message; }
+  });
 }
 
 // ── 需求队列 ──────────────────────────────────────────────────────────
@@ -2390,6 +2426,44 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         bad += 1
                 imported = _patents_db.upsert_batch(records)
                 self.send_json({"ok": True, "imported": imported, "bad_lines": bad})
+            elif path == "/api/import/agency":
+                if not self.is_operator:
+                    self.send_json({"error": "仅操作员可导入数据"}, status=403)
+                    return
+                # 解析 multipart/form-data 中的文件
+                import cgi
+                content_type = self.headers.get("Content-Type", "")
+                length = int(self.headers.get("Content-Length", 0))
+                raw_body = self.rfile.read(length)
+                environ = {
+                    "REQUEST_METHOD": "POST",
+                    "CONTENT_TYPE": content_type,
+                    "CONTENT_LENGTH": str(length),
+                }
+                fs = cgi.FieldStorage(
+                    fp=io.BytesIO(raw_body),
+                    environ=environ,
+                    keep_blank_values=True,
+                )
+                file_item = fs.getvalue("file")
+                if file_item is None:
+                    self.send_json({"error": "未收到文件"}, status=400)
+                    return
+                # 写临时文件，由 import_agency_csv 解析
+                import tempfile, os as _os
+                filename = fs["file"].filename if hasattr(fs["file"], "filename") else "upload.csv"
+                suffix = Path(filename).suffix.lower() or ".csv"
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp.write(file_item if isinstance(file_item, bytes) else file_item.encode())
+                    tmp_path = tmp.name
+                try:
+                    from import_agency_csv import import_agency
+                    stats = import_agency(Path(tmp_path), dry_run=False)
+                    self.send_json({"ok": True, **stats})
+                except (ValueError, ImportError) as exc:
+                    self.send_json({"error": str(exc)}, status=400)
+                finally:
+                    _os.unlink(tmp_path)
             elif path == "/api/requests":
                 payload = self.read_json_body()
                 raw_nos = [str(a).strip() for a in (payload.get("app_nos") or []) if str(a).strip()]

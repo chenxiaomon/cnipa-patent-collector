@@ -50,9 +50,14 @@ class PatentMITMScraper:
         if 'application/json' not in content_type:
             return
 
-        # ⭐ 新增：检测发文信息 API
+        # 检测发文信息 API
         if '/api/view/gn/fwxx' in flow.request.pretty_url:
             self._process_fwxx_response(flow)
+            return
+
+        # 检测专利详情 API — 从中提取代理机构 / 代理人
+        if '/api/view/gn/sqxx' in flow.request.pretty_url:
+            self._process_sqxx_response(flow)
             return
 
         print(f"\n[+] 拦截到 JSON 响应: {flow.request.pretty_url[:100]}")
@@ -166,6 +171,60 @@ class PatentMITMScraper:
 
         except Exception as e:
             print(f"  [!] 处理记录失败: {e}")
+
+    def _process_sqxx_response(self, flow: http.HTTPFlow) -> None:
+        """
+        处理专利详情 API（/api/view/gn/sqxx）响应，提取代理机构和代理人。
+
+        响应结构：
+          data.dailijg.dailijgList[0].dailijgdm  → 代理机构名称
+          data.dailijg.dailijgList[0].diyidlrxm  → 第一代理人姓名
+          data.zhuluxmxx.zhuluxmxx.zhuanlisqh    → 申请号（用于关联记录）
+
+        写入策略：仅在当前记录 daili_jg 为空时更新，避免覆盖已有数据。
+        """
+        try:
+            response_text = flow.response.content.decode('utf-8', errors='replace')
+            data = json.loads(response_text)
+
+            if data.get('code') != 200:
+                return
+
+            body = data.get('data', {})
+
+            # 提取申请号
+            app_no_raw = (
+                body.get('zhuluxmxx', {})
+                    .get('zhuluxmxx', {})
+                    .get('zhuanlisqh', '')
+            )
+            app_no = normalize_app_no(app_no_raw)
+            if not app_no:
+                print('[-] sqxx: 未找到申请号，跳过')
+                return
+
+            # 提取代理机构信息
+            dailijg_list = body.get('dailijg', {}).get('dailijgList', [])
+            if not dailijg_list:
+                return
+
+            daili_jg = dailijg_list[0].get('dailijgdm') or None
+            daili_r  = dailijg_list[0].get('diyidlrxm') or None
+
+            if not daili_jg:
+                return
+
+            # 写入 DB：只更新代理字段，不触碰其他列
+            self.logger._db.update_fields(app_no, {
+                'daili_jg': daili_jg,
+                'daili_r':  daili_r,
+            })
+            print(f'[✓] 代理机构已更新: {app_no} → {daili_jg} / {daili_r}')
+
+        except json.JSONDecodeError as e:
+            print(f'[!] sqxx JSON 解析失败: {e}')
+        except Exception as e:
+            print(f'[!] 处理 sqxx 响应失败: {e}')
 
     def _process_fwxx_response(self, flow: http.HTTPFlow) -> None:
         """
