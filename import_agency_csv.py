@@ -56,8 +56,9 @@ def _read_csv(path: Path) -> tuple[list[str], list[dict]]:
         try:
             text = path.read_text(encoding=encoding)
             reader = csv.DictReader(io.StringIO(text))
+            headers = list(reader.fieldnames or [])
             rows = list(reader)
-            return list(reader.fieldnames or []) if not rows else list(rows[0].keys()), rows
+            return headers, rows
         except (UnicodeDecodeError, Exception):
             continue
     raise ValueError(f"无法解析 CSV 文件（尝试了 UTF-8/GBK）：{path}")
@@ -118,7 +119,7 @@ def import_agency(source: Path, dry_run: bool = False) -> dict:
     db = PatentsDB(PATENTS_DB_FILE)
     existing = db.get_all_app_nos()
 
-    updated = skipped_no_app = skipped_missing = bad_rows = 0
+    updated = skipped_invalid = skipped_no_agency = skipped_missing = bad_rows = 0
 
     for i, row in enumerate(rows, 1):
         raw_app = str(row.get(col_app, '') or '').strip()
@@ -132,11 +133,11 @@ def import_agency(source: Path, dry_run: bool = False) -> dict:
         app_no = normalize_app_no(raw_app)
         if not app_no:
             print(f"  [{i}] 申请号格式无效，跳过：{raw_app!r}")
-            skipped_no_app += 1
+            skipped_invalid += 1
             continue
 
         if not agency:
-            skipped_no_app += 1
+            skipped_no_agency += 1
             continue
 
         if app_no not in existing:
@@ -157,7 +158,8 @@ def import_agency(source: Path, dry_run: bool = False) -> dict:
 
     return {
         'updated': updated,
-        'skipped_no_app': skipped_no_app,
+        'skipped_invalid': skipped_invalid,
+        'skipped_no_agency': skipped_no_agency,
         'skipped_missing': skipped_missing,
         'bad_rows': bad_rows,
     }

@@ -208,8 +208,12 @@ class PatentMITMScraper:
             if not dailijg_list:
                 return
 
-            daili_jg = dailijg_list[0].get('dailijgdm') or None
-            daili_r  = dailijg_list[0].get('diyidlrxm') or None
+            first = dailijg_list[0]
+            if not isinstance(first, dict):
+                return
+
+            daili_jg = first.get('dailijgdm') or None
+            daili_r  = first.get('diyidlrxm') or None
 
             if not daili_jg:
                 return

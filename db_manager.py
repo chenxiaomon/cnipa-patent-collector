@@ -106,8 +106,9 @@ class PatentsDB:
             for col in ('daili_jg TEXT', 'daili_r TEXT'):
                 try:
                     conn.execute(f"ALTER TABLE patents ADD COLUMN {col}")
-                except sqlite3.OperationalError:
-                    pass  # 列已存在
+                except sqlite3.OperationalError as e:
+                    if 'already exists' not in str(e).lower():
+                        raise  # 非"列已存在"的错误应当暴露
             conn.commit()
 
     @staticmethod
@@ -151,15 +152,24 @@ class PatentsDB:
             conn.commit()
 
     def update_fields(self, app_no: str, fields: dict) -> None:
-        """对已有记录做部分字段更新（不影响其他列），记录不存在时静默跳过。"""
+        """
+        对已有记录做部分字段更新（只更新传入的字段，不影响其他列）。
+        记录不存在时静默跳过。
+
+        注意：不经过 _encode()，避免把未传入的列填为 NULL。
+        JSON 字段（fwxx_list / bhsjtzs_data）仍需手动序列化后传入。
+        """
         if not fields:
             return
-        encoded = self._encode({'application_no': app_no, **fields})
-        encoded.pop('application_no', None)
-        set_clause = ', '.join(f'{col}=?' for col in encoded)
+        # 只取合法列名，过滤掉不在 schema 中的键，并附加 updated_at
+        valid = {k: v for k, v in fields.items() if k in _COLUMNS and k != 'updated_at'}
+        if not valid:
+            return
+        valid['updated_at'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        set_clause = ', '.join(f'{col}=?' for col in valid)
         sql = f"UPDATE patents SET {set_clause} WHERE application_no=?"
         with self._lock, self._connect() as conn:
-            conn.execute(sql, [*encoded.values(), app_no])
+            conn.execute(sql, [*valid.values(), app_no])
             conn.commit()
 
     def upsert_batch(self, records: list[dict]) -> int:
