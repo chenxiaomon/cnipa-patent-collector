@@ -127,6 +127,35 @@ CNIPA_QUERY_API = 'https://cpquery.cponline.cnipa.gov.cn/txtSearch'
 CNIPA_PUBLIC_SEARCH_URL = 'https://cpquery.cponline.cnipa.gov.cn/chinesepatent/index'
 
 # ============================================================================
+# 代码更新源（check_update.py / fetch_update.py 共用）
+# ============================================================================
+
+# GitHub 仓库标识
+GITHUB_REPO = os.getenv('GITHUB_REPO', 'chenxiaomon/cnipa-patent-collector')
+GITHUB_BRANCH = os.getenv('GITHUB_BRANCH', 'main')
+
+# 拉取单个文件的源站模板，按顺序尝试：GitHub 原站优先，失败回退国内镜像。
+# {repo}/{branch}/{path} 三个占位符在使用处用 .format() 填充。
+# 自定义镜像：设置环境变量 RAW_FILE_MIRRORS（逗号分隔的模板），会插到列表最前面。
+_DEFAULT_RAW_MIRRORS = [
+    'https://raw.githubusercontent.com/{repo}/{branch}/{path}',  # GitHub 原站
+    'https://cdn.jsdelivr.net/gh/{repo}@{branch}/{path}',        # jsDelivr CDN（国内通常可达）
+    'https://ghproxy.net/https://raw.githubusercontent.com/{repo}/{branch}/{path}',  # ghproxy 反代
+    'https://raw.gitmirror.com/{repo}/{branch}/{path}',          # gitmirror 镜像
+]
+
+
+def raw_file_urls(path: str) -> list[str]:
+    """返回拉取仓库内某文件的候选 URL 列表（按尝试顺序）。
+
+    path 为仓库内相对路径，如 'VERSION' 或 'settings.py'。
+    调用方应依次尝试，任一成功即可，全部失败再报错。
+    """
+    custom = os.getenv('RAW_FILE_MIRRORS', '').strip()
+    templates = [t.strip() for t in custom.split(',') if t.strip()] + _DEFAULT_RAW_MIRRORS
+    return [t.format(repo=GITHUB_REPO, branch=GITHUB_BRANCH, path=path) for t in templates]
+
+# ============================================================================
 # 业务规则
 # ============================================================================
 

@@ -35,13 +35,9 @@ if sys.platform == 'win32':
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from settings import BASE_DIR, VERSION_FILE
+from settings import BASE_DIR, VERSION_FILE, GITHUB_BRANCH, raw_file_urls
 
-# GitHub 仓库信息（与 fetch_update.py 保持一致）
-_REPO = "chenxiaomon/cnipa-patent-collector"
-_BRANCH = "main"
-_RAW_VERSION_URL = f"https://raw.githubusercontent.com/{_REPO}/{_BRANCH}/VERSION"
-
+_BRANCH = GITHUB_BRANCH
 _CWD = str(BASE_DIR)
 
 
@@ -116,22 +112,34 @@ def check_via_git(git: str) -> dict:
 
 
 def check_via_http() -> dict:
-    """HTTP 模式：拉取远端 VERSION 与本地对比（无 git 环境的兜底）。"""
+    """HTTP 模式：拉取远端 VERSION 与本地对比（无 git 环境的兜底）。
+
+    依次尝试 GitHub 原站和国内镜像，任一成功即返回；全部失败才报错。
+    """
     local = _read_local_version()
-    try:
-        req = urllib.request.Request(_RAW_VERSION_URL, headers={'Cache-Control': 'no-cache'})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            remote = resp.read().decode('utf-8').strip()
-    except (urllib.error.URLError, OSError) as e:
+    remote = None
+    last_error = None
+    for url in raw_file_urls('VERSION'):
+        try:
+            req = urllib.request.Request(url, headers={'Cache-Control': 'no-cache'})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                remote = resp.read().decode('utf-8').strip()
+            if remote:
+                break
+        except (urllib.error.URLError, OSError) as e:
+            last_error = e
+            continue
+
+    if not remote:
         return {
             "has_update": False, "method": "http",
             "local_version": local, "remote_version": None,
             "pending_commits": [],
-            "error": f"无法访问 GitHub：{e}",
+            "error": f"所有更新源均无法访问（最后错误：{last_error}）",
         }
 
     return {
-        "has_update": bool(remote) and remote != local,
+        "has_update": remote != local,
         "method": "http",
         "local_version": local,
         "remote_version": remote,

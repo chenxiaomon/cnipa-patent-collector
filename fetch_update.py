@@ -17,13 +17,12 @@ import sys
 import urllib.request
 import urllib.error
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from settings import raw_file_urls
+
 if sys.platform == 'win32':
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
-
-_REPO   = "chenxiaomon/cnipa-patent-collector"
-_BRANCH = "main"
-_RAW    = f"https://raw.githubusercontent.com/{_REPO}/{_BRANCH}"
 
 # 需要同步的代码文件（不含数据文件）
 _FILES = [
@@ -64,44 +63,59 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def _download(filename: str, timeout: int = 30) -> bool:
-    url = f"{_RAW}/{filename}"
+    """依次尝试各更新源下载单个文件，任一成功即写入；全部失败返回 False。
+
+    404 视为"远端不存在"（旧机器有而新版移除），在所有源都 404 后才判定跳过。
+    """
     local = os.path.join(_BASE_DIR, filename)
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            content = resp.read()
-        tmp = local + '.tmp'
-        with open(tmp, 'wb') as f:
-            f.write(content)
-        os.replace(tmp, local)
-        print(f"  [✓] {filename}")
-        return True
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            # 文件在远端不存在（可能是旧机器有而新版移除了），跳过
-            print(f"  [-] {filename}（远端不存在，跳过）")
-        else:
-            print(f"  [✗] {filename}：HTTP {e.code}")
-        return False
-    except urllib.error.URLError as e:
-        print(f"  [✗] {filename}：网络错误 {e.reason}")
-        return False
-    except OSError as e:
-        print(f"  [✗] {filename}：写入失败 {e}")
-        return False
+    last_reason = None
+    all_404 = True
+    for url in raw_file_urls(filename):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                content = resp.read()
+            tmp = local + '.tmp'
+            with open(tmp, 'wb') as f:
+                f.write(content)
+            os.replace(tmp, local)
+            print(f"  [✓] {filename}")
+            return True
+        except urllib.error.HTTPError as e:
+            last_reason = f"HTTP {e.code}"
+            if e.code != 404:
+                all_404 = False
+            continue
+        except urllib.error.URLError as e:
+            last_reason = f"网络错误 {e.reason}"
+            all_404 = False
+            continue
+        except OSError as e:
+            print(f"  [✗] {filename}：写入失败 {e}")
+            return False
+
+    if all_404:
+        # 所有源都 404：文件确实不存在于远端，跳过不算失败
+        print(f"  [-] {filename}（远端不存在，跳过）")
+    else:
+        print(f"  [✗] {filename}：所有更新源均失败（{last_reason}）")
+    return False
 
 
 def _check_network() -> bool:
-    try:
-        urllib.request.urlopen(f"{_RAW}/settings.py", timeout=10)
-        return True
-    except Exception:
-        return False
+    """任一更新源能取到 settings.py 即视为网络可用。"""
+    for url in raw_file_urls('settings.py'):
+        try:
+            urllib.request.urlopen(url, timeout=10)
+            return True
+        except Exception:
+            continue
+    return False
 
 
 def cmd_check() -> None:
     print("检查网络连通性…")
     if _check_network():
-        print(f"[✓] 可访问 GitHub（{_RAW}）")
+        print("[✓] 至少一个更新源可访问")
     else:
         print("[✗] 无法访问 GitHub，请检查网络或代理设置")
         sys.exit(1)
