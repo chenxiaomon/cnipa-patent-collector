@@ -26,6 +26,9 @@ if sys.platform == "win32":
 # 项目根目录（settings.py 所在的目录）
 BASE_DIR = Path(__file__).parent.absolute()
 
+# 本地版本标记文件（随代码 git 提交，供网络更新检查对比）
+VERSION_FILE = BASE_DIR / 'VERSION'
+
 # 数据目录
 DATA_DIR = BASE_DIR / 'data'
 RESULTS_DIR = DATA_DIR / 'results'

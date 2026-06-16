@@ -487,6 +487,8 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         return {"action": action, "title": "更新系统代码", "command": [py, "-u", "upgrade.py"]}
     if action == "fetch_update":
         return {"action": action, "title": "无 git 更新代码", "command": [py, "-u", "fetch_update.py"]}
+    if action == "check_update":
+        return {"action": action, "title": "检查更新", "command": [py, "-u", "check_update.py"]}
 
     raise ValueError(f"未知操作: {action}")
 
@@ -669,6 +671,11 @@ HTML = r"""<!doctype html>
     <section id="loginBanner" class="login-banner hidden">
       <span>🔐 浏览器正在等待您完成验证码并登录</span>
       <button class="btn primary" id="loginDoneBtn">✅ 我已完成验证码</button>
+    </section>
+    <section id="updateBanner" class="login-banner hidden">
+      <span id="updateBannerText">🆕 发现新版本</span>
+      <button class="btn primary" id="updateNowBtn">立即更新</button>
+      <button class="btn secondary" id="updateDismissBtn">稍后</button>
     </section>
 
     <!-- ═══ Tab 1：概览 ═══ -->
@@ -1063,12 +1070,13 @@ HTML = r"""<!doctype html>
         </article>
       </section>
       <article class="panel operator-only" style="margin-bottom:14px">
-        <div class="panel-head"><h2>代码更新</h2><span class="hint">upgrade.py / fetch_update.py</span></div>
+        <div class="panel-head"><h2>代码更新</h2><span class="hint">check_update / upgrade / fetch_update</span></div>
         <div class="button-row">
+          <button class="btn secondary" id="checkUpdateBtn">🔎 检查更新</button>
           <button class="btn primary" data-action="upgrade_code">🔄 更新系统代码（git）</button>
           <button class="btn secondary" data-action="fetch_update">📥 无 git 更新（HTTP）</button>
         </div>
-        <div class="hint" style="margin-top:6px">有网络时从 GitHub 拉取最新代码；无 git 环境可用 HTTP 方式</div>
+        <div class="hint" style="margin-top:6px">发现新版本时顶部会自动提示；有网络时从 GitHub 拉取最新代码，无 git 环境可用 HTTP 方式</div>
       </article>
       <article class="panel operator-only">
         <div class="panel-head">
@@ -2098,6 +2106,20 @@ function bindEvents() {
     } catch (e) { showToast('发送失败：' + e.message); }
   });
 
+  $('#updateNowBtn').addEventListener('click', () => {
+    // 根据检查结果选择更新通道：git 模式走 upgrade_code，http 模式走 fetch_update
+    const action = (lastUpdateCheck && lastUpdateCheck.method === 'http')
+      ? 'fetch_update' : 'upgrade_code';
+    $('#updateBanner').classList.add('hidden');
+    startJob(action, {});  // startJob 内部已切到任务日志 Tab
+  });
+
+  $('#updateDismissBtn').addEventListener('click', () => {
+    $('#updateBanner').classList.add('hidden');
+  });
+
+  $('#checkUpdateBtn').addEventListener('click', () => checkUpdate(true));
+
   $('#importAgencyBtn').addEventListener('click', async () => {
     const fi = $('#agencyFileInput');
     const hint = $('#agencyImportHint');
@@ -2252,6 +2274,36 @@ async function importDelta() {
   } catch (e) { if (hint) hint.textContent = '导入失败：' + e.message; }
 }
 
+// ── 更新检查 ──────────────────────────────────────────────────────────
+// checkResult 保存最近一次检查结果，供「立即更新」决定走 git 还是 http
+let lastUpdateCheck = null;
+
+async function checkUpdate(showNoUpdateToast = false) {
+  try {
+    const d = await api('/api/check-update');
+    lastUpdateCheck = d;
+    const banner = $('#updateBanner');
+    const text = $('#updateBannerText');
+    if (d.has_update) {
+      if (text) {
+        text.textContent = d.method === 'git'
+          ? `🆕 发现新版本：${d.pending_commits.length} 个新提交待更新`
+          : `🆕 发现新版本：${d.local_version} → ${d.remote_version}`;
+      }
+      if (banner) banner.classList.remove('hidden');
+    } else {
+      if (banner) banner.classList.add('hidden');
+      if (showNoUpdateToast) {
+        showToast(d.error ? ('检查失败：' + d.error) : `已是最新版本（${d.local_version}）`);
+      }
+    }
+    return d;
+  } catch (e) {
+    if (showNoUpdateToast) showToast('检查更新失败：' + e.message);
+    return null;
+  }
+}
+
 // ── Boot ─────────────────────────────────────────────────────────────
 async function boot() {
   initTabRouting();
@@ -2259,6 +2311,8 @@ async function boot() {
   await Promise.all([refreshSummary(), refreshJobs(), loadSearchList(), loadCredentials()]);
   setInterval(refreshSummary, 5000);
   setInterval(refreshJobs, 2500);
+  checkUpdate();                              // 启动时检查一次
+  setInterval(checkUpdate, 3600000);          // 每小时检查一次
 }
 
 boot().catch(e => showToast(e.message));
@@ -2295,6 +2349,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 summary = build_summary(self.job_manager)
                 summary['is_operator'] = self.is_operator
                 self.send_json(summary)
+            elif path == "/api/check-update":
+                # 同步调 check_update.py，解析最后一行 JSON 返回前端（轻量，不进 JobManager）
+                proc = subprocess.run(
+                    [resolve_task_python(), "-u", "check_update.py"],
+                    cwd=str(BASE_DIR), capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=40,
+                )
+                result = None
+                for line in reversed(proc.stdout.splitlines()):
+                    line = line.strip()
+                    if line.startswith("{"):
+                        try:
+                            result = json.loads(line)
+                            break
+                        except json.JSONDecodeError:
+                            continue
+                if result is None:
+                    self.send_json({"has_update": False, "error": "检查脚本无有效输出"}, status=502)
+                else:
+                    self.send_json(result)
             elif path == "/api/requests":
                 if not self.is_operator:
                     self.send_json({"error": "仅操作员可查看需求列表"}, status=403)

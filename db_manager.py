@@ -102,12 +102,12 @@ class PatentsDB:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_shenqingrxm ON patents(shenqingrxm)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_status_code ON patents(status_code)")
             conn.execute(_CREATE_REQUESTS_TABLE)
-            # 对已有数据库做无损迁移：新列已存在时 SQLite 抛 OperationalError，忽略即可
+            # 对已有数据库做无损迁移：列已存在时 SQLite 抛 "duplicate column name"，忽略即可
             for col in ('daili_jg TEXT', 'daili_r TEXT'):
                 try:
                     conn.execute(f"ALTER TABLE patents ADD COLUMN {col}")
                 except sqlite3.OperationalError as e:
-                    if 'already exists' not in str(e).lower():
+                    if 'duplicate column' not in str(e).lower():
                         raise  # 非"列已存在"的错误应当暴露
             conn.commit()
 

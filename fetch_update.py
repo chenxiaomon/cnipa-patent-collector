@@ -27,6 +27,8 @@ _RAW    = f"https://raw.githubusercontent.com/{_REPO}/{_BRANCH}"
 
 # 需要同步的代码文件（不含数据文件）
 _FILES = [
+    "VERSION",
+    "check_update.py",
     "fetch_update.py",
     "upgrade.py",
     "sync.py",
@@ -49,6 +51,7 @@ _FILES = [
     "retry_failed.py",
     "import_from_cache.py",
     "import_public_search.py",
+    "import_agency_csv.py",
     "export_public_search.py",
     "merge_detection_logs.py",
     "validate_results.py",
