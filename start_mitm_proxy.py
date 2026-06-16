@@ -7,7 +7,6 @@
 
 import sys
 import os
-import subprocess
 
 # 在任何 print 之前强制 UTF-8，防止 emoji/中文在 GBK 终端崩溃
 if sys.platform == "win32":

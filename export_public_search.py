@@ -10,7 +10,6 @@
 import json
 import os
 import sys
-from pathlib import Path
 
 try:
     import pandas as pd
@@ -150,7 +149,7 @@ def load_raw_responses(raw_dir: str) -> list:
 
             print(f" → 新增 {new_count} 条（累计 {record_count} 条）")
 
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError:
             print(f"[!] JSON 解析失败: {filename}")
         except Exception as e:
             print(f"[!] 处理失败: {filename} - {e}")
@@ -176,8 +175,7 @@ def save_to_excel(records: list, output_file: str):
         with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
             df.to_excel(writer, sheet_name='搜索结果', index=False)
 
-            # 获取工作簿和工作表
-            workbook = writer.book
+            # 获取工作表（用于冻结首行等格式设置）
             worksheet = writer.sheets['搜索结果']
 
             # 冻结首行

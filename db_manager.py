@@ -15,7 +15,6 @@ import sys
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
 
 _JSON_FIELDS = {'fwxx_list', 'bhsjtzs_data'}
 

@@ -8,8 +8,6 @@
 
 import unittest
 import json
-import tempfile
-import os
 from detection_logger import DetectionRecord
 
 

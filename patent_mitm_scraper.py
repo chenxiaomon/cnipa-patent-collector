@@ -16,7 +16,7 @@ from mitmproxy import http
 # 导入日志模块
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
-from detection_logger import DetectionLogger, DetectionRecord
+from detection_logger import DetectionLogger
 from cache_utils import normalize_app_no, read_json_cache, write_json_cache
 from settings import FORCE_UPDATE_FLAG, PATENT_CACHE_FILE, PATENT_FWXX_CACHE_FILE, MARKER_FILE
 

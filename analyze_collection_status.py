@@ -9,9 +9,7 @@
   - 查看待重试的申请号
 """
 
-import json
 from datetime import datetime, timedelta
-from pathlib import Path
 
 from settings import DATA_DIR, PATENTS_DB_FILE
 from db_manager import PatentsDB

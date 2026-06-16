@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from settings import DETECTION_LOG_JSONL_FILE, RESULTS_DIR, PATENTS_DB_FILE
+from settings import DETECTION_LOG_JSONL_FILE, PATENTS_DB_FILE
 from db_manager import PatentsDB
 from cache_utils import normalize_app_no as _normalize_app_no
 

@@ -43,7 +43,6 @@ import time
 import random
 import argparse
 from datetime import datetime, timezone
-from pathlib import Path
 
 # 虚拟显示器必须在 pyautogui / Xlib 任何 import 之前启动
 if os.getenv('USE_VIRTUAL_DISPLAY', '').lower() in ('true', '1', 'yes') \
@@ -60,28 +59,23 @@ if os.getenv('USE_VIRTUAL_DISPLAY', '').lower() in ('true', '1', 'yes') \
 
 # PyAutoGUI 和 Selenium
 import pyautogui
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-import undetected_chromedriver as uc
 
 # 导入现有模块
 sys.path.insert(0, os.path.dirname(__file__))
 from detection_logger import DetectionLogger
 from browser_utils import (
-    is_browser_alive, create_driver_with_retry,
+    is_browser_alive,
 )
 from coordinate_service import CoordinateService
 from browser_service import BrowserService
 from input_service import InputService
-from cache_utils import read_json_cache, write_json_cache, poll_cache_for_key, clear_cache_key
+from cache_utils import write_json_cache, poll_cache_for_key, clear_cache_key
 from settings import (
     CNIPA_URL, DETECTION_LOG_JSONL_FILE, CONFIG_FILE, CONFIG_FWXX_FILE,
     PATENT_CACHE_FILE, PATENT_FWXX_CACHE_FILE, MARKER_FILE,
     FWXX_UNMATCHED_FILE, PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE,
-    MITM_TIMEOUT, MITM_POLL_INTERVAL, USE_MITM_PROXY,
-    FWXX_TRIGGER_ANJIANYWZT, PATENTS_DB_FILE,
+    USE_MITM_PROXY,
+    PATENTS_DB_FILE,
     FWXX_PAGE_LOAD_WAIT, FWXX_STARTUP_COUNTDOWN,
     FWXX_INPUT_DELAY_MIN, FWXX_INPUT_DELAY_MAX, FWXX_INPUT_PAUSE_PROB,
     FWXX_POST_SEARCH_WAIT, FWXX_DETAIL_CLICK_WAIT, FWXX_TAB_SWITCH_WAIT,

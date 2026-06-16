@@ -8,7 +8,6 @@ CNIPA 公开搜索自动翻页脚本
 """
 
 import argparse
-import os
 import sys
 import time
 import undetected_chromedriver as uc
@@ -18,7 +17,6 @@ from browser_utils import _get_chrome_major_version
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.service import Service
 
 # Dashboard 通过写入此文件向本进程发出"查询已就绪"信号，
 # 与 login_ready.flag 的机制完全对称。
@@ -102,7 +100,8 @@ def is_next_page_available(driver) -> bool:
     """检测'下一页'按钮是否可用"""
     try:
         # CSS 选择器：.ant-pagination-next[aria-disabled="false"]
-        next_btn = driver.find_element(
+        # find_element 找不到会抛异常（被下方 except 捕获），其副作用即是存在性检查
+        driver.find_element(
             By.CSS_SELECTOR,
             ".ant-pagination-next[aria-disabled='false']"
         )

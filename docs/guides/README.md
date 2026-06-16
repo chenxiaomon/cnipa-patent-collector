@@ -1,0 +1,37 @@
+# 功能指南索引
+
+各采集功能的操作指南与实现说明（从项目根目录归档至此）。
+架构级文档见上一级 [docs/](../)。
+
+## 可视化控制台
+
+- [VISUAL_UI_GUIDE.md](VISUAL_UI_GUIDE.md) — 本地 Web 控制台启动与操作流程
+
+## 主采集流程
+
+- [PHASE0_COMPLETE_GUIDE.md](PHASE0_COMPLETE_GUIDE.md) — Phase 0 手动浏览采集完整指南
+- [PHASE0_STATUS_SUMMARY.md](PHASE0_STATUS_SUMMARY.md) — Phase 0 状态说明
+- [PHASE0_TEST_CHECKLIST.md](PHASE0_TEST_CHECKLIST.md) — Phase 0 测试清单
+- [IMPORT_FROM_CACHE_GUIDE.md](IMPORT_FROM_CACHE_GUIDE.md) — MITM 缓存导入指南
+- [BROWSER_LAUNCH_GUIDE.md](BROWSER_LAUNCH_GUIDE.md) — 浏览器启动指南
+
+## 发文信息采集
+
+- [README_COLLECT_FWXX.md](README_COLLECT_FWXX.md) — 发文采集说明
+- [FWXX_QUICK_REFERENCE.md](FWXX_QUICK_REFERENCE.md) — 发文采集速查
+- [FWXX_IMPLEMENTATION_COMPLETE.md](FWXX_IMPLEMENTATION_COMPLETE.md) — 发文采集实现细节
+
+## 公开查询采集
+
+- [PUBLIC_SEARCH_GUIDE.md](PUBLIC_SEARCH_GUIDE.md) — 公开查询采集指南
+- [QUICK_START_PUBLIC_SEARCH.md](QUICK_START_PUBLIC_SEARCH.md) — 公开查询快速上手
+- [PUBLIC_SEARCH_IMPLEMENTATION_SUMMARY.md](PUBLIC_SEARCH_IMPLEMENTATION_SUMMARY.md) — 公开查询实现总结
+
+## 策略与重试
+
+- [UPDATE_STRATEGY_GUIDE.md](UPDATE_STRATEGY_GUIDE.md) — 更新策略指南
+- [RETRY_GUIDE_CN.md](RETRY_GUIDE_CN.md) — 失败重试指南
+
+## 其他
+
+- [FEATURES_SUMMARY.md](FEATURES_SUMMARY.md) — 功能总览

@@ -30,10 +30,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest
+          pip install pytest ruff
 
       - name: 语法检查
         run: python -m compileall -q $(ls *.py)
+
+      - name: 代码检查（ruff lint）
+        run: ruff check .
 
       - name: 版本一致性校验（VERSION == pyproject.toml）
         run: python scripts/sync_version.py --check

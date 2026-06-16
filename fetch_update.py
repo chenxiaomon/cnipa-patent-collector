@@ -130,7 +130,7 @@ def cmd_update() -> None:
         print("[✗] 无法访问 GitHub，请检查网络或代理设置")
         sys.exit(1)
 
-    success, skipped, failed = 0, 0, 0
+    success, failed = 0, 0
     for f in _FILES:
         ok = _download(f)
         if ok:

@@ -17,7 +17,6 @@
 
 import json
 import argparse
-from collections import defaultdict
 from datetime import datetime
 
 

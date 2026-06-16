@@ -60,13 +60,10 @@ def calculate_needs_update(last_update_time: datetime, frequency_days: int) -> t
     needs_update = now >= next_update_time
 
     if needs_update:
-        # 如果需要更新，计算已经超期多少天
-        days_overdue = (now - next_update_time).days
         days_until = 0
     else:
         # 如果不需要更新，计算还要多少天才到下次更新时间
         days_until = (next_update_time - now).days
-        days_overdue = 0
 
     return needs_update, days_until, next_update_time
 
@@ -362,7 +359,6 @@ def show_update_status(frequency_days: int = None):
         frequency_days: 如果指定，只显示该频率的申请号
     """
     focus_strategy = load_focus_strategy()
-    detection_log = load_detection_log()
     status_breakdown = focus_strategy.get('status_breakdown', {})
 
     results = analyze_updates()

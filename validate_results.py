@@ -16,11 +16,7 @@
     python validate_results.py --check-fwxx   # 仅检查发文
 """
 
-import json
 import pandas as pd
-import sys
-from pathlib import Path
-from collections import defaultdict
 
 # 配置
 from settings import PATENTS_EXCEL_FILE, PATENTS_DB_FILE

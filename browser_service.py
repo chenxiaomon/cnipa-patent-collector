@@ -6,7 +6,6 @@
 
 import os
 import sys
-import subprocess
 import tempfile
 import threading
 import time

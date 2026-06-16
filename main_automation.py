@@ -27,14 +27,12 @@ if os.getenv('USE_VIRTUAL_DISPLAY', '').lower() in ('true', '1', 'yes') \
 import time
 import random
 import warnings
-import json
-from datetime import datetime
 
 # 禁用 undetected_chromedriver 的垃圾回收警告（已知 bug）
 warnings.filterwarnings("ignore", category=ResourceWarning)
 
 try:
-    import undetected_chromedriver as uc
+    import undetected_chromedriver as uc  # noqa: F401  仅用于依赖可用性探测，缺失时下方 except 退出
     import pyautogui
 except ImportError as e:
     print(f"❌ 缺失依赖: {e}")
@@ -43,14 +41,14 @@ except ImportError as e:
 
 from detection_logger import DetectionLogger, DetectionRecord
 from browser_utils import (
-    fill_vue_input, is_browser_alive, create_driver_with_retry,
+    is_browser_alive,
 )
 from cache_utils import normalize_app_no, parse_app_no_list, poll_cache_with_retry
 from coordinate_service import CoordinateService
 from browser_service import BrowserService, stop_virtual_display
 from input_service import InputService
 from settings import (
-    CNIPA_URL, SEARCH_LIST_FILE, CONFIG_FILE, FORCE_UPDATE_FLAG,
+    CNIPA_URL, SEARCH_LIST_FILE, FORCE_UPDATE_FLAG,
     PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE, MITM_TIMEOUT, MITM_POLL_INTERVAL,
     PATENT_CACHE_FILE, USE_MITM_PROXY, PATENTS_DB_FILE, DETECTION_LOG_JSONL_FILE,
     DATA_DIR,

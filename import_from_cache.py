@@ -19,8 +19,6 @@ Phase 0 缓存导入脚本
 import json
 import os
 import sys
-from datetime import datetime
-from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 from detection_logger import DetectionLogger, DetectionRecord

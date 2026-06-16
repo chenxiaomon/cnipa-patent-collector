@@ -2524,7 +2524,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self.send_json({"error": "未收到文件"}, status=400)
                     return
                 # 写临时文件，由 import_agency_csv 解析
-                import tempfile, os as _os
+                import tempfile
+                import os as _os
                 filename = fs["file"].filename if hasattr(fs["file"], "filename") else "upload.csv"
                 suffix = Path(filename).suffix.lower() or ".csv"
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -2579,7 +2580,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 def _atomic_append(file_path: Path, new_entries: list[str]) -> int:
                     existing_set = set()
                     if file_path.exists():
-                        existing_set = {l.strip() for l in file_path.read_text(encoding='utf-8').splitlines() if l.strip()}
+                        existing_set = {ln.strip() for ln in file_path.read_text(encoding='utf-8').splitlines() if ln.strip()}
                     fresh = [e for e in new_entries if e not in existing_set]
                     if fresh:
                         merged = sorted(existing_set) + fresh

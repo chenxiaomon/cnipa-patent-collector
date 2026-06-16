@@ -17,12 +17,12 @@
 import json
 import sys
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from cache_utils import normalize_app_no
 from detection_logger import DetectionLogger, DetectionRecord
-from settings import RAW_RESPONSES_DIR, PATENTS_DB_FILE, DETECTION_LOG_JSONL_FILE
+from settings import RAW_RESPONSES_DIR, DETECTION_LOG_JSONL_FILE
 
 LOG_FILE = str(DETECTION_LOG_JSONL_FILE)
 
