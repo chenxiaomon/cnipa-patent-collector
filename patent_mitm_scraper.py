@@ -27,6 +27,13 @@ FORCE_UPDATE_FLAG = str(FORCE_UPDATE_FLAG)
 class PatentMITMScraper:
     """MITM 爬虫，用于拦截和处理专利 API 响应"""
 
+    # 路由表：URL 关键词 → 处理方法名。匹配顺序为列表顺序，首个命中即分派。
+    # 不匹配任何路由的 JSON 响应走默认的 _process_record()（提取专利列表数据）。
+    _API_ROUTES = [
+        ('/api/view/gn/fwxx', '_process_fwxx_response'),
+        ('/api/view/gn/sqxx', '_process_sqxx_response'),
+    ]
+
     def __init__(self):
         self.logger = DetectionLogger()
         self.processed_count = 0
@@ -34,33 +41,23 @@ class PatentMITMScraper:
         self._cache_lock = threading.Lock()
 
     def response(self, flow: http.HTTPFlow) -> None:
-        """
-        拦截响应的钩子函数
-        """
-        # 首先，只关心 CNIPA 的请求
+        """拦截响应的钩子函数：CNIPA 域名 + 200 + JSON 才处理。"""
         if 'cponline.cnipa.gov.cn' not in flow.request.pretty_url:
             return
-
-        # 跳过非 200 响应
         if flow.response.status_code != 200:
             return
-
-        # 只处理 JSON 响应
         content_type = flow.response.headers.get('content-type', '')
         if 'application/json' not in content_type:
             return
 
-        # 检测发文信息 API
-        if '/api/view/gn/fwxx' in flow.request.pretty_url:
-            self._process_fwxx_response(flow)
-            return
+        # 按路由表分派到专用 handler；无命中则走默认列表数据提取
+        url = flow.request.pretty_url
+        for pattern, method_name in self._API_ROUTES:
+            if pattern in url:
+                getattr(self, method_name)(flow)
+                return
 
-        # 检测专利详情 API — 从中提取代理机构 / 代理人
-        if '/api/view/gn/sqxx' in flow.request.pretty_url:
-            self._process_sqxx_response(flow)
-            return
-
-        print(f"\n[+] 拦截到 JSON 响应: {flow.request.pretty_url[:100]}")
+        print(f"\n[+] 拦截到 JSON 响应: {url[:100]}")
 
         try:
             # 显式 UTF-8 解码，避免 mitmproxy 在响应头无 charset 时回退到 latin-1
