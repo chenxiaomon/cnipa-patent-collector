@@ -956,8 +956,10 @@ HTML = r"""<!doctype html>
             <div class="info-row"><span>重试清单</span><span id="retryCount">—</span></div>
           </div>
           <div class="button-row">
-            <button class="btn primary" data-action="retry_failed">重试失败记录</button>
+            <button class="btn secondary" data-action="retry_failed">① 生成失败清单</button>
+            <button class="btn primary" id="retryRecollectBtn">② 立即重新采集</button>
           </div>
+          <div class="hint" style="margin-top:6px">先生成失败清单（扫描 DB 中失败记录），再立即重采；重采需 MITM 主代理已启动</div>
         </article>
         <article class="panel">
           <div class="panel-head"><h2>数据库维护</h2></div>
@@ -2032,6 +2034,10 @@ function bindEvents() {
 
   $('#runUpdate').addEventListener('click', () =>
     startJob('main_update_dynamic', { file: $('#updateFile').value, count: $('#updateLimit').value }));
+
+  // 立即用失败清单重新采集（复用 main_update_dynamic，预选 retry_failed.txt）
+  $('#retryRecollectBtn').addEventListener('click', () =>
+    startJob('main_update_dynamic', { file: 'data/retry_failed.txt' }));
 
   $('#generateStrategy').addEventListener('click', () =>
     startJob('strategy_generate', { frequency: $('#strategyFrequency').value }));
