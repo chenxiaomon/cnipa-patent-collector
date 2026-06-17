@@ -1,0 +1,66 @@
+{
+    "code": 200,
+    "data": {
+        "zhuluxmxx": {
+            "zhuluxmxx": {
+                "zhuanlimc": "一种多通阀装置",
+                "zhuanlisqh": "2026104796018",
+                "anjianywzt": "等待实审提案",
+                "fufenlhbbh": "2006.01",
+                "fufenlh": "F16K31/04",
+                "fenleirq": "2026-05-07",
+                "falvzt": " ",
+                "zhufenlhbbh": "2006.01",
+                "fenantjr": "",
+                "shenqingr": "2026-04-13",
+                "zhufenlh": "F16K11/074"
+            },
+            "isShow": true
+        },
+        "shenqingren": {
+            "shenqingrenList": [
+                {
+                    "shenqingrgb": "中国",
+                    "shenqingryb": "--",
+                    "shenqingrxm": "浙江三花智能控制股份有限公司",
+                    "shenqingrdz": "--"
+                }
+            ],
+            "isShow": true
+        },
+        "famingren": {
+            "famingrenList": [
+                {
+                    "famingrxm": "请求不公布姓名"
+                }
+            ],
+            "isShow": true
+        },
+        "lianxiren": {
+            "lianxirenList": [],
+            "isShow": false
+        },
+        "dailijg": {
+            "dailijgList": [
+                {
+                    "diyidlrxm": "陈泽元",
+                    "dailijgdm": "浙江侨悦专利代理有限公司"
+                }
+            ],
+            "isShow": true
+        },
+        "youxianq": {
+            "youxianqList": [],
+            "isShow": false
+        },
+        "guojisqjd": {
+            "guojisqjdList": [],
+            "isShow": false
+        },
+        "zhuluxmbg": {
+            "zhuluxmbgList": [],
+            "isShow": false
+        }
+    },
+    "msg": "成功"
+}

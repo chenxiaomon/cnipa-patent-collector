@@ -3,15 +3,22 @@
 """
 patent_mitm_scraper.py 的 Mock flow 单元测试
 
-借鉴 selenium-wire (test_handler.py) 的 Mock flow 模式：
-用 unittest.mock.Mock 构造 mitmproxy HTTPFlow 对象，
-不启动真实代理 / 浏览器 / 数据库，纯粹验证拦截逻辑。
+两层测试：
+1. Mock 单元测试（借鉴 selenium-wire test_handler.py）
+   — 验证解析逻辑正确，防止回归；不能检测 CNIPA 真实改字段。
+
+2. 金标准（golden master）fixture 测试
+   — 用 tests/fixtures/*.json 中存档的真实响应验证关键字段存在。
+   — CNIPA 改字段名时，只有这层会报红；需人工替换 fixture 并更新断言。
 """
 
 import json
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import Mock, patch
+
+_FIXTURES = Path(__file__).parent / 'fixtures'
 
 
 # ── 工具：构造 Mock flow ─────────────────────────────────────────────
@@ -376,6 +383,196 @@ class TestProcessFwxx(unittest.TestCase):
         with patch('patent_mitm_scraper.write_json_cache') as mock_write:
             self.scraper._process_fwxx_response(flow)
             mock_write.assert_not_called()
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Test 5: 金标准（golden master）fixture 测试
+#  — 使用 tests/fixtures/ 中存档的真实 CNIPA 响应
+#  — 防御"CNIPA 真改字段名"场景；mock 单元测试检测不到此类变化
+#  — 当测试报红时：替换 fixture 文件 + 更新断言 = 一次 API 变更记录
+# ══════════════════════════════════════════════════════════════════════
+
+class TestGoldenMasterSqxx(unittest.TestCase):
+    """用真实存档响应验证 _process_sqxx_response 的字段提取契约。
+
+    这是金标准测试，不是 mock 测试——fixture 里的字段名就是契约本身。
+    CNIPA 把 dailijgdm 改成 agencyName 时，mock 测试照样绿，
+    但这里 assertIn('dailijgdm', item) 会红，提示需要更新采集逻辑。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        fixture_path = _FIXTURES / 'sqxx_real_response.json'
+        if not fixture_path.exists():
+            raise unittest.SkipTest(f'fixture 不存在，跳过: {fixture_path}')
+        cls.fixture = json.loads(fixture_path.read_text(encoding='utf-8'))
+
+    def test_fixture_has_code_200(self):
+        """API 响应格式：顶层 code 字段存在且为 200。"""
+        self.assertEqual(self.fixture.get('code'), 200)
+
+    def test_fixture_has_data_key(self):
+        """API 响应格式：顶层 data 字段存在。"""
+        self.assertIn('data', self.fixture)
+
+    def test_fixture_has_app_no_field(self):
+        """申请号字段路径：data.zhuluxmxx.zhuluxmxx.zhuanlisqh 存在。"""
+        app_no = (
+            self.fixture['data']
+            .get('zhuluxmxx', {})
+            .get('zhuluxmxx', {})
+            .get('zhuanlisqh')
+        )
+        self.assertIsNotNone(app_no, "申请号字段 zhuanlisqh 缺失——API 可能已更改路径")
+
+    def test_fixture_has_dailijg_structure(self):
+        """代理机构字段路径：data.dailijg.dailijgList 存在且非空。"""
+        dailijg = self.fixture['data'].get('dailijg', {})
+        self.assertIn('dailijgList', dailijg, "dailijg.dailijgList 缺失——API 可能已更改结构")
+        lst = dailijg['dailijgList']
+        self.assertIsInstance(lst, list)
+        self.assertGreater(len(lst), 0, "dailijgList 为空，无法验证字段名")
+
+    def test_fixture_dailijg_item_has_agency_field(self):
+        """代理机构名称字段：dailijgList[0].dailijgdm 存在。
+
+        ⚠️  如果 CNIPA 把 dailijgdm 改名，这里会红——
+        需同步更新 _process_sqxx_response() 的解析逻辑。
+        """
+        item = self.fixture['data']['dailijg']['dailijgList'][0]
+        self.assertIn(
+            'dailijgdm', item,
+            f"代理机构字段 dailijgdm 缺失，当前字段：{list(item.keys())}",
+        )
+
+    def test_fixture_dailijg_item_has_agent_field(self):
+        """代理人姓名字段：dailijgList[0].diyidlrxm 存在。"""
+        item = self.fixture['data']['dailijg']['dailijgList'][0]
+        self.assertIn(
+            'diyidlrxm', item,
+            f"代理人字段 diyidlrxm 缺失，当前字段：{list(item.keys())}",
+        )
+
+    def test_golden_master_full_extraction(self):
+        """端到端：用真实 fixture 跑 _process_sqxx_response，验证 DB 写入正确。"""
+        patcher = patch('patent_mitm_scraper.DetectionLogger')
+        mock_logger_cls = patcher.start()
+        mock_db = mock_logger_cls.return_value._db
+        try:
+            from patent_mitm_scraper import PatentMITMScraper
+            scraper = PatentMITMScraper()
+
+            flow = _make_flow(
+                'https://cponline.cnipa.gov.cn/api/view/gn/sqxx?token=abc',
+                body=json.dumps(self.fixture, ensure_ascii=False).encode('utf-8'),
+            )
+            scraper._process_sqxx_response(flow)
+
+            mock_db.update_fields.assert_called_once()
+            app_no, fields = mock_db.update_fields.call_args[0]
+            self.assertEqual(app_no, '2026104796018')
+            self.assertIn('daili_jg', fields)
+            self.assertIn('daili_r', fields)
+            self.assertEqual(fields['daili_jg'], '浙江侨悦专利代理有限公司')
+        finally:
+            patcher.stop()
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Test 6: 防御性失败态测试
+#  — 覆盖"线上真正炸的地方"：HTTP 200 但业务错误码、null 数据、HTML 错误页等
+# ══════════════════════════════════════════════════════════════════════
+
+class TestDefensiveSqxx(unittest.TestCase):
+    """_process_sqxx_response 的防御性失败态覆盖。"""
+
+    def setUp(self):
+        patcher = patch('patent_mitm_scraper.DetectionLogger')
+        self.mock_logger_cls = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.mock_db = self.mock_logger_cls.return_value._db
+
+        from patent_mitm_scraper import PatentMITMScraper
+        self.scraper = PatentMITMScraper()
+
+    def test_http_200_but_business_error_code(self):
+        """HTTP 200 但 body.code != 200（最常见的 API 坑）：不写 DB。"""
+        resp = {"code": 401, "msg": "未登录，请重新登录", "data": None}
+        flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/sqxx?token=abc',
+            body=_json_body(resp),
+        )
+        self.scraper._process_sqxx_response(flow)
+        self.mock_db.update_fields.assert_not_called()
+
+    def test_data_is_null(self):
+        """data 字段为 null（会话过期时常见）：不写 DB，不抛异常。"""
+        resp = {"code": 200, "data": None, "msg": "成功"}
+        flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/sqxx?token=abc',
+            body=_json_body(resp),
+        )
+        # 不应抛 AttributeError / TypeError
+        self.scraper._process_sqxx_response(flow)
+        self.mock_db.update_fields.assert_not_called()
+
+    def test_data_is_empty_dict(self):
+        """data 是空 dict：dailijg 缺失，不写 DB，不抛异常。"""
+        resp = {"code": 200, "data": {}, "msg": "成功"}
+        flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/sqxx?token=abc',
+            body=_json_body(resp),
+        )
+        self.scraper._process_sqxx_response(flow)
+        self.mock_db.update_fields.assert_not_called()
+
+    def test_body_is_html_not_json(self):
+        """被限流或会话过期时，服务器返回 HTML 错误页：json.loads 失败，不写 DB，不崩溃。"""
+        html_body = b'<html><body><h1>503 Service Unavailable</h1></body></html>'
+        flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/sqxx?token=abc',
+            body=html_body,
+        )
+        # 不应抛 JSONDecodeError，应静默处理
+        self.scraper._process_sqxx_response(flow)
+        self.mock_db.update_fields.assert_not_called()
+
+    def test_dailijgdm_value_is_null(self):
+        """字段存在但值为 null（代理机构未填写时）：不写 DB。"""
+        resp = {
+            "code": 200,
+            "data": {
+                "zhuluxmxx": {"zhuluxmxx": {"zhuanlisqh": "2026104796018"}},
+                "dailijg": {
+                    "dailijgList": [{"diyidlrxm": "张三", "dailijgdm": None}],
+                    "isShow": True,
+                },
+            },
+        }
+        flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/sqxx?token=abc',
+            body=_json_body(resp),
+        )
+        self.scraper._process_sqxx_response(flow)
+        # dailijgdm 为 None，_process_sqxx_response 中 `or None` 会保留 None，
+        # 然后 `if not daili_jg: return` 跳过写入
+        self.mock_db.update_fields.assert_not_called()
+
+    def test_dailijg_key_missing_entirely(self):
+        """dailijg 字段整体缺失（API 新增字段前的旧格式）：不写 DB，不抛异常。"""
+        resp = {
+            "code": 200,
+            "data": {
+                "zhuluxmxx": {"zhuluxmxx": {"zhuanlisqh": "2026104796018"}},
+                # dailijg 完全不存在
+            },
+        }
+        flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/sqxx?token=abc',
+            body=_json_body(resp),
+        )
+        self.scraper._process_sqxx_response(flow)
+        self.mock_db.update_fields.assert_not_called()
 
 
 if __name__ == '__main__':
