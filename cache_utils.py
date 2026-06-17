@@ -136,6 +136,7 @@ def poll_cache_with_retry(
     interval: float = 0.5,
     max_attempts: int = 3,
     validate: Callable[[Any], bool] = None,
+    on_retry: Callable[[int], None] = None,
 ) -> Tuple[Optional[Any], int]:
     """
     带指数退避重试的缓存轮询。
@@ -150,6 +151,7 @@ def poll_cache_with_retry(
         interval:      轮询间隔秒数
         max_attempts:  最大尝试次数（含首次）
         validate:      可选校验函数
+        on_retry:      单次超时后、进入下一轮等待前调用；参数为已超时的尝试序号
 
     Returns:
         (数据 或 None, 实际尝试次数)
@@ -162,4 +164,6 @@ def poll_cache_with_retry(
             return result, attempt
         if attempt < max_attempts:
             print(f"  ⚠ MITM 轮询第 {attempt} 次超时（等待 {wait:.0f}s），重试...")
+            if on_retry is not None:
+                on_retry(attempt)
     return None, max_attempts

@@ -43,7 +43,7 @@ from detection_logger import DetectionLogger, DetectionRecord
 from browser_utils import (
     is_browser_alive,
 )
-from cache_utils import normalize_app_no, parse_app_no_list, poll_cache_with_retry
+from cache_utils import clear_cache_key, normalize_app_no, parse_app_no_list, poll_cache_with_retry
 from coordinate_service import CoordinateService
 from browser_service import BrowserService, stop_virtual_display
 from input_service import InputService
@@ -139,19 +139,33 @@ def search_application(
 
         print(f"\n[→] 查询: {application_no}")
 
+        normalized_app_no = normalize_app_no(application_no)
+        cache_file = str(PATENT_CACHE_FILE)
+        if normalized_app_no:
+            clear_cache_key(cache_file, normalized_app_no)
+
         # 输入申请号并点击查询
         InputService.type_in_search(input_x, input_y, button_x, button_y, application_no)
 
-        # 等待并轮询缓存，首次超时后最多重试两次（指数退避：8s → 16s → 32s）
+        def retry_search(timeout_attempt: int) -> None:
+            if not is_browser_alive(driver):
+                print("  ⚠ 浏览器已关闭，跳过重新点击查询")
+                return
+            if normalized_app_no:
+                clear_cache_key(cache_file, normalized_app_no)
+            print(f"  ↻ 第 {timeout_attempt + 1} 次重新点击查询按钮...")
+            InputService.move_and_click(button_x, button_y)
+
+        # 等待并轮询缓存，首次超时后重新点击查询按钮再进入下一轮等待
         # ⭐ 核心原则：宁可不采集，也不要采集错误的数据
-        normalized_app_no = normalize_app_no(application_no)
         patent_data, attempts = poll_cache_with_retry(
-            str(PATENT_CACHE_FILE),
+            cache_file,
             normalized_app_no,
             base_wait=MITM_TIMEOUT,
             interval=MITM_POLL_INTERVAL,
             max_attempts=3,
             validate=_is_patent_data_complete,
+            on_retry=retry_search,
         )
 
         if patent_data:

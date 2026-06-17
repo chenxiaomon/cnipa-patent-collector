@@ -7,7 +7,9 @@
 """
 
 import unittest
-from cache_utils import normalize_app_no, parse_app_no_list
+from unittest.mock import Mock, call, patch
+
+from cache_utils import normalize_app_no, parse_app_no_list, poll_cache_with_retry
 
 
 class TestNormalizeAppNo(unittest.TestCase):
@@ -131,6 +133,40 @@ CN202111504942.X
     def test_deduplicates_and_accepts_common_separators(self):
         text = 'CN202411006597.0, 2024110065970；cn202111504942.x'
         self.assertEqual(parse_app_no_list(text), ['2024110065970', '202111504942X'])
+
+
+class TestPollCacheWithRetry(unittest.TestCase):
+    def test_calls_on_retry_before_next_attempt(self):
+        on_retry = Mock()
+        with patch('cache_utils.poll_cache_for_key', side_effect=[None, {'ok': True}]):
+            result, attempts = poll_cache_with_retry(
+                'cache.json',
+                '2024110065970',
+                base_wait=1,
+                interval=0.1,
+                max_attempts=3,
+                on_retry=on_retry,
+            )
+
+        self.assertEqual(result, {'ok': True})
+        self.assertEqual(attempts, 2)
+        on_retry.assert_called_once_with(1)
+
+    def test_calls_on_retry_for_each_retry_window(self):
+        on_retry = Mock()
+        with patch('cache_utils.poll_cache_for_key', return_value=None):
+            result, attempts = poll_cache_with_retry(
+                'cache.json',
+                '2024110065970',
+                base_wait=1,
+                interval=0.1,
+                max_attempts=3,
+                on_retry=on_retry,
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(attempts, 3)
+        on_retry.assert_has_calls([call(1), call(2)])
 
 
 if __name__ == '__main__':
