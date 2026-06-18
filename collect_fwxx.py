@@ -406,7 +406,7 @@ def update_detection_log(application_no: str, fwxx_data: dict) -> bool:
         db = PatentsDB(PATENTS_DB_FILE)
         if db.get_record(application_no) is None:
             print(f"    [!] {application_no} 不在 DB 中，写入 {FWXX_UNMATCHED_FILE}")
-            _append_unmatched(application_no, fwxx_data)
+            _append_unmatched(application_no, fwxx_data, reason='not_found_in_db')
             return False
 
         db.update_fields(application_no, {
@@ -418,10 +418,11 @@ def update_detection_log(application_no: str, fwxx_data: dict) -> bool:
         return True
     except Exception as e:
         print(f"    [!] 日志更新失败: {e}")
+        _append_unmatched(application_no, fwxx_data, reason=f'update_failed: {e}')
         return False
 
 
-def _append_unmatched(application_no: str, fwxx_data: dict) -> None:
+def _append_unmatched(application_no: str, fwxx_data: dict, reason: str = '') -> None:
     """将无法匹配到 detection_log 的游离 fwxx 数据追加到 unmatched 文件"""
     try:
         if os.path.exists(FWXX_UNMATCHED_FILE):
@@ -431,6 +432,7 @@ def _append_unmatched(application_no: str, fwxx_data: dict) -> None:
             data = {'records': []}
         data['records'].append({
             'application_no': application_no,
+            'reason': reason,
             'fwxx_list': fwxx_data.get('fwxx_list'),
             'bhsjtzs_xiazaisj': fwxx_data.get('bhsjtzs_xiazaisj'),
             'bhsjtzs_data': fwxx_data.get('bhsjtzs_data'),
@@ -560,7 +562,7 @@ def run_fwxx_collection(args) -> None:
                     print(f"  ✅ 已成功采集并更新日志")
                     success_count += 1
                 else:
-                    print(f"  ⚠️  申请号不在 detection_log 中，已写入 {FWXX_UNMATCHED_FILE}")
+                    print(f"  ⚠️  主日志未更新，发文信息已备份到 {FWXX_UNMATCHED_FILE}")
                     failed_count += 1
             else:
                 print(f"  ❌ 未采集到数据")

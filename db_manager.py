@@ -13,6 +13,7 @@ import json
 import sqlite3
 import sys
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -85,13 +86,17 @@ class PatentsDB:
 
     # ── 内部工具 ──────────────────────────────────────────────────────────
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self):
         conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
-        return conn
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
         with self._lock, self._connect() as conn:
@@ -156,7 +161,7 @@ class PatentsDB:
         记录不存在时静默跳过。
 
         注意：不经过 _encode()，避免把未传入的列填为 NULL。
-        JSON 字段（fwxx_list / bhsjtzs_data）仍需手动序列化后传入。
+        JSON 字段（fwxx_list / bhsjtzs_data）会在此处按需序列化。
         """
         if not fields:
             return
@@ -164,6 +169,9 @@ class PatentsDB:
         valid = {k: v for k, v in fields.items() if k in _COLUMNS and k != 'updated_at'}
         if not valid:
             return
+        for field in _JSON_FIELDS:
+            if field in valid and valid[field] is not None and not isinstance(valid[field], str):
+                valid[field] = json.dumps(valid[field], ensure_ascii=False)
         valid['updated_at'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
         set_clause = ', '.join(f'{col}=?' for col in valid)
         sql = f"UPDATE patents SET {set_clause} WHERE application_no=?"
