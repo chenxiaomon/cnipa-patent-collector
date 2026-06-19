@@ -934,6 +934,34 @@ HTML = r"""<!doctype html>
           <button class="btn secondary" data-action="analyze_recent">采集状态分析</button>
         </div>
       </article>
+      <article class="panel" style="margin-bottom:14px">
+        <div class="panel-head"><h2>筛选导出</h2><span class="hint">条件为「或」关系</span></div>
+        <div class="control-grid" style="margin-bottom:10px">
+          <label class="field" style="grid-column:1/-1">
+            <span>企业 / 申请人（可多选，输入关键词过滤）</span>
+            <input id="exportApplicantSearch" type="text" placeholder="输入关键词过滤下方列表，如「三花」">
+          </label>
+        </div>
+        <div id="exportApplicantList"
+             style="max-height:160px;overflow-y:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:12px;font-size:13px">
+          <span class="hint">加载申请人列表中...</span>
+        </div>
+        <div class="control-grid">
+          <label class="field"><span>采集时间 起</span><input id="exportTsFrom" type="date"></label>
+          <label class="field"><span>采集时间 止</span><input id="exportTsTo" type="date"></label>
+          <label class="field"><span>驳回发文日期 起</span><input id="exportRejFrom" type="date"></label>
+          <label class="field"><span>驳回发文日期 止</span><input id="exportRejTo" type="date"></label>
+        </div>
+        <div class="hint" style="margin-top:8px">
+          满足任一条件即导出（如选企业 + 驳回日期范围 = 该企业的全部 ∪ 该日期范围内被驳回的全部）。
+          全部留空 = 导出全量。
+        </div>
+        <div class="button-row" style="margin-top:10px;align-items:center">
+          <button class="btn secondary" id="exportPreviewBtn">预估数量</button>
+          <button class="btn primary" id="exportFilteredBtn">📥 导出 Excel</button>
+          <span id="exportFilterHint" class="hint" style="margin-left:8px"></span>
+        </div>
+      </article>
       <article class="panel">
         <div class="panel-head"><h2>最近记录</h2><span class="hint">最新写入 16 条</span></div>
         <div class="table-wrap">
@@ -2039,6 +2067,12 @@ function bindEvents() {
   $('#retryRecollectBtn').addEventListener('click', () =>
     startJob('main_update_dynamic', { file: 'data/retry_failed.txt' }));
 
+  // 筛选导出
+  $('#exportApplicantSearch').addEventListener('input', (e) =>
+    renderApplicantCheckboxes(e.target.value));
+  $('#exportPreviewBtn').addEventListener('click', previewExport);
+  $('#exportFilteredBtn').addEventListener('click', exportFiltered);
+
   $('#generateStrategy').addEventListener('click', () =>
     startJob('strategy_generate', { frequency: $('#strategyFrequency').value }));
 
@@ -2310,6 +2344,101 @@ async function checkUpdate(showNoUpdateToast = false) {
   }
 }
 
+// ── 筛选导出 ──────────────────────────────────────────────────────────
+let allApplicants = [];  // [{name, count}, ...]
+
+async function loadApplicants() {
+  const root = $('#exportApplicantList');
+  if (!root) return;
+  try {
+    const d = await api('/api/applicants');
+    allApplicants = d.applicants || [];
+    renderApplicantCheckboxes('');
+  } catch (e) {
+    root.innerHTML = '<span class="hint">加载失败：' + escHtml(e.message) + '</span>';
+  }
+}
+
+function renderApplicantCheckboxes(filter) {
+  const root = $('#exportApplicantList');
+  if (!root) return;
+  const kw = (filter || '').trim().toLowerCase();
+  // 记住已勾选的，过滤后保持选中状态
+  const checked = new Set(
+    Array.from(root.querySelectorAll('input:checked')).map(c => c.value)
+  );
+  const list = kw
+    ? allApplicants.filter(a => a.name.toLowerCase().includes(kw))
+    : allApplicants;
+  if (!list.length) { root.innerHTML = '<span class="hint">无匹配申请人</span>'; return; }
+  root.innerHTML = list.slice(0, 300).map(a =>
+    '<label style="display:block;padding:2px 0;cursor:pointer">' +
+    '<input type="checkbox" value="' + escHtml(a.name) + '"' +
+      (checked.has(a.name) ? ' checked' : '') + '> ' +
+    escHtml(a.name) + ' <span class="hint">(' + a.count + ')</span></label>'
+  ).join('') + (list.length > 300 ? '<div class="hint">仅显示前 300 项，请用关键词缩小范围</div>' : '');
+}
+
+function collectExportFilters() {
+  const applicants = Array.from(
+    $('#exportApplicantList').querySelectorAll('input:checked')
+  ).map(c => c.value);
+  // date input 是 YYYY-MM-DD；采集时间转 ISO（含 Z），驳回日期保持 YYYY-MM-DD
+  const tsFrom = $('#exportTsFrom').value;
+  const tsTo = $('#exportTsTo').value;
+  return {
+    applicants,
+    timestamp_from: tsFrom ? tsFrom + 'T00:00:00Z' : '',
+    timestamp_to:   tsTo ? tsTo + 'T23:59:59Z' : '',
+    rejection_from: $('#exportRejFrom').value || '',
+    rejection_to:   $('#exportRejTo').value || '',
+  };
+}
+
+async function previewExport() {
+  const hint = $('#exportFilterHint');
+  if (hint) hint.textContent = '统计中...';
+  try {
+    const res = await fetch('/api/export/excel-filtered?preview=true', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(collectExportFilters()),
+    });
+    const d = await res.json();
+    if (hint) hint.textContent = '符合条件：' + d.count + ' 条';
+  } catch (e) {
+    if (hint) hint.textContent = '统计失败：' + e.message;
+  }
+}
+
+async function exportFiltered() {
+  const hint = $('#exportFilterHint');
+  if (hint) hint.textContent = '正在生成 Excel...';
+  try {
+    const res = await fetch('/api/export/excel-filtered', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(collectExportFilters()),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || res.statusText);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="([^"]+)"/);
+    a.download = m ? m[1] : 'patents_filtered.xlsx';
+    a.click();
+    URL.revokeObjectURL(url);
+    if (hint) hint.textContent = '✓ 已导出';
+  } catch (e) {
+    if (hint) hint.textContent = '导出失败：' + e.message;
+  }
+}
+
 // ── Boot ─────────────────────────────────────────────────────────────
 async function boot() {
   initTabRouting();
@@ -2319,6 +2448,7 @@ async function boot() {
   setInterval(refreshJobs, 2500);
   checkUpdate();                              // 启动时检查一次
   setInterval(checkUpdate, 3600000);          // 每小时检查一次
+  loadApplicants();                           // 加载筛选导出的申请人列表
 }
 
 boot().catch(e => showToast(e.message));
@@ -2375,6 +2505,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self.send_json({"has_update": False, "error": "检查脚本无有效输出"}, status=502)
                 else:
                     self.send_json(result)
+            elif path == "/api/applicants":
+                # 全部不同申请人（2000+），供筛选导出下拉；按数量降序
+                applicants = [
+                    {"name": name, "count": count}
+                    for name, count in _patents_db.list_applicants()
+                ]
+                self.send_json({"applicants": applicants})
             elif path == "/api/requests":
                 if not self.is_operator:
                     self.send_json({"error": "仅操作员可查看需求列表"}, status=403)
@@ -2489,6 +2626,54 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     pairs["CNIPA_PASSWORD"] = password
                 _write_text_atomic(env_file, "\n".join(f"{k}={v}" for k, v in pairs.items()) + "\n")
                 self.send_json({"ok": True})
+            elif path == "/api/export/excel-filtered":
+                payload = self.read_json_body()
+                applicants = payload.get("applicants") or None
+                ts_from    = payload.get("timestamp_from") or None
+                ts_to      = payload.get("timestamp_to") or None
+                rej_from   = payload.get("rejection_from") or None
+                rej_to     = payload.get("rejection_to") or None
+                # 去空值：前端可能传 ""
+                if applicants:
+                    applicants = [a for a in applicants if a.strip()]
+                    if not applicants:
+                        applicants = None
+
+                records = _patents_db.query_filtered(
+                    applicants=applicants, ts_from=ts_from, ts_to=ts_to,
+                    rejection_from=rej_from, rejection_to=rej_to,
+                )
+
+                # 预览模式：只返回数量
+                qs = parse_qs(parsed.query)
+                if qs.get("preview"):
+                    self.send_json({"count": len(records)})
+                    return
+
+                # 生成 Excel 并返回文件下载
+                import tempfile
+                from detection_logger import DetectionLogger
+                logger = DetectionLogger()
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+                tmp.close()
+                # 临时替换 _load_records 让 export_to_excel 使用筛选后的记录
+                orig_load = logger._load_records
+                logger._load_records = lambda: records
+                try:
+                    logger.export_to_excel(tmp.name)
+                finally:
+                    logger._load_records = orig_load
+
+                excel_data = Path(tmp.name).read_bytes()
+                os.unlink(tmp.name)
+
+                ts_label = datetime.now().strftime("%Y%m%d_%H%M%S")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                self.send_header("Content-Disposition", f'attachment; filename="patents_filtered_{ts_label}.xlsx"')
+                self.send_header("Content-Length", str(len(excel_data)))
+                self.end_headers()
+                self.wfile.write(excel_data)
             elif path == "/api/import/delta":
                 if not self.is_operator:
                     self.send_json({"error": "仅操作员可导入数据"}, status=403)

@@ -217,6 +217,76 @@ class PatentsDB:
             rows = conn.execute("SELECT * FROM patents ORDER BY timestamp ASC").fetchall()
         return [self._decode(r) for r in rows]
 
+    def list_applicants(self) -> list[tuple[str, int]]:
+        """返回全部不同申请人及各自记录数，按数量降序。供筛选导出的下拉列表用。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT shenqingrxm, COUNT(*) AS cnt FROM patents "
+                "WHERE shenqingrxm IS NOT NULL AND shenqingrxm != '' "
+                "GROUP BY shenqingrxm ORDER BY cnt DESC"
+            ).fetchall()
+        return [(r['shenqingrxm'], r['cnt']) for r in rows]
+
+    def query_filtered(
+        self,
+        applicants: list[str] | None = None,
+        ts_from: str | None = None,
+        ts_to: str | None = None,
+        rejection_from: str | None = None,
+        rejection_to: str | None = None,
+    ) -> list[dict]:
+        """按条件筛选专利记录，条件之间为 OR 关系。
+
+        各筛选维度：
+          applicants:      申请人列表（精确匹配，多值 IN）
+          ts_from/ts_to:   采集时间范围（ISO 字符串，闭区间）
+          rejection_from/rejection_to: 驳回发文日期范围（YYYY-MM-DD，闭区间）
+
+        维度内部是 AND（如 ts_from + ts_to 构成区间），
+        维度之间是 OR（满足任一维度即选中）。
+        所有维度都为空时返回全部记录。
+        """
+        clauses = []
+        params: list = []
+
+        # 维度 1：申请人
+        if applicants:
+            placeholders = ','.join('?' * len(applicants))
+            clauses.append(f"shenqingrxm IN ({placeholders})")
+            params.extend(applicants)
+
+        # 维度 2：采集时间范围
+        ts_parts = []
+        if ts_from:
+            ts_parts.append("timestamp >= ?")
+            params.append(ts_from)
+        if ts_to:
+            ts_parts.append("timestamp <= ?")
+            params.append(ts_to)
+        if ts_parts:
+            clauses.append("(" + " AND ".join(ts_parts) + ")")
+
+        # 维度 3：驳回发文日期范围
+        rej_parts = []
+        if rejection_from:
+            rej_parts.append("bhsjtzs_xiazaisj >= ?")
+            params.append(rejection_from)
+        if rejection_to:
+            rej_parts.append("bhsjtzs_xiazaisj <= ?")
+            params.append(rejection_to)
+        if rej_parts:
+            # 必须有值才参与（bhsjtzs_xiazaisj IS NOT NULL）
+            clauses.append("(bhsjtzs_xiazaisj IS NOT NULL AND " + " AND ".join(rej_parts) + ")")
+
+        if not clauses:
+            return self.get_all_records()
+
+        where = " OR ".join(clauses)
+        sql = f"SELECT * FROM patents WHERE {where} ORDER BY timestamp ASC"
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._decode(r) for r in rows]
+
     def query_update_candidates(self, status: str, freq_days: int) -> tuple[list[dict], list[dict]]:
         """
         Return records with anjianywzt=status, split by whether the update interval has elapsed.
