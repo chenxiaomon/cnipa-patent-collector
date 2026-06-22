@@ -6,7 +6,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from retry_failed import is_failed_record, retry_app_nos, write_failed_retry_list
+from retry_failed import (
+    is_failed_record,
+    retry_app_nos,
+    write_failed_retry_list,
+    write_retry_batch,
+)
 
 
 class TestFailedRetryRecords(unittest.TestCase):
@@ -34,6 +39,20 @@ class TestFailedRetryRecords(unittest.TestCase):
                 write_failed_retry_list(['2024110065970', '202111504942X'])
             self.assertEqual(
                 retry_path.read_text(encoding='utf-8'),
+                '2024110065970\n202111504942X\n',
+            )
+
+    def test_write_retry_batch_limits_records(self):
+        with TemporaryDirectory() as temp_dir:
+            batch_path = Path(temp_dir) / 'retry_batch_001.txt'
+            selected = write_retry_batch(
+                ['2024110065970', '202111504942X', '202410000001'],
+                2,
+                batch_path,
+            )
+            self.assertEqual(selected, ['2024110065970', '202111504942X'])
+            self.assertEqual(
+                batch_path.read_text(encoding='utf-8'),
                 '2024110065970\n202111504942X\n',
             )
 

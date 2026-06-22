@@ -467,6 +467,28 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
     # ── 数据管理类（新增）──────────────────────────────────────────
     if action == "retry_failed":
         return {"action": action, "title": "生成失败重试清单", "command": [py, "-u", "retry_failed.py", "--write-list"]}
+    if action == "retry_failed_batch":
+        batch_size = positive_int(params.get("batch_size"), default=200, maximum=10000)
+        batch_file = relative_data_file(params.get("batch_file"), "data/retry_batch_001.txt")
+        return {
+            "action": action,
+            "title": f"生成失败重试批次 {batch_size} 条",
+            "command": [py, "-u", "retry_failed.py", "--batch-size", str(batch_size), "--batch-file", batch_file],
+        }
+    if action == "retry_failed_run_batch":
+        batch_file = relative_data_file(params.get("batch_file"), "data/retry_batch_001.txt")
+        timeout = positive_int(params.get("timeout"), default=12, maximum=120)
+        return {
+            "action": action,
+            "title": f"运行失败重试批次 {Path(batch_file).name}",
+            "command": [py, "-u", "main_automation.py", "--update-list", batch_file],
+            "env": {
+                "USE_MITM_PROXY": "true",
+                "MITM_PORT": str(MITM_PORT),
+                "MITM_TIMEOUT": str(timeout),
+                "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS,
+            },
+        }
     if action == "validate_results":
         return {"action": action, "title": "验证采集结果", "command": [py, "-u", "validate_results.py"]}
     if action == "analyze_recent":
@@ -981,13 +1003,26 @@ HTML = r"""<!doctype html>
         <article class="panel">
           <div class="panel-head"><h2>重试管理</h2><span class="hint">retry_failed</span></div>
           <div class="info-grid" style="margin-bottom:14px">
+            <div class="info-row"><span>历史失败</span><span id="retryHistoryFailed">—</span></div>
             <div class="info-row"><span>重试清单</span><span id="retryCount">—</span></div>
           </div>
-          <div class="button-row">
-            <button class="btn secondary" data-action="retry_failed">① 生成失败清单</button>
-            <button class="btn primary" id="retryRecollectBtn">② 立即重新采集</button>
+          <div class="control-grid" style="margin-bottom:10px">
+            <label class="field">
+              <span>批次数量</span>
+              <input id="retryBatchSize" type="number" min="1" max="10000" value="200">
+            </label>
+            <label class="field">
+              <span>超时秒数</span>
+              <input id="retryTimeout" type="number" min="1" max="120" value="12">
+            </label>
           </div>
-          <div class="hint" style="margin-top:6px">先生成失败清单（扫描 DB 中失败记录），再立即重采；重采需 MITM 主代理已启动</div>
+          <div class="button-row">
+            <button class="btn secondary" data-action="retry_failed">生成失败清单</button>
+            <button class="btn secondary" id="retryRecollectBtn">立即重新采集</button>
+            <button class="btn secondary" id="retryBatchBtn">生成批次</button>
+            <button class="btn primary" id="runRetryBatchBtn">运行批次</button>
+          </div>
+          <div class="hint" style="margin-top:6px">历史失败是数据库累计值；立即重采需 MITM 主代理已启动；批次默认写入 data/retry_batch_001.txt</div>
         </article>
         <article class="panel">
           <div class="panel-head"><h2>数据库维护</h2></div>
@@ -1865,6 +1900,7 @@ function renderSummary(data) {
   renderRecent(data.recent || []);
 
   // 数据管理 Tab
+  set('#retryHistoryFailed', fmtNumber(data.records.failed ?? 0) + ' 条');
   set('#retryCount', fmtNumber(data.lists.failed_retry ?? 0) + ' 条');
   const jinfo = data.files && data.files.jsonl;
   set('#jsonlSize', jinfo ? fmtBytes(jinfo.size) : '—');
@@ -2064,14 +2100,32 @@ function bindEvents() {
     startJob('main_update_dynamic', { file: $('#updateFile').value, count: $('#updateLimit').value }));
 
   // 立即用失败清单重新采集（复用 main_update_dynamic，预选 retry_failed.txt）
-  $('#retryRecollectBtn').addEventListener('click', () =>
+  const retryRecollectBtn = $('#retryRecollectBtn');
+  if (retryRecollectBtn) retryRecollectBtn.addEventListener('click', () =>
     startJob('main_update_dynamic', { file: 'data/retry_failed.txt' }));
 
   // 筛选导出
-  $('#exportApplicantSearch').addEventListener('input', (e) =>
+  const retryBatchBtn = $('#retryBatchBtn');
+  if (retryBatchBtn) retryBatchBtn.addEventListener('click', () =>
+    startJob('retry_failed_batch', {
+      batch_size: $('#retryBatchSize').value,
+      batch_file: 'data/retry_batch_001.txt',
+    }));
+
+  const runRetryBatchBtn = $('#runRetryBatchBtn');
+  if (runRetryBatchBtn) runRetryBatchBtn.addEventListener('click', () =>
+    startJob('retry_failed_run_batch', {
+      batch_file: 'data/retry_batch_001.txt',
+      timeout: $('#retryTimeout').value,
+    }));
+
+  const exportApplicantSearch = $('#exportApplicantSearch');
+  if (exportApplicantSearch) exportApplicantSearch.addEventListener('input', (e) =>
     renderApplicantCheckboxes(e.target.value));
-  $('#exportPreviewBtn').addEventListener('click', previewExport);
-  $('#exportFilteredBtn').addEventListener('click', exportFiltered);
+  const exportPreviewBtn = $('#exportPreviewBtn');
+  if (exportPreviewBtn) exportPreviewBtn.addEventListener('click', previewExport);
+  const exportFilteredBtn = $('#exportFilteredBtn');
+  if (exportFilteredBtn) exportFilteredBtn.addEventListener('click', exportFiltered);
 
   $('#generateStrategy').addEventListener('click', () =>
     startJob('strategy_generate', { frequency: $('#strategyFrequency').value }));

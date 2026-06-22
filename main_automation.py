@@ -118,7 +118,7 @@ def search_application(
     button_y: int,
     logger: DetectionLogger,
     force_update: bool = False,
-) -> None:
+) -> DetectionRecord | None:
     """
     搜索单个申请号
 
@@ -220,6 +220,7 @@ def search_application(
         logger.upsert_record(record)
     else:
         logger.add_record(record)
+    return record
 
 
 def run_automation(test_count: int = None, update_list: str = None) -> None:
@@ -274,6 +275,9 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
         return
 
     driver = None
+    run_total = 0
+    run_success = 0
+    run_failed = 0
     try:
         if update_list:
             with open(FORCE_UPDATE_FLAG, 'w'):
@@ -314,7 +318,7 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
                 break
 
             print(f"\n[{i}/{len(pending)}]")
-            search_application(
+            record = search_application(
                 driver,
                 app_no,
                 input_x,
@@ -324,6 +328,12 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
                 logger,
                 force_update=bool(update_list),
             )
+            if record is not None:
+                run_total += 1
+                if record.status_code == 200:
+                    run_success += 1
+                else:
+                    run_failed += 1
 
             # 每处理 N 个后随机等待（优化：每条省 ~0.25s）
             if i % AUTOMATION_ANTI_CRAWL_BATCH_SIZE == 0:
@@ -358,6 +368,16 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
         driver = None
 
         stop_virtual_display()
+
+        if run_total:
+            print("\n" + "="*60)
+            print("📌 本次运行结果")
+            print("="*60)
+            print(f"本次处理: {run_total} 个申请号")
+            print(f"本次成功: {run_success} 个")
+            print(f"本次失败: {run_failed} 个")
+            print("说明: 下面的检测数据统计是数据库历史累计，不是本次批次结果。")
+            print("="*60 + "\n")
 
         logger.print_summary()
         print(f"\n✓ 日志文件: {logger.log_file}")

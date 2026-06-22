@@ -13,10 +13,13 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from cache_utils import normalize_app_no
 from db_manager import PatentsDB
 from settings import PATENTS_DB_FILE, RETRY_FAILED_FILE
+
+DEFAULT_RETRY_BATCH_FILE = RETRY_FAILED_FILE.with_name('retry_batch_001.txt')
 
 
 def is_failed_record(patent_record: dict) -> bool:
@@ -51,12 +54,25 @@ def retry_app_nos(failure_records: list[dict]) -> list[str]:
     return normalized_app_nos
 
 
-def write_failed_retry_list(app_nos: list[str]) -> None:
-    RETRY_FAILED_FILE.parent.mkdir(parents=True, exist_ok=True)
+def write_app_no_list(path, app_nos: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     retry_text = ''.join(f'{app_no}\n' for app_no in app_nos)
-    retry_tmp_path = RETRY_FAILED_FILE.with_suffix(RETRY_FAILED_FILE.suffix + '.tmp')
+    retry_tmp_path = path.with_suffix(path.suffix + '.tmp')
     retry_tmp_path.write_text(retry_text, encoding='utf-8')
-    retry_tmp_path.replace(RETRY_FAILED_FILE)
+    retry_tmp_path.replace(path)
+
+
+def write_failed_retry_list(app_nos: list[str]) -> None:
+    write_app_no_list(RETRY_FAILED_FILE, app_nos)
+
+
+def write_retry_batch(app_nos: list[str], batch_size: int, batch_file=None) -> list[str]:
+    if batch_size < 1:
+        raise ValueError('batch_size 必须大于 0')
+    target_file = batch_file or DEFAULT_RETRY_BATCH_FILE
+    batch_app_nos = app_nos[:batch_size]
+    write_app_no_list(target_file, batch_app_nos)
+    return batch_app_nos
 
 
 def print_failed_records(failure_records: list[dict]) -> None:
@@ -93,6 +109,20 @@ def main() -> None:
         help='将当前失败记录写入 data/retry_failed.txt，不修改数据库',
     )
     parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=None,
+        metavar='N',
+        help='同时生成前 N 条失败重试批次，默认写入 data/retry_batch_001.txt',
+    )
+    parser.add_argument(
+        '--batch-file',
+        type=str,
+        default=str(DEFAULT_RETRY_BATCH_FILE),
+        metavar='FILE',
+        help='失败重试批次输出文件',
+    )
+    parser.add_argument(
         '--reset',
         action='store_true',
         help='清空失败记录的采集结果，让普通全量采集重新处理',
@@ -118,10 +148,22 @@ def main() -> None:
     print_failed_records(failure_records)
     app_nos = retry_app_nos(failure_records)
 
-    if args.write_list:
+    if args.batch_size is not None and args.batch_size < 1:
+        parser.error('--batch-size 必须大于 0')
+
+    if args.write_list or args.batch_size is not None:
         write_failed_retry_list(app_nos)
         print(f"\n✅ 已生成失败重试清单: {RETRY_FAILED_FILE}")
         print(f"   申请号数量: {len(app_nos)}")
+        print("   说明: 这是数据库历史累计失败数，不代表刚才一批全失败。")
+        if args.batch_size is not None:
+            batch_file = Path(args.batch_file)
+            batch_app_nos = write_retry_batch(app_nos, args.batch_size, batch_file)
+            print(f"\n✅ 已生成本次重试批次: {batch_file}")
+            print(f"   批次数量: {len(batch_app_nos)} / {len(app_nos)}")
+            print("\n下一步运行:")
+            print(f"   python main_automation.py --update-list {batch_file}")
+            return
         print("\n下一步运行:")
         print(f"   python main_automation.py --update-list {RETRY_FAILED_FILE}")
         return

@@ -219,7 +219,7 @@ class DetectionLogger:
     def print_summary(self) -> None:
         stats = self.get_stats()
         print("\n" + "="*60)
-        print("📊 检测数据统计")
+        print("📊 数据库历史累计统计")
         print("="*60)
         print(f"总计处理: {stats['total']} 个申请号")
         print(f"成功: {stats['success']} 个 ({100*stats['success']//max(1,stats['total'])}%)")
