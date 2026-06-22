@@ -56,7 +56,14 @@ def run(cmd: str, check: bool = True) -> subprocess.CompletedProcess:
     parts = shlex.split(cmd)
     if parts and parts[0] == 'git':
         parts[0] = _GIT
-    return subprocess.run(parts, text=True, capture_output=True, check=check)
+    return subprocess.run(
+        parts,
+        text=True,
+        encoding='utf-8',
+        errors='replace',
+        capture_output=True,
+        check=check,
+    )
 
 
 def record_count() -> int:
