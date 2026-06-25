@@ -34,6 +34,7 @@ from urllib.parse import parse_qs, urlparse
 
 from settings import (
     BASE_DIR,
+    COMPANY_META_FILE,
     CONFIG_FILE,
     DATA_DIR,
     DETECTION_LOG_FILE,
@@ -61,6 +62,18 @@ MAX_BODY_BYTES = 1 * 1024 * 1024   # 1 MB：防止超大请求体撑爆内存
 MAX_REQUEST_APP_NOS = 500           # 单次提交申请号上限
 MAX_NOTE_LEN = 500                  # 备注字段长度上限
 _SAFE_ID_RE = re.compile(r'^[0-9a-f\-]{8,36}$')
+DESKTOP_BROWSER_ACTIONS = {
+    "main_full",
+    "main_test",
+    "main_update_dynamic",
+    "collect_fwxx",
+    "collect_fwxx_app",
+    "phase0_browser",
+    "public_browser",
+    "public_auto_paginate",
+    "retry_failed_run_batch",
+    "strategy_collect",
+}
 
 
 DOWNLOADS = {
@@ -253,8 +266,9 @@ class JobManager:
         env.setdefault("PYTHONUNBUFFERED", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")
 
+        requires_desktop = job.action in DESKTOP_BROWSER_ACTIONS
         extra_kwargs = {}
-        if sys.platform == 'win32':
+        if sys.platform == 'win32' and not requires_desktop:
             extra_kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
 
         process = subprocess.Popen(
@@ -273,6 +287,8 @@ class JobManager:
         if process.stdin:
             process.stdin.close()
         job.append(f"$ {printable_command(job.command)}")
+        if requires_desktop:
+            job.append("[dashboard] 此任务会在运行 Dashboard 的机器上启动/控制浏览器；远程访问网页不会在客户端电脑弹出浏览器。")
 
         with self._lock:
             self._jobs[job.id] = job
@@ -406,6 +422,21 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         if freq:
             command.append(str(freq))
         return {"action": action, "title": "生成状态检查清单", "command": command}
+    if action == "strategy_collect":
+        command = [py, "-u", "run_strategy_update.py"]
+        freq = positive_int(params.get("frequency"), default=None, maximum=3650)
+        if freq:
+            command.append(str(freq))
+        count = positive_int(params.get("count"), default=None, maximum=10000)
+        if count:
+            command.extend(["--test", str(count)])
+        title = f"采集 {freq} 天策略组" if freq else "采集全部策略组"
+        return {
+            "action": action,
+            "title": title,
+            "command": command,
+            "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
+        }
     if action == "strategy_status":
         command = [py, "-u", "update_by_strategy.py", "status"]
         freq = positive_int(params.get("frequency"), default=None, maximum=3650)
@@ -592,7 +623,24 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
         "daily_counts": db_summary["daily_counts"],
         "fwxx_pending_list": db_summary["fwxx_pending_list"],
         "pending_requests_count": len(_patents_db.list_requests(status='pending')),
+        # 驳回企业列表，合并手动补录的真实专利数
+        "rejection_companies": _merge_company_meta(db_summary["rejection_companies"]),
     }
+
+
+def _merge_company_meta(rejection_companies: list[dict]) -> list[dict]:
+    """将 DB 驳回企业列表与 company_meta.json 的手动补录数据合并。"""
+    meta = safe_json_load(COMPANY_META_FILE, {})
+    result = []
+    for item in rejection_companies:
+        name = item["name"]
+        real_total = meta.get(name, {}).get("real_total") if isinstance(meta.get(name), dict) else None
+        result.append({
+            "name": name,
+            "invention_count": item["invention_count"],
+            "real_total": real_total,
+        })
+    return result
 
 
 def build_update_groups(records: list[dict[str, Any]], status_breakdown: dict[str, Any]) -> list[dict[str, Any]]:
@@ -820,6 +868,7 @@ HTML = r"""<!doctype html>
                 <option value="14">14 天</option>
                 <option value="30">30 天</option>
                 <option value="45">45 天</option>
+                <option value="60">60 天</option>
               </select>
             </label>
             <button class="btn primary"   id="generateStrategy">生成清单</button>
@@ -949,6 +998,37 @@ HTML = r"""<!doctype html>
           <div id="applicantCounts" class="bar-list"></div>
         </article>
       </section>
+      <article class="panel" style="margin-bottom:14px">
+        <div class="panel-head">
+          <h2>驳回企业列表</h2>
+          <span class="hint">仅「驳回等复审请求」发明专利</span>
+          <div style="margin-left:auto;display:flex;gap:6px">
+            <button class="btn secondary" style="font-size:12px;padding:3px 10px" onclick="downloadCompanyTemplate()">下载模板</button>
+            <label class="btn secondary" style="font-size:12px;padding:3px 10px;cursor:pointer;margin:0">
+              上传补录
+              <input type="file" accept=".xlsx,.xls" style="display:none" onchange="uploadCompanyMeta(this)">
+            </label>
+          </div>
+        </div>
+        <div style="margin-bottom:8px">
+          <input id="rejCompanySearch" type="text" placeholder="过滤企业名…"
+                 style="width:100%;box-sizing:border-box;padding:5px 8px;border:1px solid var(--line);border-radius:4px;font-size:13px">
+        </div>
+        <div class="table-wrap">
+          <table id="rejCompanyTable">
+            <thead>
+              <tr>
+                <th>企业名</th>
+                <th style="width:90px;text-align:right">库内发明数</th>
+                <th style="width:130px;text-align:right">实际专利总数</th>
+                <th style="width:60px"></th>
+              </tr>
+            </thead>
+            <tbody id="rejCompanyRows"><tr><td colspan="4" class="hint" style="padding:8px">加载中…</td></tr></tbody>
+          </table>
+        </div>
+      </article>
+
       <article class="panel" style="margin-bottom:14px">
         <div class="panel-head"><h2>验证与分析</h2></div>
         <div class="button-row">
@@ -1897,6 +1977,7 @@ function renderSummary(data) {
   // 数据分析 Tab
   renderBarList('#statusCounts',    data.status_counts    || []);
   renderBarList('#applicantCounts', data.applicant_counts || []);
+  renderRejectionCompanies(data.rejection_companies || []);
   renderRecent(data.recent || []);
 
   // 数据管理 Tab
@@ -2038,6 +2119,85 @@ function renderBarList(sel, rows) {
   ).join('');
 }
 
+// ── 驳回企业列表 ──────────────────────────────────────────────────────────
+let _rejCompanies = [];  // 全量缓存，用于过滤
+
+function renderRejectionCompanies(companies) {
+  _rejCompanies = companies;
+  _applyRejCompanyFilter();
+}
+
+function _applyRejCompanyFilter() {
+  const keyword = ($('#rejCompanySearch') || {}).value || '';
+  const kw = keyword.trim().toLowerCase();
+  const rows = kw
+    ? _rejCompanies.filter(c => c.name.toLowerCase().includes(kw))
+    : _rejCompanies;
+  const tbody = $('#rejCompanyRows');
+  if (!tbody) return;
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="hint" style="padding:8px">无匹配企业</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map((c, idx) => {
+    const realVal = c.real_total != null ? c.real_total : '';
+    return '<tr>' +
+      '<td style="max-width:280px"><div class="clip" title="' + escHtml(c.name) + '">' + escHtml(c.name) + '</div></td>' +
+      '<td style="text-align:right">' + fmtNumber(c.invention_count) + '</td>' +
+      '<td style="text-align:right"><input type="number" min="0" style="width:90px;text-align:right;padding:2px 4px" ' +
+        'data-name="' + escHtml(c.name) + '" value="' + escHtml(String(realVal)) + '" placeholder="—"></td>' +
+      '<td style="text-align:center"><button class="btn secondary" style="padding:2px 8px;font-size:12px" ' +
+        'onclick="saveCompanyMeta(this)">保存</button></td>' +
+      '</tr>';
+  }).join('');
+}
+
+async function saveCompanyMeta(btn) {
+  const row = btn.closest('tr');
+  const input = row.querySelector('input[type=number]');
+  const name = input.dataset.name;
+  const val = input.value.trim();
+  const real_total = val === '' ? null : parseInt(val, 10);
+  if (val !== '' && isNaN(real_total)) { showToast('请输入有效数字'); return; }
+  try {
+    await api('/api/company-meta', { method: 'POST', body: JSON.stringify({ name, real_total }) });
+    showToast('已保存：' + name);
+    // 更新本地缓存
+    const idx = _rejCompanies.findIndex(c => c.name === name);
+    if (idx >= 0) _rejCompanies[idx].real_total = real_total;
+  } catch(e) {
+    showToast('保存失败：' + e.message);
+  }
+}
+
+// 搜索框实时过滤
+document.addEventListener('DOMContentLoaded', function() {
+  const search = $('#rejCompanySearch');
+  if (search) search.addEventListener('input', _applyRejCompanyFilter);
+});
+
+function downloadCompanyTemplate() {
+  window.location.href = '/api/company-meta/template';
+}
+
+async function uploadCompanyMeta(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = '';  // 允许重复上传同名文件
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    showToast('上传中…');
+    const res = await fetch('/api/company-meta/import', { method: 'POST', body: fd });
+    const d = await res.json();
+    if (!res.ok) { showToast('上传失败：' + (d.error || res.status)); return; }
+    showToast('导入完成：更新 ' + d.updated + ' 条，跳过 ' + d.skipped + ' 条');
+    refreshSummary();
+  } catch(e) {
+    showToast('上传失败：' + e.message);
+  }
+}
+
 function renderRecent(rows) {
   const tbody = $('#recentRows');
   if (!tbody) return;
@@ -2087,7 +2247,7 @@ function bindEvents() {
   // 策略分组"采集"按钮（动态生成，使用委托）
   document.getElementById('strategyGroups').addEventListener('click', e => {
     const btn = e.target.closest('.btn-run-freq');
-    if (btn) startJob('strategy_generate', { frequency: btn.dataset.freq });
+    if (btn) startJob('strategy_collect', { frequency: btn.dataset.freq });
   });
 
   $('#runTest').addEventListener('click', () =>
@@ -2597,6 +2757,58 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "username": pairs.get("CNIPA_USERNAME", ""),
                     "password_set": bool(pairs.get("CNIPA_PASSWORD")),
                 })
+            elif path == "/api/company-meta/template":
+                # 生成驳回企业实际专利数补录模板 Excel
+                import tempfile
+                try:
+                    import openpyxl
+                    from openpyxl.styles import Font, PatternFill, Alignment
+                except ImportError:
+                    self.send_json({"error": "openpyxl 未安装"}, status=500)
+                    return
+                db_summary = _patents_db.get_summary()
+                companies = _merge_company_meta(db_summary["rejection_companies"])
+                wb = openpyxl.Workbook()
+                ws = wb.active
+                ws.title = "企业实际专利数"
+                # 表头
+                headers = ["企业名", "库内发明专利数（系统统计）", "实际专利总数（手动填写）", "备注"]
+                ws.append(headers)
+                header_fill = PatternFill("solid", fgColor="4472C4")
+                header_font = Font(bold=True, color="FFFFFF")
+                for col, cell in enumerate(ws[1], 1):
+                    cell.fill = header_fill
+                    cell.font = header_font
+                    cell.alignment = Alignment(horizontal="center")
+                # 说明行
+                ws.append(["★ 填写说明：在「实际专利总数」列填入该企业在国知局的发明专利申请总数，保存后上传至系统。企业名列请勿修改。", "", "", ""])
+                ws.cell(2, 1).font = Font(color="FF0000", italic=True)
+                ws.merge_cells("A2:D2")
+                # 数据行
+                for c in companies:
+                    ws.append([
+                        c["name"],
+                        c["invention_count"],
+                        c["real_total"] if c["real_total"] is not None else "",
+                        "",
+                    ])
+                # 列宽
+                ws.column_dimensions["A"].width = 50
+                ws.column_dimensions["B"].width = 24
+                ws.column_dimensions["C"].width = 24
+                ws.column_dimensions["D"].width = 20
+                # 锁定前两列（只读提示，非真正保护）
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+                    wb.save(tmp.name)
+                    tmp_path = tmp.name
+                data = Path(tmp_path).read_bytes()
+                os.unlink(tmp_path)
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                self.send_header("Content-Disposition", 'attachment; filename="company_meta_template.xlsx"')
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
             elif path.startswith("/api/export/delta"):
                 qs = parse_qs(parsed.query)
                 since = (qs.get("since") or [""])[0].strip()
@@ -2631,6 +2843,80 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 job_id = _parse_path_segment(path, 3)
                 ok = self.job_manager.stop(job_id)
                 self.send_json({"ok": ok})
+            elif path == "/api/company-meta":
+                payload = self.read_json_body()
+                name = str(payload.get("name", "")).strip()
+                real_total = payload.get("real_total")
+                if not name:
+                    self.send_json({"error": "企业名不能为空"}, status=400)
+                    return
+                meta = safe_json_load(COMPANY_META_FILE, {})
+                if not isinstance(meta, dict):
+                    meta = {}
+                entry = meta.setdefault(name, {})
+                if real_total is None:
+                    entry.pop("real_total", None)
+                else:
+                    entry["real_total"] = int(real_total)
+                if not entry:
+                    meta.pop(name, None)
+                COMPANY_META_FILE.parent.mkdir(parents=True, exist_ok=True)
+                _write_text_atomic(COMPANY_META_FILE, json.dumps(meta, ensure_ascii=False, indent=2) + "\n")
+                self.send_json({"ok": True})
+            elif path == "/api/company-meta/import":
+                # 解析上传的 Excel，批量更新 company_meta.json
+                import cgi
+                try:
+                    import openpyxl
+                except ImportError:
+                    self.send_json({"error": "openpyxl 未安装，无法解析 Excel"}, status=500)
+                    return
+                content_type = self.headers.get("Content-Type", "")
+                length = int(self.headers.get("Content-Length", 0))
+                raw_body = self.rfile.read(length)
+                environ = {"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type, "CONTENT_LENGTH": str(length)}
+                fs = cgi.FieldStorage(fp=io.BytesIO(raw_body), environ=environ, keep_blank_values=True)
+                file_item = fs.getvalue("file")
+                if file_item is None:
+                    self.send_json({"error": "未收到文件"}, status=400)
+                    return
+                import tempfile
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+                    tmp.write(file_item if isinstance(file_item, bytes) else file_item.encode())
+                    tmp_path = tmp.name
+                updated = skipped = 0
+                try:
+                    wb = openpyxl.load_workbook(tmp_path, read_only=True, data_only=True)
+                    ws = wb.active
+                    meta = safe_json_load(COMPANY_META_FILE, {})
+                    if not isinstance(meta, dict):
+                        meta = {}
+                    # 第1行为表头，第2行为说明，从第3行起是数据
+                    for row in ws.iter_rows(min_row=3, values_only=True):
+                        name_val = row[0] if row else None
+                        total_val = row[2] if len(row) > 2 else None
+                        if not name_val or str(name_val).strip() == "":
+                            continue
+                        name_str = str(name_val).strip()
+                        if total_val is None or str(total_val).strip() == "":
+                            skipped += 1
+                            continue
+                        try:
+                            real_total = int(float(str(total_val)))
+                        except (ValueError, TypeError):
+                            skipped += 1
+                            continue
+                        meta.setdefault(name_str, {})["real_total"] = real_total
+                        updated += 1
+                    wb.close()
+                    COMPANY_META_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    _write_text_atomic(COMPANY_META_FILE, json.dumps(meta, ensure_ascii=False, indent=2) + "\n")
+                except Exception as exc:
+                    self.send_json({"error": f"解析 Excel 失败：{exc}"}, status=400)
+                    return
+                finally:
+                    os.unlink(tmp_path)
+                self.send_json({"ok": True, "updated": updated, "skipped": skipped})
             elif path == "/api/search-list":
                 payload = self.read_json_body()
                 search_app_nos = parse_app_no_list(str(payload.get("text", "")))

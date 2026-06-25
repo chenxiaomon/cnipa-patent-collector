@@ -268,10 +268,32 @@ class DetectionLogger:
                 'daili_r': '代理人',
             }
 
+            # 读取手动补录的企业实际专利总数
+            try:
+                from settings import COMPANY_META_FILE
+                import json as _json
+                _meta_raw = COMPANY_META_FILE.read_text(encoding='utf-8') if COMPANY_META_FILE.exists() else '{}'
+                _company_meta = _json.loads(_meta_raw)
+            except Exception:
+                _company_meta = {}
+            real_total_map = {
+                name: info.get('real_total')
+                for name, info in _company_meta.items()
+                if isinstance(info, dict) and info.get('real_total') is not None
+            }
+
             df = pd.DataFrame(records)
             df = df.rename(columns=column_mapping)
             keep_cols = [v for v in column_mapping.values() if v in df.columns]
             df = df[keep_cols]
+
+            # 在「申请人」列后插入「企业实际专利总数」列（无补录数据则留空）
+            if '申请人' in df.columns:
+                df.insert(
+                    df.columns.get_loc('申请人') + 1,
+                    '企业实际专利总数',
+                    df['申请人'].map(lambda x: real_total_map.get(x, '') if pd.notna(x) else '')
+                )
 
             fwxx_column_mapping = {
                 'tongzhismc': '通知书名称', 'fawenr': '发文日',

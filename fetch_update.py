@@ -40,6 +40,7 @@ _FILES = [
     "collect_fwxx.py",
     "web_dashboard.py",
     "update_by_strategy.py",
+    "run_strategy_update.py",
     "browser_utils.py",
     "browser_service.py",
     "input_service.py",

@@ -483,6 +483,13 @@ class PatentsDB:
                 ORDER BY timestamp DESC LIMIT 20
             """, (rejection_status,)).fetchall()
 
+            # 7. 驳回企业发明专利数（按企业聚合，仅发明专利）
+            rejection_company_rows = conn.execute("""
+                SELECT shenqingrxm, COUNT(*) AS cnt FROM patents
+                WHERE anjianywzt=? AND shenqingrxm IS NOT NULL AND zhuanlilx='发明'
+                GROUP BY shenqingrxm ORDER BY cnt DESC
+            """, (rejection_status,)).fetchall()
+
         # 构建返回结构（与原 build_summary() 输出完全兼容）
         unique = agg['unique_count'] or 0
         success = agg['success'] or 0
@@ -509,6 +516,11 @@ class PatentsDB:
             'daily_counts': daily_counts,
             'recent': [dict(r) for r in recent_rows],
             'fwxx_pending_list': [dict(r) for r in pending_rows],
+            # 驳回企业列表：[{"name": str, "invention_count": int}, ...]
+            'rejection_companies': [
+                {'name': r['shenqingrxm'], 'invention_count': r['cnt']}
+                for r in rejection_company_rows
+            ],
         }
 
     # ── 导入 / 导出 ───────────────────────────────────────────────────────

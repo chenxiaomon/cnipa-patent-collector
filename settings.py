@@ -66,6 +66,9 @@ DETECTION_LOG_JSONL_FILE = RESULTS_DIR / 'detection_log.jsonl'
 # SQLite 数据库（主存储，替代 JSONL 查询）
 PATENTS_DB_FILE = DATA_DIR / 'patents.db'
 
+# 企业元数据（手动补录真实专利总数等）
+COMPANY_META_FILE = DATA_DIR / 'company_meta.json'
+
 # Excel 导出文件
 PATENTS_EXCEL_FILE = RESULTS_DIR / 'patents_data.xlsx'
 
