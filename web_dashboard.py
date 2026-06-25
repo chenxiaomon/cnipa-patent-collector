@@ -2758,7 +2758,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "password_set": bool(pairs.get("CNIPA_PASSWORD")),
                 })
             elif path == "/api/company-meta/template":
-                # 生成驳回企业实际专利数补录模板 Excel
+                # 生成「跟踪企业 + 驳回企业」合并补录模板 Excel
                 import tempfile
                 try:
                     import openpyxl
@@ -2766,38 +2766,50 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 except ImportError:
                     self.send_json({"error": "openpyxl 未安装"}, status=500)
                     return
-                db_summary = _patents_db.get_summary()
-                companies = _merge_company_meta(db_summary["rejection_companies"])
+                # 读取跟踪状态列表
+                focus = safe_json_load(DATA_DIR / "focus_strategy.json", {})
+                tracked_statuses = list((focus.get("status_breakdown") or {}).keys())
+                # 从 DB 一次性获取合并后的企业列表
+                company_rows = _patents_db.get_company_meta_rows(tracked_statuses)
+                # 合并现有 company_meta.json 的已补录数据
+                meta = safe_json_load(COMPANY_META_FILE, {})
+                if not isinstance(meta, dict):
+                    meta = {}
                 wb = openpyxl.Workbook()
                 ws = wb.active
                 ws.title = "企业实际专利数"
-                # 表头
-                headers = ["企业名", "库内发明专利数（系统统计）", "实际专利总数（手动填写）", "备注"]
+                headers = [
+                    "企业名",
+                    "跟踪中件数（在审专利）",
+                    "库内发明专利总数（含其他状态）",
+                    "实际专利总数（手动填写）",
+                ]
                 ws.append(headers)
                 header_fill = PatternFill("solid", fgColor="4472C4")
                 header_font = Font(bold=True, color="FFFFFF")
-                for col, cell in enumerate(ws[1], 1):
+                for cell in ws[1]:
                     cell.fill = header_fill
                     cell.font = header_font
                     cell.alignment = Alignment(horizontal="center")
                 # 说明行
-                ws.append(["★ 填写说明：在「实际专利总数」列填入该企业在国知局的发明专利申请总数，保存后上传至系统。企业名列请勿修改。", "", "", ""])
+                note = "★ 填写说明：D 列填入该企业在国知局的发明专利申请总数，保存后上传至系统。A 列企业名请勿修改。"
+                ws.append([note, "", "", ""])
                 ws.cell(2, 1).font = Font(color="FF0000", italic=True)
                 ws.merge_cells("A2:D2")
                 # 数据行
-                for c in companies:
+                for c in company_rows:
+                    real_total = (meta.get(c["name"]) or {}).get("real_total")
                     ws.append([
                         c["name"],
-                        c["invention_count"],
-                        c["real_total"] if c["real_total"] is not None else "",
-                        "",
+                        c["tracked_count"] or "",
+                        c["total_count"] or "",
+                        real_total if real_total is not None else "",
                     ])
                 # 列宽
-                ws.column_dimensions["A"].width = 50
-                ws.column_dimensions["B"].width = 24
-                ws.column_dimensions["C"].width = 24
-                ws.column_dimensions["D"].width = 20
-                # 锁定前两列（只读提示，非真正保护）
+                ws.column_dimensions["A"].width = 52
+                ws.column_dimensions["B"].width = 22
+                ws.column_dimensions["C"].width = 26
+                ws.column_dimensions["D"].width = 24
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
                     wb.save(tmp.name)
                     tmp_path = tmp.name
@@ -2892,9 +2904,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     if not isinstance(meta, dict):
                         meta = {}
                     # 第1行为表头，第2行为说明，从第3行起是数据
+                    # A列=企业名，D列(index 3)=实际专利总数（兼容旧3列格式：C列=index 2）
                     for row in ws.iter_rows(min_row=3, values_only=True):
                         name_val = row[0] if row else None
-                        total_val = row[2] if len(row) > 2 else None
+                        # 4列新格式：D列；3列旧格式：C列
+                        total_val = row[3] if len(row) > 3 else (row[2] if len(row) > 2 else None)
                         if not name_val or str(name_val).strip() == "":
                             continue
                         name_str = str(name_val).strip()

@@ -523,6 +523,61 @@ class PatentsDB:
             ],
         }
 
+    # ── 企业元数据查询 ────────────────────────────────────────────────────
+
+    def get_company_meta_rows(self, tracked_statuses: list[str]) -> list[dict]:
+        """
+        返回「跟踪企业」与「驳回企业」的合并列表（按企业名去重），每项含：
+          name            企业名
+          tracked_count   当前处于跟踪状态的发明专利件数（0 表示该企业只在驳回列表）
+          total_count     该企业在库中的发明专利总数（含所有状态）
+        结果按 total_count 倒序排列。
+        """
+        if not tracked_statuses:
+            tracked_statuses = []
+        placeholders = ",".join("?" * len(tracked_statuses)) if tracked_statuses else "''"
+        with self._connect() as conn:
+            # 跟踪企业：当前处于跟踪状态的发明专利件数
+            tracked_rows = conn.execute(f"""
+                SELECT shenqingrxm, COUNT(*) AS cnt FROM patents
+                WHERE anjianywzt IN ({placeholders}) AND shenqingrxm IS NOT NULL
+                  AND zhuanlilx='发明'
+                GROUP BY shenqingrxm
+            """, tracked_statuses).fetchall() if tracked_statuses else []
+
+            # 驳回企业：处于「驳回等复审请求」的发明专利件数（用于合并）
+            rejection_rows = conn.execute("""
+                SELECT shenqingrxm, COUNT(*) AS cnt FROM patents
+                WHERE anjianywzt='驳回等复审请求' AND shenqingrxm IS NOT NULL
+                  AND zhuanlilx='发明'
+                GROUP BY shenqingrxm
+            """).fetchall()
+
+            # 所有出现过的企业的库内发明专利总数
+            total_rows = conn.execute("""
+                SELECT shenqingrxm, COUNT(*) AS cnt FROM patents
+                WHERE shenqingrxm IS NOT NULL AND zhuanlilx='发明'
+                GROUP BY shenqingrxm
+            """).fetchall()
+
+        total_map = {r['shenqingrxm']: r['cnt'] for r in total_rows}
+        tracked_map = {r['shenqingrxm']: r['cnt'] for r in tracked_rows}
+        rejection_map = {r['shenqingrxm']: r['cnt'] for r in rejection_rows}
+
+        # 合并去重：取跟踪企业 ∪ 驳回企业
+        all_names = set(tracked_map) | set(rejection_map)
+        rows = [
+            {
+                'name': name,
+                'tracked_count': tracked_map.get(name, 0),
+                'rejection_count': rejection_map.get(name, 0),
+                'total_count': total_map.get(name, 0),
+            }
+            for name in all_names
+        ]
+        rows.sort(key=lambda r: -r['total_count'])
+        return rows
+
     # ── 导入 / 导出 ───────────────────────────────────────────────────────
 
     def import_from_jsonl(self, path: Path) -> int:
