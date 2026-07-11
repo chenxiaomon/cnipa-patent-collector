@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from settings import DETECTION_LOG_JSONL_FILE, PATENTS_DB_FILE
 from db_manager import PatentsDB
 from cache_utils import normalize_app_no
+from machine_identity import MachineRoleConfigurationError, confirm_master_merge
 
 
 def sync_from_jsonl(source: Path, dry_run: bool = False) -> dict:
@@ -80,6 +81,8 @@ def sync_from_jsonl(source: Path, dry_run: bool = False) -> dict:
         print("\n[预览模式] 未写入数据库")
         return {"new": new_count, "updated": updated_count, "skipped": skipped_count, "bad_lines": bad_lines}
 
+    confirm_master_merge(db.summarize_record_import(to_upsert))
+
     if to_upsert:
         inserted = db.upsert_batch(to_upsert)
         print(f"[✓] 已写入: {inserted} 条")
@@ -106,7 +109,11 @@ def main() -> None:
         print("[预览模式] 只统计，不写入数据库")
     print(f"源文件: {source}")
 
-    stats = sync_from_jsonl(source, dry_run=dry_run)
+    try:
+        stats = sync_from_jsonl(source, dry_run=dry_run)
+    except MachineRoleConfigurationError as exc:
+        print(f"\n[✗] {exc}")
+        sys.exit(2)
 
     print("\n" + "=" * 70)
     print("📊 同步统计")

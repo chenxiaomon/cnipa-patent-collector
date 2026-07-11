@@ -46,6 +46,11 @@ from browser_utils import (
 from cache_utils import clear_cache_key, normalize_app_no, parse_app_no_list, poll_cache_with_retry
 from coordinate_service import CoordinateService
 from browser_service import BrowserService, stop_virtual_display
+from collection_health import (
+    write_collection_progress_heartbeat,
+    write_collection_start_heartbeat,
+    write_collection_stopped_heartbeat,
+)
 from input_service import InputService
 from settings import (
     CNIPA_URL, SEARCH_LIST_FILE, FORCE_UPDATE_FLAG,
@@ -278,6 +283,8 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
     run_total = 0
     run_success = 0
     run_failed = 0
+    consecutive_failures = 0
+    write_collection_start_heartbeat(len(pending))
     try:
         if update_list:
             with open(FORCE_UPDATE_FLAG, 'w'):
@@ -315,7 +322,7 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
                     checkpoint.write_text('\n'.join(remaining) + '\n', encoding='utf-8')
                     print(f"[*] 未完成列表已写入: {checkpoint}")
                     print(f"    续跑命令: python main_automation.py --update-list {checkpoint}")
-                break
+                raise RuntimeError('浏览器进程意外退出')
 
             print(f"\n[{i}/{len(pending)}]")
             record = search_application(
@@ -332,8 +339,18 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
                 run_total += 1
                 if record.status_code == 200:
                     run_success += 1
+                    consecutive_failures = 0
                 else:
                     run_failed += 1
+                    consecutive_failures += 1
+            else:
+                consecutive_failures += 1
+            write_collection_progress_heartbeat(
+                app_no,
+                i,
+                len(pending),
+                consecutive_failures,
+            )
 
             # 每处理 N 个后随机等待（优化：每条省 ~0.25s）
             if i % AUTOMATION_ANTI_CRAWL_BATCH_SIZE == 0:
@@ -349,6 +366,7 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
     except KeyboardInterrupt:
         print("\n\n⚠️  用户中断")
     finally:
+        write_collection_stopped_heartbeat(run_total, len(pending))
         if update_list:
             try:
                 os.remove(FORCE_UPDATE_FLAG)

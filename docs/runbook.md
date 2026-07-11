@@ -147,49 +147,96 @@ USE_MITM_PROXY=true python main_automation.py
 
 ## 多机协作 & 数据同步
 
-跨机器运行时使用 `sync.py` 同步采集进度。核心原理：`patents.db`（SQLite，本地运行时主存储）通过 `data/results/detection_log.jsonl`（git 追踪）在多机之间共享。
+部署机是唯一数据 `master`，开发机和 Mac 是 `replica`。每台机器先配置不进 Git 的角色文件：
+
+```bash
+# 部署机
+echo master > data/machine_role.txt
+
+# 开发机 / Mac
+echo replica > data/machine_role.txt
+```
 
 ### 数据架构
 
 ```
-patents.db  ←→  export_to_jsonl / import_from_jsonl  ←→  detection_log.jsonl  ←→  GitHub
-（本地主存储，不入 git）                                   （git 追踪，多机同步载体）
+部署机 patents.db (master)
+        │ Dashboard /api/export/delta?since=...
+        ▼
+开发机 patents.db (replica) → detection_log.jsonl + README → Git commit → 人工 git push
 ```
+
+`patents.db` 是各机器的运行时唯一真相源。`detection_log.jsonl` 只作为 Git 备份，运行时禁止直接读取。
 
 ### 新机器初始化
 
 ```bash
 git clone https://github.com/chenxiaomon/cnipa-patent-collector.git
 cd cnipa-patent-collector
-pip install -r requirements.txt
-python sync.py init          # git pull + 从 JSONL 重建本地 DB
+uv sync --frozen
+echo replica > data/machine_role.txt
+uv run python sync.py init   # 仅 replica 从 JSONL 备份初始化 SQLite
 ```
 
-### 每次采集前
+### replica 拉取 master 增量
 
 ```bash
-python sync.py pull          # 拉取最新 JSONL → 重建本地 DB → 自动跳过已采记录
+cp data/master_sync.example.json data/master_sync.json
+# 编辑 master_url 后执行
+uv run python sync_pull_from_master.py
 ```
 
-### 每次采集后
+脚本以 `data/master_sync_state.json` 保存的 master 数据库修改时间为游标，同时拉取新增记录和已有记录更新；成功后合并 SQLite、刷新 JSONL 和 README，并创建一个限定范围的数据提交。旧游标首次升级或 master 地址变化时会做一次全量重对账。最后人工检查并执行：
 
 ```bash
-python sync.py push          # 导出 DB → 合并远端 → 提交 JSONL → git push
+git push
 ```
 
-### 所有 sync 命令
+### 危险操作护栏
 
-| 命令 | 说明 |
-|------|------|
-| `python sync.py pull` | 采集前：git pull + 重建 DB |
-| `python sync.py push` | 采集后：导出 DB + git push |
-| `python sync.py status` | 查看本地记录数和 git 状态 |
-| `python sync.py init` | 新机器：git pull + 重建 DB（DB 已存在时提示确认） |
-| `python sync.py rebuild` | 仅从现有 JSONL 重建 DB（DB 损坏 / 迁移 / 恢复用） |
+`master` 默认拒绝从 JSONL 重建/覆盖数据库。只有明确承担风险时才允许：
 
-### 冲突处理
+```bash
+uv run python sync.py rebuild --force --i-know-this-is-master
+```
 
-`pull` / `push` 遇到 git 冲突时自动合并：以申请号为键，两边独有的记录全保留，同一申请号取 timestamp 较新的。无需人工介入。
+master 的增量导入允许执行，但终端必须先显示输入条数、新申请号、更新已有记录和时间范围，并等待回车确认。Dashboard 导入会先返回同一摘要，再要求二次确认。
+
+### 安全代码更新与回滚
+
+部署机代码更新使用 HTTP 发布清单，永不覆盖 `data/`：
+
+```bash
+uv run python fetch_update.py
+uv run python rollback.py
+```
+
+更新前代码写入 `backups/code_YYYYMMDD_HHMMSS/`，下载文件逐一校验 SHA-256；校验或安装失败会自动恢复，最多保留 5 份备份。
+
+### 无人值守采集与报警
+
+```bash
+# 部署机：看门狗启动主采集
+uv run python collection_watchdog.py
+
+# replica：轮询部署机报警并转发到 ServerChan
+SERVERCHAN_SENDKEY=... uv run python poll_master_alerts.py
+```
+
+看门狗检查 10 分钟心跳超时、磁盘空间和连续失败次数；连续重启失败 3 次后停止并写入 `data/alert_status.json`。
+
+### 部署现场验收清单
+
+以下项目必须在部署机、真实网络和手机端完成，单元测试不能替代：
+
+- [ ] 部署机写入 `master`，Dashboard 顶部显示红色 `MASTER 数据主机`。
+- [ ] 在 master 执行 `uv run python sync.py rebuild`，确认无危险参数时被拒绝且数据库未变化。
+- [ ] 执行 `uv run python normalize_pending_status.py --apply`，确认 NULL 状态全部迁移为 `-1`。
+- [ ] 连续两个工作日从 replica 执行 `sync_pull_from_master.py`，确认第二次只拉当天增量，并分别 push 两个数据提交。
+- [ ] 发布带 `release_manifest.json` 的代码，执行一次真实 `fetch_update.py`，再用 `rollback.py` 恢复最近备份。
+- [ ] 在维护窗口终止受看门狗管理的浏览器进程，确认采集任务被重新启动。
+- [ ] 配置 `SERVERCHAN_SENDKEY`，触发测试报警并确认手机实际收到通知。
+- [ ] 确认部署机 `data/api_token.txt` 存在且仅当前用户可读，所有写操作无 token 时返回 401。
 
 ---
 
@@ -210,7 +257,7 @@ USE_MITM_PROXY=true python main_automation.py --test 5
 [*] 已采集 47 条，保存日志...
 ```
 
-重新启动时自动跳过已采集的申请号（基于 detection_log.json）
+重新启动时自动跳过已完成采集的申请号（基于 `patents.db`）
 
 ```bash
 USE_MITM_PROXY=true python main_automation.py
@@ -221,11 +268,14 @@ USE_MITM_PROXY=true python main_automation.py
 采集完成后，检查失败记录：
 
 ```bash
-# 查看失败统计
-grep -c '"status_code": 0' data/results/detection_log.json
+# 查看失败原因分布
+uv run python analyze_failures.py
 
-# 运行重试脚本
-python retry_failed_applications.py
+# 生成失败重试清单
+uv run python retry_failed.py --write-list
+
+# 按清单重采
+USE_MITM_PROXY=true uv run python main_automation.py --update-list data/retry_failed.txt
 ```
 
 ### 4. 补采发文信息
@@ -233,17 +283,17 @@ python retry_failed_applications.py
 若主流程跳过了发文信息（或采集失败）：
 
 ```bash
-# 执行补采（从 detection_log.json 中筛选待补采目标）
-USE_MITM_PROXY=true python collect_fwxx.py
+# 执行补采（从 patents.db 中筛选待补采目标）
+USE_MITM_PROXY=true uv run python collect_fwxx.py
 
 # 或仅补采前 5 条（测试模式）
-USE_MITM_PROXY=true python collect_fwxx.py --test 5
+USE_MITM_PROXY=true uv run python collect_fwxx.py --test 5
 
 # 或指定申请号文件
-USE_MITM_PROXY=true python collect_fwxx.py --input data/fwxx_list.txt
+USE_MITM_PROXY=true uv run python collect_fwxx.py --input data/fwxx_list.txt
 
 # 或指定单个申请号
-USE_MITM_PROXY=true python collect_fwxx.py --app CN201880002233
+USE_MITM_PROXY=true uv run python collect_fwxx.py --app CN201880002233
 ```
 
 ### 5. 导出 Excel 报表
@@ -327,70 +377,62 @@ mitmdump -p 8080 -s start_mitm_proxy.py
 **说明**: 推测的故障，需验证实际发生频率和恢复流程。
 
 **原因（推测）**:
-- 内存不足（某些���型网页）
+- 内存不足（某些大型网页）
 - Chrome 内部错误
 - 操作系统资源限制
 
 **恢复**:
 ```bash
-# 检查日志，找到最后成功的申请号
-tail -n 5 data/results/detection_log.json
+# 查看数据库中最近记录
+uv run python -c "from db_manager import PatentsDB; from settings import PATENTS_DB_FILE; print(PatentsDB(PATENTS_DB_FILE).get_recent_records(5))"
 
 # 从该申请号的下一条重新启动
 # main_automation.py 会自动跳过已采集的
 USE_MITM_PROXY=true python main_automation.py
 ```
 
-### ❌ 文件损坏（JSON 解析错误）[⚠️ 已知高风险]
+### ❌ SQLite 完整性检查失败
 
-**症状**: `json.JSONDecodeError` 或 `detection_log.json` 无法打开
+**症状**: Dashboard/采集脚本报告 `database disk image is malformed` 或无法打开 `patents.db`
 
-**说明**: 当前代码每次 add_record() 都整文件读写，中断会导致不完整写入。**这是已知的架构问题**。
+**说明**: `patents.db` 是运行时唯一真相源。JSONL 是 Git 备份，不能在运行时替代数据库直接读取。
 
 **原因**:
-- 进程中断时 JSON 写入不完整（RMW 非原子操作）
-- 并发写入冲突（若多进程访问同一文件）
+- 文件系统或磁盘异常
+- 非正常断电导致数据库页损坏
 
 **恢复**:
 ```bash
-# 备份
-cp data/results/detection_log.json data/results/detection_log.json.bak
+# 先停止采集并检查数据库
+sqlite3 data/patents.db 'PRAGMA integrity_check;'
 
-# 验证 JSON 格式
-python -m json.tool data/results/detection_log.json
+# replica 可从 Git JSONL 备份重建
+uv run python sync.py rebuild
 
-# 如果无法修复，从备份恢复
-cp data/results/detection_log.json.bak data/results/detection_log.json
+# master 默认禁止重建；先保留损坏库，再由人工确认风险后执行
+cp data/patents.db data/patents.db.corrupt
+uv run python sync.py rebuild --force --i-know-this-is-master
 ```
 
 ---
 
 ## 性能优化建议
 
-### 调整超时时间 [📋 待实现]
+### 调整超时时间
 
 **文件**: `main_automation.py`
 
-当前超时硬编码为 8 秒（line 402）。若需调整，建议改造：
-
-```python
-# 建议改造：使用环境变量或配置文件
-MITM_TIMEOUT = int(os.getenv('MITM_TIMEOUT', 8))  # 默认 8s
-```
-
-然后可通过环境变量调整：
+超时已由 `settings.py` 集中读取，可通过环境变量调整：
 ```bash
 MITM_TIMEOUT=12 USE_MITM_PROXY=true python main_automation.py
 ```
-
-> 注：此功能当前代码中不存在，列为建议改进项
 
 ### 并发采集（未来版本）
 
 目前单线程顺序采集。若需加速：
 1. 多个浏览器实例 + 线程池
 2. 需要分摊申请号列表
-3. 需要线程安全的日志文件（或改用 SQLite）
+3. SQLite 已提供线程安全写入；并发采集仍需评估浏览器、代理和风控限制
 
 ### 资源清理
 
@@ -406,20 +448,11 @@ rm -rf data/*
 
 ## 验证采集结果
 
-### 检查日志完整性
+### 检查数据库统计与完整性
 
 ```bash
-# 统计成功/失败
-python -c "
-import json
-with open('data/results/detection_log.json') as f:
-    log = json.load(f)
-    meta = log.get('metadata', {})
-    print(f\"总计: {meta.get('total_records', '?')}
-    成功: {meta.get('successful', '?')}
-    失败: {meta.get('failed', '?')}
-    成功率: {meta.get('successful', 0) / meta.get('total_records', 1) * 100:.1f}%\")
-"
+sqlite3 data/patents.db 'PRAGMA integrity_check;'
+uv run python -c "from db_manager import PatentsDB; from settings import PATENTS_DB_FILE; print(PatentsDB(PATENTS_DB_FILE).get_summary())"
 ```
 
 ### 导出数据检查
@@ -436,13 +469,15 @@ open data/results/patents_data.xlsx
 - [ ] 依赖已安装 (`pip list | grep selenium`)
 - [ ] 申请号列表已准备 (`wc -l data/search_list.txt`)
 - [ ] 坐标配置已生成 (`cat data/config.json`)
+- [ ] 机器角色已配置 (`cat data/machine_role.txt`)
 - [ ] MITM 代理已启动（终端 1）
-- [ ] 主程序已启动（终端 2）
+- [ ] 主程序或看门狗已启动（终端 2）
 - [ ] 采集中未手动干扰浏览器
-- [ ] 采集完成后日志文件有效
+- [ ] `sqlite3 data/patents.db 'PRAGMA integrity_check;'` 返回 `ok`
+- [ ] replica 已完成增量拉取并检查数据提交
 
 ---
 
-*更新时间*: 2026-05-10  
-*验证平台*: macOS 12+, Python 3.8+  
-*上次测试*: 2026-05-10
+*更新时间*: 2026-07-11
+*验证平台*: macOS / Windows, Python 3.11
+*上次测试*: 2026-07-11

@@ -18,6 +18,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _JSON_FIELDS = {'fwxx_list', 'bhsjtzs_data'}
+PENDING_STATUS_CODE = -1
+SYNC_CURSOR_FIELD = '_sync_updated_at'
 
 _CREATE_REQUESTS_TABLE = """
 CREATE TABLE IF NOT EXISTS requests (
@@ -103,6 +105,7 @@ class PatentsDB:
             conn.execute(_CREATE_TABLE)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_anjianywzt ON patents(anjianywzt)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp   ON patents(timestamp)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_updated_at  ON patents(updated_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_shenqingrxm ON patents(shenqingrxm)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_status_code ON patents(status_code)")
             conn.execute(_CREATE_REQUESTS_TABLE)
@@ -113,6 +116,12 @@ class PatentsDB:
                 except sqlite3.OperationalError as e:
                     if 'duplicate column' not in str(e).lower():
                         raise  # 非"列已存在"的错误应当暴露
+            migration_timestamp = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+            conn.execute(
+                "UPDATE patents SET updated_at=COALESCE(NULLIF(timestamp, ''), ?) "
+                "WHERE updated_at IS NULL OR updated_at=''",
+                (migration_timestamp,),
+            )
             conn.commit()
 
     @staticmethod
@@ -145,12 +154,29 @@ class PatentsDB:
 
     # ── 写入 ──────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _upsert_statement(columns: list[str]) -> str:
+        placeholders = ','.join('?' * len(columns))
+        assignments = []
+        for column in columns:
+            if column == 'application_no':
+                continue
+            if column in {'error_message', 'updated_at'}:
+                assignments.append(f'{column}=excluded.{column}')
+            else:
+                assignments.append(
+                    f'{column}=COALESCE(excluded.{column}, patents.{column})'
+                )
+        return (
+            f"INSERT INTO patents ({','.join(columns)}) VALUES ({placeholders}) "
+            f"ON CONFLICT(application_no) DO UPDATE SET {','.join(assignments)}"
+        )
+
     def upsert(self, record: dict) -> None:
-        """INSERT OR REPLACE — O(1)，取代 JSONL 的 O(n) 重写"""
+        """Upsert one record without erasing existing fields when incoming values are NULL."""
         row = self._encode(record)
         cols = list(row.keys())
-        placeholders = ','.join('?' * len(cols))
-        sql = f"INSERT OR REPLACE INTO patents ({','.join(cols)}) VALUES ({placeholders})"
+        sql = self._upsert_statement(cols)
         with self._lock, self._connect() as conn:
             conn.execute(sql, [row[c] for c in cols])
             conn.commit()
@@ -185,12 +211,33 @@ class PatentsDB:
             return 0
         rows = [self._encode(r) for r in records]
         cols = list(rows[0].keys())
-        placeholders = ','.join('?' * len(cols))
-        sql = f"INSERT OR REPLACE INTO patents ({','.join(cols)}) VALUES ({placeholders})"
+        sql = self._upsert_statement(cols)
         with self._lock, self._connect() as conn:
             conn.executemany(sql, [[r[c] for c in cols] for r in rows])
             conn.commit()
         return len(rows)
+
+    def summarize_record_import(self, records: list[dict]) -> dict:
+        """Summarize how an external record set would change this database."""
+        application_nos = {
+            record.get('application_no')
+            for record in records
+            if record.get('application_no')
+        }
+        existing = self.get_all_app_nos()
+        timestamps = sorted(
+            str(record['timestamp'])
+            for record in records
+            if record.get('timestamp')
+        )
+        return {
+            'records': len(records),
+            'applications': len(application_nos),
+            'new_applications': len(application_nos - existing),
+            'updated_applications': len(application_nos & existing),
+            'timestamp_from': timestamps[0] if timestamps else None,
+            'timestamp_to': timestamps[-1] if timestamps else None,
+        }
 
     # ── 查询 ──────────────────────────────────────────────────────────────
 
@@ -203,14 +250,49 @@ class PatentsDB:
             rows = conn.execute("SELECT application_no FROM patents").fetchall()
         return {r[0] for r in rows}
 
-    def export_delta(self, since: str) -> list[dict]:
-        """返回 timestamp > since 的全部记录，用于增量跨机同步。ISO 格式字符串可直接比较。"""
+    def get_processed_app_nos(self) -> set[str]:
+        """Return applications with a completed collection attempt, successful or failed."""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM patents WHERE timestamp > ? ORDER BY timestamp ASC",
+                "SELECT application_no FROM patents "
+                "WHERE status_code IS NOT NULL AND status_code != ?",
+                (PENDING_STATUS_CODE,),
+            ).fetchall()
+        return {r[0] for r in rows}
+
+    def count_unattempted_records(self) -> int:
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM patents WHERE status_code IS NULL"
+            ).fetchone()[0]
+
+    def mark_unattempted_records_pending(self) -> int:
+        """Assign the explicit pending status to legacy records with NULL status_code."""
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE patents SET status_code=?, updated_at=? WHERE status_code IS NULL",
+                (
+                    PENDING_STATUS_CODE,
+                    datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount
+
+    def export_delta(self, since: str) -> list[dict]:
+        """Return records modified after the master-owned synchronization cursor."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM patents WHERE updated_at > ? "
+                "ORDER BY updated_at ASC, application_no ASC",
                 (since,)
             ).fetchall()
-        return [self._decode(r) for r in rows]
+        records = []
+        for row in rows:
+            record = self._decode(row)
+            record[SYNC_CURSOR_FIELD] = row['updated_at']
+            records.append(record)
+        return records
 
     def get_all_records(self) -> list[dict]:
         with self._connect() as conn:
@@ -413,17 +495,21 @@ class PatentsDB:
             SELECT
                 COUNT(*) AS total,
                 SUM(CASE WHEN status_code=200 THEN 1 ELSE 0 END) AS success,
+                SUM(CASE WHEN status_code IS NOT NULL AND status_code NOT IN (200, ?) THEN 1 ELSE 0 END) AS failed,
+                SUM(CASE WHEN status_code IS NULL OR status_code=? THEN 1 ELSE 0 END) AS pending,
                 AVG(CASE WHEN response_time_ms IS NOT NULL THEN response_time_ms END) AS avg_time
             FROM patents
         """
         with self._connect() as conn:
-            row = conn.execute(sql).fetchone()
+            row = conn.execute(sql, (PENDING_STATUS_CODE, PENDING_STATUS_CODE)).fetchone()
         total = row['total'] or 0
         success = row['success'] or 0
+        failed = row['failed'] or 0
         return {
             'total': total,
             'success': success,
-            'failed': total - success,
+            'failed': failed,
+            'pending': row['pending'] or 0,
             'detected': 0,
             'average_response_time_ms': round(row['avg_time'] or 0, 2),
         }
@@ -439,12 +525,13 @@ class PatentsDB:
                 SELECT
                     COUNT(*) AS unique_count,
                     SUM(CASE WHEN status_code=200 THEN 1 ELSE 0 END) AS success,
-                    SUM(CASE WHEN status_code!=200 THEN 1 ELSE 0 END) AS failed,
+                    SUM(CASE WHEN status_code IS NOT NULL AND status_code NOT IN (200, ?) THEN 1 ELSE 0 END) AS failed,
+                    SUM(CASE WHEN status_code IS NULL OR status_code=? THEN 1 ELSE 0 END) AS pending,
                     SUM(CASE WHEN anjianywzt=? THEN 1 ELSE 0 END) AS rejection,
                     SUM(CASE WHEN fwxx_list IS NOT NULL THEN 1 ELSE 0 END) AS fwxx_collected,
                     SUM(CASE WHEN anjianywzt=? AND fwxx_list IS NULL THEN 1 ELSE 0 END) AS fwxx_pending
                 FROM patents
-            """, (rejection_status, rejection_status)).fetchone()
+            """, (PENDING_STATUS_CODE, PENDING_STATUS_CODE, rejection_status, rejection_status)).fetchone()
 
             # 2. 业务状态分布 TOP 12
             status_rows = conn.execute("""
@@ -494,6 +581,7 @@ class PatentsDB:
         unique = agg['unique_count'] or 0
         success = agg['success'] or 0
         failed = agg['failed'] or 0
+        attempted = success + failed
 
         # 填充缺失的 7 天日期（可能某天没有记录）
         today = datetime.now(timezone.utc)
@@ -507,7 +595,8 @@ class PatentsDB:
             'unique_count': unique,
             'success': success,
             'failed': failed,
-            'success_rate': round(success / unique * 100, 2) if unique else 0,
+            'success_rate': round(success / attempted * 100, 2) if attempted else 0,
+            'pending': agg['pending'] or 0,
             'rejection': agg['rejection'] or 0,
             'fwxx_collected': agg['fwxx_collected'] or 0,
             'fwxx_pending': agg['fwxx_pending'] or 0,
@@ -612,6 +701,8 @@ class PatentsDB:
 
 def _cmd_migrate() -> None:
     from settings import PATENTS_DB_FILE, DETECTION_LOG_JSONL_FILE
+    from machine_identity import require_database_rebuild_authorization
+    require_database_rebuild_authorization(sys.argv[2:])
     print(f"从 {DETECTION_LOG_JSONL_FILE} 导入数据...")
     db = PatentsDB(PATENTS_DB_FILE)
     n = db.import_from_jsonl(DETECTION_LOG_JSONL_FILE)

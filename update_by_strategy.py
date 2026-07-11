@@ -472,7 +472,7 @@ def write_update_list_file(frequency_days: int = None):
         print("\n✅ 当前没有需要检查状态的申请号")
         print("   已写入空清单，避免误用上一次生成的旧数据。")
         print("\n" + "=" * 100)
-        return
+        return filepath
 
     print(f"\n【完整更新流程】")
     print(f"  # 第1步：保存采集前的状态快照（重要！用于后续对比）")
@@ -488,6 +488,7 @@ def write_update_list_file(frequency_days: int = None):
     print(f"  python update_by_strategy.py report    # 查看统计数据")
     print("\n" + "=" * 100)
     print(f"✅ 更新列表已保存")
+    return filepath
     print("=" * 100)
 
 def show_detailed_report():

@@ -54,6 +54,14 @@ RETRY_FAILED_FILE = DATA_DIR / 'retry_failed.txt'
 CONFIG_FILE = DATA_DIR / 'config.json'
 CONFIG_FWXX_FILE = DATA_DIR / 'config_fwxx.json'
 FORCE_UPDATE_FLAG = DATA_DIR / 'force_update.flag'
+MACHINE_ROLE_FILE = DATA_DIR / 'machine_role.txt'
+MASTER_SYNC_CONFIG_FILE = DATA_DIR / 'master_sync.json'
+MASTER_SYNC_STATE_FILE = DATA_DIR / 'master_sync_state.json'
+COLLECTION_HEARTBEAT_FILE = DATA_DIR / 'collection_heartbeat.json'
+ALERT_STATUS_FILE = DATA_DIR / 'alert_status.json'
+WATCHDOG_EVENTS_FILE = DATA_DIR / 'watchdog_events.jsonl'
+ALERT_FORWARD_STATE_FILE = DATA_DIR / 'alert_forward_state.json'
+API_TOKEN_FILE = DATA_DIR / 'api_token.txt'
 
 # ============================================================================
 # 结果文件
@@ -196,6 +204,13 @@ FWXX_ANTI_CRAWL_WAIT_MAX   = float(os.getenv('FWXX_ANTI_CRAWL_WAIT_MAX', '5'))
 # 非交互模式登录等待时间（秒）：Dashboard/Docker 场景下等待用户完成验证码的上限。
 # 默认 75 秒与 web_dashboard.py 传子进程的值对齐；命令行交互模式不受此限制（stdin.isatty）。
 CNIPA_LOGIN_WAIT_SECONDS = float(os.getenv('CNIPA_LOGIN_WAIT_SECONDS', '75'))
+
+# 无人值守采集看门狗
+WATCHDOG_HEARTBEAT_TIMEOUT_SECONDS = int(os.getenv('WATCHDOG_HEARTBEAT_TIMEOUT_SECONDS', '600'))
+WATCHDOG_MAX_RESTARTS = int(os.getenv('WATCHDOG_MAX_RESTARTS', '3'))
+WATCHDOG_FAILURE_THRESHOLD = int(os.getenv('WATCHDOG_FAILURE_THRESHOLD', '20'))
+WATCHDOG_MIN_FREE_GB = float(os.getenv('WATCHDOG_MIN_FREE_GB', '5'))
+ALERT_POLL_SECONDS = int(os.getenv('ALERT_POLL_SECONDS', '60'))
 
 # ============================================================================
 # 验证工具函数

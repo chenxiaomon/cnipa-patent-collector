@@ -148,7 +148,7 @@ class DetectionLogger:
     def add_record(self, record: DetectionRecord) -> None:
         """
         追加一条新记录。
-        - DB：INSERT OR REPLACE（O(1)）
+        - DB：ON CONFLICT upsert（O(1)，传入 NULL 不擦除已有业务字段）
         - JSONL：追加（双写备份，用于 git 追踪，O(1)）
         """
         d = record.to_dict()
@@ -207,7 +207,7 @@ class DetectionLogger:
     # ------------------------------------------------------------------
 
     def get_processed_applications(self) -> set:
-        return self._db.get_all_app_nos()
+        return self._db.get_processed_app_nos()
 
     def get_pending_applications(self, all_applications: list) -> list:
         processed = self.get_processed_applications()
@@ -224,6 +224,7 @@ class DetectionLogger:
         print(f"总计处理: {stats['total']} 个申请号")
         print(f"成功: {stats['success']} 个 ({100*stats['success']//max(1,stats['total'])}%)")
         print(f"失败: {stats['failed']} 个")
+        print(f"待采: {stats['pending']} 个")
         print(f"被检测: {stats['detected']} 个")
         print(f"平均响应时间: {stats['average_response_time_ms']}ms")
         print("="*60 + "\n")

@@ -16,7 +16,7 @@ import argparse
 from pathlib import Path
 
 from cache_utils import normalize_app_no
-from db_manager import PatentsDB
+from db_manager import PENDING_STATUS_CODE, PatentsDB
 from settings import PATENTS_DB_FILE, RETRY_FAILED_FILE
 
 DEFAULT_RETRY_BATCH_FILE = RETRY_FAILED_FILE.with_name('retry_batch_001.txt')
@@ -24,6 +24,8 @@ DEFAULT_RETRY_BATCH_FILE = RETRY_FAILED_FILE.with_name('retry_batch_001.txt')
 
 def is_failed_record(patent_record: dict) -> bool:
     status_code = patent_record.get('status_code')
+    if status_code in (None, PENDING_STATUS_CODE):
+        return False
     return (
         status_code != 200
         or bool(patent_record.get('error_message'))
