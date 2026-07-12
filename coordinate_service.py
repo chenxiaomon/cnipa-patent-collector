@@ -9,6 +9,7 @@ from datetime import datetime
 import pyautogui
 
 from settings import CONFIG_FILE, CONFIG_FWXX_FILE
+from atomic_write import write_json_atomic
 
 
 class CoordinateService:
@@ -62,8 +63,7 @@ class CoordinateService:
             'last_updated': datetime.now().isoformat()
         }
         try:
-            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
+            write_json_atomic(CONFIG_FILE, config)
             print("\n✓ 位置已保存到配置文件")
         except Exception as e:
             print(f"\n⚠️  保存配置失败: {e}")
@@ -120,8 +120,7 @@ class CoordinateService:
             'last_updated': datetime.now().isoformat()
         }
         try:
-            with open(CONFIG_FWXX_FILE, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
+            write_json_atomic(CONFIG_FWXX_FILE, config)
             print("\n✓ 位置已保存到配置文件")
         except Exception as e:
             print(f"\n⚠️  保存配置失败: {e}")

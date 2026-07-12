@@ -3,6 +3,7 @@
 """单元测试：SQLite 数据库管理器"""
 
 import tempfile
+import threading
 import time
 import unittest
 import sqlite3
@@ -119,6 +120,82 @@ class TestPatentsDBUpdateFields(unittest.TestCase):
             self.assertEqual(record["fwxx_list"], fwxx_list)
             self.assertEqual(record["bhsjtzs_xiazaisj"], "2026-06-18")
             self.assertIsNone(record["error_message"])
+
+
+class TestSnapshotPreviousStatus(unittest.TestCase):
+    """采集前状态快照（previous_status）"""
+
+    def test_snapshot_copies_status_and_skips_blank(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = PatentsDB(Path(tmpdir) / "patents.db")
+            db.upsert({"application_no": "2023000000001", "anjianywzt": "驳回等复审请求"})
+            db.upsert({"application_no": "2023000000002", "anjianywzt": "专利权维持"})
+            db.upsert({"application_no": "2023000000003", "anjianywzt": ""})
+            db.upsert({"application_no": "2023000000004"})
+
+            count = db.snapshot_previous_status()
+
+            self.assertEqual(count, 2)
+            self.assertEqual(db.get_record("2023000000001")["previous_status"], "驳回等复审请求")
+            self.assertEqual(db.get_record("2023000000002")["previous_status"], "专利权维持")
+            self.assertIsNone(db.get_record("2023000000003")["previous_status"])
+            self.assertIsNone(db.get_record("2023000000004")["previous_status"])
+
+
+class TestConnectionReuse(unittest.TestCase):
+    """每线程连接复用（_connect 缓存）"""
+
+    def test_connect_reuses_connection_within_thread(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = PatentsDB(Path(tmpdir) / "patents.db")
+            with db._connect() as first:
+                pass
+            with db._connect() as second:
+                pass
+            self.assertIs(first, second)
+
+    def test_failed_write_rolls_back_reused_connection(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = PatentsDB(Path(tmpdir) / "patents.db")
+            with self.assertRaises(RuntimeError):
+                with db._connect() as conn:
+                    conn.execute(
+                        "INSERT INTO patents (application_no) VALUES (?)",
+                        ("2023000000009",),
+                    )
+                    raise RuntimeError("simulated failure before commit")
+            self.assertIsNone(db.get_record("2023000000009"))
+            db.upsert({"application_no": "2023000000001"})
+            self.assertEqual(db.count(), 1)
+
+    def test_concurrent_upserts_across_threads(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = PatentsDB(Path(tmpdir) / "patents.db")
+
+            def upsert_batch_of_25(worker: int) -> None:
+                for i in range(25):
+                    db.upsert({"application_no": f"20230000{worker:02d}{i:03d}"})
+
+            workers = [threading.Thread(target=upsert_batch_of_25, args=(w,)) for w in range(4)]
+            for t in workers:
+                t.start()
+            for t in workers:
+                t.join()
+            self.assertEqual(db.count(), 100)
+
+
+class TestFwxxCollectedAppNos(unittest.TestCase):
+    """独立采集模式断点续传查询"""
+
+    def test_returns_only_records_with_fwxx(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = PatentsDB(Path(tmpdir) / "patents.db")
+            db.upsert({
+                "application_no": "2023000000001",
+                "fwxx_list": [{"fawenmc": "驳回决定"}],
+            })
+            db.upsert({"application_no": "2023000000002"})
+            self.assertEqual(db.fwxx_collected_app_nos(), {"2023000000001"})
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from settings import DETECTION_LOG_JSONL_FILE, PATENTS_DB_FILE
+from atomic_write import write_json_atomic
 from db_manager import PatentsDB
 from cache_utils import normalize_app_no as _normalize_app_no
 
@@ -132,6 +133,7 @@ class DetectionLogger:
         Path(self.log_file).touch()
 
         self._db = PatentsDB(PATENTS_DB_FILE)
+        self._writes_since_backup = 0
 
     # ------------------------------------------------------------------
     # 读（内部）
@@ -157,12 +159,11 @@ class DetectionLogger:
         # 1. 写 SQLite
         self._db.upsert(d)
 
-        # 2. 追加 JSONL（双写备份）
+        # 2. 追加 JSONL（双写备份）。不 fsync：DB 已提交（SSOT），
+        #    JSONL 尾行丢失可由 export_to_jsonl() 完整重建
         line = json.dumps(d, ensure_ascii=False) + '\n'
         with open(self.log_file, 'a', encoding='utf-8') as f:
             f.write(line)
-            f.flush()
-            os.fsync(f.fileno())
 
         self._auto_backup()
 
@@ -177,21 +178,36 @@ class DetectionLogger:
         self._db.upsert(d)
         self._auto_backup()
 
+    def add_records(self, records: list) -> int:
+        """批量追加：一次事务写 DB + 一次打开追加 JSONL。语义等同逐条 add_record。"""
+        rows = []
+        for record in records:
+            d = record.to_dict()
+            d['application_no'] = _normalize_app_no(d['application_no'])
+            rows.append(d)
+        if not rows:
+            return 0
+        self._db.upsert_batch(rows)
+        with open(self.log_file, 'a', encoding='utf-8') as f:
+            for d in rows:
+                f.write(json.dumps(d, ensure_ascii=False) + '\n')
+        self._auto_backup(written=len(rows))
+        return len(rows)
+
     # ------------------------------------------------------------------
-    # 备份（每 500 条 DB 记录自动备份一次 JSONL）
+    # 备份（本进程每写 500 条自动备份一次 JSONL）
     # ------------------------------------------------------------------
 
-    def _auto_backup(self, interval: int = 500) -> None:
-        try:
-            count = self._db.count()
-        except Exception:
+    def _auto_backup(self, written: int = 1, interval: int = 500) -> None:
+        self._writes_since_backup += written
+        if self._writes_since_backup < interval:
             return
-        if count > 0 and count % interval == 0:
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            backup = self.log_file.replace('.jsonl', f'_backup_{timestamp}.jsonl')
-            shutil.copy2(self.log_file, backup)
-            print(f"[✓] 自动备份: {os.path.basename(backup)} ({count} 条)")
-            self._prune_backups()
+        self._writes_since_backup = 0
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        backup = self.log_file.replace('.jsonl', f'_backup_{timestamp}.jsonl')
+        shutil.copy2(self.log_file, backup)
+        print(f"[✓] 自动备份: {os.path.basename(backup)} ({self._db.count()} 条)")
+        self._prune_backups()
 
     def _prune_backups(self, keep: int = 5) -> None:
         import glob
@@ -343,10 +359,7 @@ class DetectionLogger:
             },
             'records': records,
         }
-        tmp = json_file + '.tmp'
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, json_file)
+        write_json_atomic(json_file, data)
         print(f"✅ JSON 已导出: {json_file} ({len(records)} 条)")
         return True
 

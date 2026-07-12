@@ -1,4 +1,4 @@
-# CNIPA 专利采集系统 - Claude 工作指南
+# CNIPA 专利采集系统 - Codex 工作指南
 
 ## 项目概述
 

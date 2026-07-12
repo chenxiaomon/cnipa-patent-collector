@@ -10,6 +10,7 @@
 import json
 import os
 import sys
+from pathlib import Path
 
 try:
     import pandas as pd
@@ -18,6 +19,9 @@ except ImportError:
     print("[!] 缺少依赖: pandas 或 openpyxl")
     print("[!] 请运行: pip install pandas openpyxl")
     sys.exit(1)
+
+from settings import RAW_RESPONSES_DIR, RESULTS_DIR
+from atomic_write import write_json_atomic
 
 
 # 字段映射：API 字段名 → 中文表头
@@ -78,7 +82,7 @@ def convert_patent_type(type_code) -> str:
     return PATENT_TYPE_MAP.get(str(type_code) if type_code else '', str(type_code))
 
 
-def load_raw_responses(raw_dir: str) -> list:
+def load_raw_responses(raw_dir: Path) -> list:
     """加载 raw_responses 目录中的所有 JSON 文件"""
     print(f"\n[*] 扫描目录: {raw_dir}")
 
@@ -222,8 +226,7 @@ def save_to_json(records: list, output_file: str):
     try:
         print(f"\n[*] 正在导出 JSON: {output_file}")
 
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(records, f, ensure_ascii=False, indent=2)
+        write_json_atomic(output_file, records)
 
         print(f"[✓] JSON 文件已保存")
         print(f"   位置: {output_file}")
@@ -240,17 +243,12 @@ def main():
     print("📊 CNIPA 公开搜索数据导出工具")
     print("=" * 70)
 
-    # 输入和输出路径
-    raw_dir = 'data/raw_responses'
-    results_dir = 'data/results'
-    excel_file = os.path.join(results_dir, 'public_search_results.xlsx')
-    json_file = os.path.join(results_dir, 'public_search_results.json')
-
-    # 确保 results 目录存在
-    os.makedirs(results_dir, exist_ok=True)
+    # 输入和输出路径（settings 导入时已确保目录存在）
+    excel_file = RESULTS_DIR / 'public_search_results.xlsx'
+    json_file = RESULTS_DIR / 'public_search_results.json'
 
     # 加载数据
-    records = load_raw_responses(raw_dir)
+    records = load_raw_responses(RAW_RESPONSES_DIR)
 
     if not records:
         print("[-] 没有找到任何数据")

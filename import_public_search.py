@@ -21,10 +21,9 @@ from datetime import datetime
 from pathlib import Path
 
 from cache_utils import normalize_app_no
-from detection_logger import DetectionLogger, DetectionRecord
-from settings import RAW_RESPONSES_DIR, DETECTION_LOG_JSONL_FILE
-
-LOG_FILE = str(DETECTION_LOG_JSONL_FILE)
+from db_manager import PatentsDB
+from detection_logger import DetectionRecord
+from settings import RAW_RESPONSES_DIR, PATENTS_DB_FILE
 
 # 归档目录：导入后把原始 JSON 移到这里，避免下次重复导入
 ARCHIVE_DIR = RAW_RESPONSES_DIR.parent / 'raw_responses_imported'
@@ -124,9 +123,8 @@ def import_public_search(dry_run: bool = False) -> int:
     print(f"\n[*] 发现 {len(source_files)} 个原始响应文件")
 
     # 加载已有申请号集合（用于判断新增 vs 更新）
-    logger = DetectionLogger(LOG_FILE)
-    existing_app_nos = logger.get_processed_applications()
-    existing_normalized = {normalize_app_no(a) for a in existing_app_nos} - {None}
+    db = PatentsDB(PATENTS_DB_FILE)
+    existing_normalized = {normalize_app_no(a) for a in db.get_processed_app_nos()} - {None}
     print(f"[*] 数据库现有 {len(existing_normalized)} 条记录")
 
     imported_new = 0   # 真正新增
@@ -144,6 +142,7 @@ def import_public_search(dry_run: bool = False) -> int:
 
         file_new = 0
         file_update = 0
+        file_rows = []
         for raw in records_raw:
             record = _to_detection_record(raw)
             if record is None:
@@ -151,19 +150,17 @@ def import_public_search(dry_run: bool = False) -> int:
                 continue
 
             is_new = record.application_no not in existing_normalized
-            if dry_run:
-                if is_new:
-                    file_new += 1
-                else:
-                    file_update += 1
+            existing_normalized.add(record.application_no)
+            if is_new:
+                file_new += 1
             else:
-                # upsert：新增或覆盖已有记录（公开查询数据可能比原有更新）
-                logger.upsert_record(record)
-                existing_normalized.add(record.application_no)
-                if is_new:
-                    file_new += 1
-                else:
-                    file_update += 1
+                file_update += 1
+            if not dry_run:
+                file_rows.append(record.to_dict())
+
+        # upsert：新增或覆盖已有记录（公开查询数据可能比原有更新）；单事务批量写
+        if file_rows:
+            db.upsert_batch(file_rows)
 
         imported_new += file_new
         updated += file_update

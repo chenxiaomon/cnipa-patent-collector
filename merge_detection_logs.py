@@ -19,6 +19,8 @@ import json
 import argparse
 from datetime import datetime
 
+from atomic_write import write_json_atomic
+
 
 def load_json(file_path):
     """加载 JSON 文件"""
@@ -34,8 +36,7 @@ def load_json(file_path):
 def save_json(data, file_path):
     """保存 JSON 文件"""
     try:
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        write_json_atomic(file_path, data)
         return True
     except Exception as e:
         print(f"[!] 保存文件失败: {file_path}")

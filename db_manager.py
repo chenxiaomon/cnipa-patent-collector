@@ -84,21 +84,29 @@ class PatentsDB:
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self._thread_connection = threading.local()
         self._init_db()
 
     # ── 内部工具 ──────────────────────────────────────────────────────────
 
     @contextmanager
     def _connect(self):
-        conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA foreign_keys=ON")
+        # 每线程复用一个连接（连接创建 + 3 条 PRAGMA 不便宜，之前每次调用都重来）。
+        # 连接归单线程所有，保留默认 check_same_thread 检查。
+        conn = getattr(self._thread_connection, 'conn', None)
+        if conn is None:
+            conn = sqlite3.connect(str(self._db_path))
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            self._thread_connection.conn = conn
         try:
             yield conn
-        finally:
-            conn.close()
+        except Exception:
+            # 连接跨调用复用后，失败的写事务不能悬挂到下一次调用
+            conn.rollback()
+            raise
 
     def _init_db(self) -> None:
         with self._lock, self._connect() as conn:
@@ -108,6 +116,13 @@ class PatentsDB:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_updated_at  ON patents(updated_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_shenqingrxm ON patents(shenqingrxm)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_status_code ON patents(status_code)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_zhuanlilx_shenqingrxm ON patents(zhuanlilx, shenqingrxm)"
+            )
+            # 部分索引：只索引未采集发文信息的行，避免把多 KB 的 fwxx_list 文本收进索引
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fwxx_pending ON patents(anjianywzt) WHERE fwxx_list IS NULL"
+            )
             conn.execute(_CREATE_REQUESTS_TABLE)
             # 对已有数据库做无损迁移：列已存在时 SQLite 抛 "duplicate column name"，忽略即可
             for col in ('daili_jg TEXT', 'daili_r TEXT'):
@@ -204,6 +219,22 @@ class PatentsDB:
         with self._lock, self._connect() as conn:
             conn.execute(sql, [*valid.values(), app_no])
             conn.commit()
+
+    def snapshot_previous_status(self) -> int:
+        """
+        采集前将当前 anjianywzt 快照到 previous_status（单条 SQL 全表完成），
+        供采集后对比分析。跨机同步游标依赖 updated_at，因此快照同时刷新 updated_at。
+        返回快照的记录数（anjianywzt 非空的行）。
+        """
+        stamped_at = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE patents SET previous_status=anjianywzt, updated_at=? "
+                "WHERE anjianywzt IS NOT NULL AND anjianywzt != ''",
+                (stamped_at,),
+            )
+            conn.commit()
+            return cursor.rowcount
 
     def upsert_batch(self, records: list[dict]) -> int:
         """批量 upsert，用于初始迁移"""
@@ -421,6 +452,18 @@ class PatentsDB:
                 (rejection_status,)
             ).fetchall()
         return [r['application_no'] for r in rows]
+
+    def fwxx_collected_app_nos(self) -> set:
+        """已采集发文信息（fwxx_list 非空）的申请号集合，供独立采集模式断点续传。
+
+        故意不过滤 anjianywzt：续传语义是"任何已有 fwxx 的记录都跳过"，
+        与 fwxx_uncollected_app_nos 的驳回状态过滤不同。
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT application_no FROM patents WHERE fwxx_list IS NOT NULL"
+            ).fetchall()
+        return {r['application_no'] for r in rows}
 
     # ── 需求队列 ──────────────────────────────────────────────────────────
 

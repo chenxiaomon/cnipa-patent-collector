@@ -556,10 +556,10 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
     focus_strategy = safe_json_load(DATA_DIR / "focus_strategy.json", {})
     status_breakdown = focus_strategy.get("status_breakdown", {}) if isinstance(focus_strategy, dict) else {}
 
-    # 策略分组计算（从 DB 读取最新一份记录用于计算 next_update）
+    # 策略分组计算（轻量快照只含 anjianywzt/timestamp，避免每次轮询全字段解码）
     if status_breakdown:
-        db_records_for_groups = _patents_db.get_all_records()
-        update_groups = build_update_groups(db_records_for_groups, status_breakdown)
+        status_snapshot = _patents_db.get_status_timestamp_snapshot()
+        update_groups = build_update_groups(status_snapshot, status_breakdown)
     else:
         update_groups = []
 
@@ -688,6 +688,31 @@ def build_update_groups(records: list[dict[str, Any]], status_breakdown: dict[st
             group["earliest"] = next_update.isoformat().replace("+00:00", "Z")
 
     return [groups[key] for key in sorted(groups)]
+
+
+# /api/summary 轮询间隔 5s（app.js setInterval）；TTL 必须小于它，保证每个轮询周期
+# 至少重算一次。POST 后前端手动 refreshSummary() 的即时性由 do_POST 的 discard 保证。
+SUMMARY_SNAPSHOT_TTL_SECONDS = 3.0
+_summary_snapshot_lock = threading.Lock()
+_summary_snapshot: dict[str, Any] | None = None
+_summary_snapshot_at = 0.0
+
+
+def summary_snapshot(job_manager: JobManager) -> dict[str, Any]:
+    """读穿缓存：多标签页/多客户端的 5s 轮询坍缩为每 TTL 一次 build_summary。"""
+    global _summary_snapshot, _summary_snapshot_at
+    with _summary_snapshot_lock:
+        if (_summary_snapshot is None
+                or time.monotonic() - _summary_snapshot_at >= SUMMARY_SNAPSHOT_TTL_SECONDS):
+            _summary_snapshot = build_summary(job_manager)
+            _summary_snapshot_at = time.monotonic()
+        return _summary_snapshot
+
+
+def discard_summary_snapshot() -> None:
+    global _summary_snapshot
+    with _summary_snapshot_lock:
+        _summary_snapshot = None
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -2751,7 +2776,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif path == "/app.js":
                 self.send_text(JS, "application/javascript; charset=utf-8")
             elif path == "/api/summary":
-                summary = build_summary(self.job_manager)
+                # 浅拷贝：is_operator/machine_role 因请求而异，不能写进共享缓存
+                summary = dict(summary_snapshot(self.job_manager))
                 summary['is_operator'] = self.is_operator
                 summary['machine_role'] = read_machine_role()
                 self.send_json(summary)
@@ -3233,6 +3259,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, status=400)
         except Exception as exc:
             self.send_json({"error": str(exc)}, status=500)
+        finally:
+            # 所有 UI 写操作都经由 do_POST；统一在此失效摘要缓存，
+            # 前端 POST 后手动 refreshSummary() 才能立即看到新状态
+            discard_summary_snapshot()
 
     def handle_get_job(self, path: str) -> None:
         job_id = _parse_path_segment(path, 3)

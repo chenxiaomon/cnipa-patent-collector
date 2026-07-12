@@ -382,6 +382,45 @@
 
 ---
 
+## 2026-07-12：全面体检 + 快速修复包（性能与规范）
+
+**目标**: 消除 Dashboard 轮询的性能浪费，修复 CLAUDE.md 规范违反项，清理过时文档与死代码
+
+**改动**:
+- ✅ `build_summary()` 改用 `get_status_timestamp_snapshot()`，删除每 5 秒一次的 31k 行全表扫描 + JSON 解码
+- ✅ `update_by_strategy.show_statistics` 循环内全表扫描提到循环外（`PatentsDB.count()` 一次）
+- ✅ 新增 `PatentsDB.snapshot_previous_status()`：单条 SQL 替代 `prepare_for_update` 的 3 万次逐条 update
+- ✅ 新建 `atomic_write.py`，修复 coordinate_service 等 5 处非原子 JSON 写入
+- ✅ `export_public_search` / `start_mitm_public_search` 硬编码 `data/...` 路径改走 settings.py
+- ⚠️ 删除孤儿脚本 `sync_from_jsonl.py`（无引用，功能与 `sync.py rebuild` 重复，用户确认）
+- ✅ CLAUDE.md / AGENTS.md「当前任务」清空，dashboard-redesign.md 标记为已完成存档
+
+**结果**: ruff 零告警，pytest 全过（含新增 snapshot_previous_status / write_json_atomic 单测）
+
+**下一步**:
+- [x] （已排期外）/api/summary 短 TTL 缓存、PatentsDB 线程级连接复用、存量原子写迁移 → 已于 2026-07-12 优化专项完成（见下条）
+
+---
+
+## 2026-07-12：性能优化专项（缓存/连接复用/批量写）
+
+**目标**: 完成上一条排期外的三项优化，并消除写路径与批量导入的逐条开销
+
+**改动**:
+- ✅ `PatentsDB._connect()` 改为每线程连接复用（threading.local），消除每次调用建连 + 3 条 PRAGMA；异常时 rollback 防止失败事务悬挂到下次调用
+- ✅ `web_dashboard` 新增 `summary_snapshot()`：/api/summary 3 秒 TTL 读穿缓存，`do_POST` finally 统一失效；MITM 端口探测随之限频（实测缓存命中 280ms → 2ms）
+- ✅ `DetectionLogger`：去掉每条记录的 `COUNT(*)`（改进程内写计数器）和 JSONL fsync（DB 是 SSOT，JSONL 可由 export 重建）；新增批量入口 `add_records()`
+- ✅ `import_from_cache` / `import_public_search` 改批量单事务写入（`add_records` / `upsert_batch`），替代逐条 add_record/upsert_record
+- ✅ `collect_fwxx` 断点续传改走新查询 `fwxx_collected_app_nos()`，不再全表 JSON 解码；新增 `idx_zhuanlilx_shenqingrxm` 与部分索引 `idx_fwxx_pending`
+- ✅ 存量原子写收口：`cache_utils.write_json_cache` / `export_to_json` / `_append_unmatched` 统一走 `write_json_atomic`（其余为 JSONL 追加流或带尾换行的 write_text，语义不同，不迁移）
+
+**结果**: ruff 零告警，pytest 133 全过（新增连接复用/回滚/并发、logger 双写与批量等 10 条单测）；Dashboard 实测缓存命中 ~2ms，POST 后立即重算
+
+**下一步**:
+- [ ] （排期外）web_dashboard.py 3300 行单文件拆分（HTML/CSS/JS 内嵌块外置）
+
+---
+
 ## [待填] 
 
 **目标**:  
