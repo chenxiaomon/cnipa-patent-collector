@@ -6,9 +6,14 @@
 测试日志记录和数据序列化
 """
 
-import unittest
+import glob
 import json
-from detection_logger import DetectionRecord
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from detection_logger import DetectionLogger, DetectionRecord
 
 
 class TestDetectionRecord(unittest.TestCase):
@@ -154,6 +159,69 @@ class TestDetectionRecordSerialization(unittest.TestCase):
 
         self.assertEqual(loaded['zhuanlimc'], '一种新型装置')
         self.assertEqual(loaded['shenqingrxm'], '张三李四')
+
+
+def _logger_in(tmpdir: str, name: str = 'log.jsonl') -> DetectionLogger:
+    """在临时目录中构造 DetectionLogger（DB 也落在临时目录，不碰仓库数据）"""
+    db_path = Path(tmpdir) / 'patents.db'
+    with mock.patch('detection_logger.PATENTS_DB_FILE', db_path):
+        return DetectionLogger(str(Path(tmpdir) / name))
+
+
+class TestDetectionLoggerWritePath(unittest.TestCase):
+    """DB + JSONL 双写路径"""
+
+    def test_add_record_appends_jsonl_and_db(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = _logger_in(tmpdir)
+            logger.add_record(DetectionRecord(application_no='2023000000001', status_code=200))
+            logger.add_record(DetectionRecord(application_no='2023000000002', status_code=0))
+            lines = Path(logger.log_file).read_text(encoding='utf-8').splitlines()
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(logger._db.count(), 2)
+
+    def test_auto_backup_fires_on_interval_and_resets_counter(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = _logger_in(tmpdir)
+            logger.add_record(DetectionRecord(application_no='2023000000001', status_code=200))
+            backup_pattern = str(Path(tmpdir) / 'log_backup_*.jsonl')
+
+            logger._auto_backup(written=500)
+            self.assertEqual(len(glob.glob(backup_pattern)), 1)
+            self.assertEqual(logger._writes_since_backup, 0)
+
+            logger._auto_backup(written=1)
+            self.assertEqual(len(glob.glob(backup_pattern)), 1)
+            self.assertEqual(logger._writes_since_backup, 1)
+
+    def test_add_records_matches_looped_add_record(self):
+        records = [
+            DetectionRecord(application_no='2023000000001', status_code=200, zhuanlimc='专利一'),
+            DetectionRecord(application_no='2023000000002', status_code=0, error_message='超时'),
+            DetectionRecord(application_no='2023000000003', status_code=200,
+                            fwxx_list=[{'fawenmc': '驳回决定'}]),
+        ]
+        with tempfile.TemporaryDirectory() as loop_dir, \
+                tempfile.TemporaryDirectory() as batch_dir:
+            looped = _logger_in(loop_dir)
+            for r in records:
+                looped.add_record(r)
+
+            batched = _logger_in(batch_dir)
+            self.assertEqual(batched.add_records(records), 3)
+
+            def without_write_stamp(rows: list) -> list:
+                # updated_at 由 DB 在写入时刻生成，两个 logger 必然不同，剔除后比较
+                return [{k: v for k, v in row.items() if k != 'updated_at'} for row in rows]
+
+            self.assertEqual(
+                without_write_stamp(batched._db.get_all_records()),
+                without_write_stamp(looped._db.get_all_records()),
+            )
+            self.assertEqual(
+                Path(batched.log_file).read_text(encoding='utf-8'),
+                Path(looped.log_file).read_text(encoding='utf-8'),
+            )
 
 
 if __name__ == '__main__':

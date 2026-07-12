@@ -18,6 +18,7 @@ if sys.platform == 'win32':
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from settings import BASE_DIR
+from machine_identity import MachineRoleConfigurationError, require_replica_git_upgrade_role
 
 _CWD = str(BASE_DIR)
 _DEP_FILES = {'pyproject.toml', 'requirements.txt'}
@@ -85,6 +86,7 @@ def check_upstream() -> list[str]:
 
 
 def pull_and_upgrade() -> None:
+    require_replica_git_upgrade_role()
     print("正在检查远端更新…")
     try:
         pending = check_upstream()
@@ -148,7 +150,11 @@ def main() -> None:
             print("✓ 已是最新。")
         return
 
-    pull_and_upgrade()
+    try:
+        pull_and_upgrade()
+    except MachineRoleConfigurationError as exc:
+        print(f"✗ {exc}")
+        sys.exit(2)
 
 
 if __name__ == '__main__':

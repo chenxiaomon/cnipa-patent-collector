@@ -4,6 +4,15 @@
 # 本机坐标配置（随屏幕/浏览器位置变化，不入库；用 config.example.json 了解字段结构）
 data/config.json
 data/config_fwxx.json
+data/machine_role.txt
+data/master_sync.json
+data/master_sync_state.json
+data/collection_heartbeat.json
+data/alert_status.json
+data/watchdog_events.jsonl
+data/alert_forward_state.json
+data/api_token.txt
+backups/
 
 # 忽略中间缓存（不需要上传）
 data/patent_cache.json

@@ -10,7 +10,7 @@ CNIPA 专利采集系统：自动化采集国知局专利案件状态，含 MITM
 
 进行中的较大任务有独立任务文档，开始相关工作前先阅读对应文档，不要从本文件推断需求：
 
-- Dashboard 全功能重设计 → 见 `docs/dashboard-redesign.md`
+- （当前无进行中的大任务。已完成任务的存档见 `docs/`，如 `docs/dashboard-redesign.md`）
 
 ---
 

@@ -62,13 +62,16 @@ def validate_success_rate(records):
     total = len(records)
     successful = sum(1 for r in records if r.get('status_code') == 200)
     failed = sum(1 for r in records if r.get('status_code') == 0)
-    others = total - successful - failed
+    pending = sum(1 for r in records if r.get('status_code') in (None, -1))
+    others = total - successful - failed - pending
 
-    success_rate = 100 * successful / total if total > 0 else 0
+    attempted = successful + failed
+    success_rate = 100 * successful / attempted if attempted > 0 else 0
 
     print(f"总记录数: {total}")
     print(f"✅ 成功: {successful} ({success_rate:.2f}%)")
     print(f"❌ 失败: {failed}")
+    print(f"⏳ 待采: {pending}")
     print(f"⚠️  其他: {others}")
 
     # 列出失败记录
@@ -85,6 +88,7 @@ def validate_success_rate(records):
         'total': total,
         'successful': successful,
         'failed': failed,
+        'pending': pending,
         'success_rate': success_rate
     }
 

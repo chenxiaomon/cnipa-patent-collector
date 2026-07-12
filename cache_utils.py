@@ -8,11 +8,12 @@ JSON 缓存工具函数（跨脚本复用）
 """
 
 import json
-import os
 import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional, Tuple
+
+from atomic_write import write_json_atomic
 
 
 _APP_NO_SPLIT_RE = re.compile(r'[\s,;；，]+')
@@ -77,10 +78,7 @@ def read_json_cache(cache_file: str) -> dict:
 
 def write_json_cache(cache_file: str, data: dict) -> None:
     """原子写入 JSON 缓存文件（.tmp + os.replace 保证写入完整性）"""
-    tmp = cache_file + '.tmp'
-    with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, cache_file)
+    write_json_atomic(cache_file, data)
 
 
 def clear_cache_key(cache_file: str, key: str) -> bool:

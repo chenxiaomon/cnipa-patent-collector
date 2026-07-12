@@ -168,13 +168,17 @@ def show_statistics():
             frequency_groups[freq_days] = {'name': freq_name, 'statuses': []}
         frequency_groups[freq_days]['statuses'].append((status, info['count']))
 
+    from db_manager import PatentsDB
+    from settings import PATENTS_DB_FILE
+    total_records = PatentsDB(PATENTS_DB_FILE).count()
+
     # 按频率天数排序显示
     for freq_days in sorted(frequency_groups.keys()):
         group = frequency_groups[freq_days]
         freq_name = group['name']
         statuses = group['statuses']
         total_for_freq = sum(count for _, count in statuses)
-        percentage = round(total_for_freq / len(load_detection_log()['records']) * 100, 1)
+        percentage = round(total_for_freq / total_records * 100, 1)
 
         print(f"\n【🕒 {freq_name}（{freq_days}天）】")
         print(f"  申请号数: {total_for_freq} 件 ({percentage}%)")
@@ -247,14 +251,7 @@ def prepare_for_update():
     from db_manager import PatentsDB
     from settings import PATENTS_DB_FILE
     db = PatentsDB(PATENTS_DB_FILE)
-    records = db.get_all_records()
-
-    count = 0
-    for record in records:
-        current_status = record.get('anjianywzt')
-        if current_status:
-            db.update_fields(record['application_no'], {'previous_status': current_status})
-            count += 1
+    count = db.snapshot_previous_status()
 
     print("\n" + "=" * 100)
     print("🔄 采集前准备 - 状态快照已保存")
@@ -472,7 +469,7 @@ def write_update_list_file(frequency_days: int = None):
         print("\n✅ 当前没有需要检查状态的申请号")
         print("   已写入空清单，避免误用上一次生成的旧数据。")
         print("\n" + "=" * 100)
-        return
+        return filepath
 
     print(f"\n【完整更新流程】")
     print(f"  # 第1步：保存采集前的状态快照（重要！用于后续对比）")
@@ -488,6 +485,7 @@ def write_update_list_file(frequency_days: int = None):
     print(f"  python update_by_strategy.py report    # 查看统计数据")
     print("\n" + "=" * 100)
     print(f"✅ 更新列表已保存")
+    return filepath
     print("=" * 100)
 
 def show_detailed_report():

@@ -1,5 +1,8 @@
 # AI 上下文（AI Context）
 
+> 历史说明：本文主体记录 2026-05 的工程化过程，数量快照不再代表当前数据。
+> 当前运行时唯一真相源是 `data/patents.db`；实时统计以 README 自动区块和 Dashboard 为准。
+
 > 📌 **此文件专为 AI/Harness 协作设计**  
 > 功能：快速理解项目现状、约束和下一步方向  
 > 更新频率：每次重大改动后追加  
@@ -7,7 +10,16 @@
 
 ---
 
-## 当前目标（2026-05-13 更新）
+## 当前运行状态（2026-07-11）
+
+- `data/patents.db` 是运行时唯一真相源，所有业务读写通过 `PatentsDB`。
+- 部署机是唯一数据 `master`；开发机与 Mac 是 `replica`。
+- `data/results/detection_log.jsonl` 只作为 Git 备份与跨机传输载体，由数据库导出刷新。
+- replica 使用 `sync_pull_from_master.py` 从 Dashboard HTTP 增量接口拉取数据；旧 `sync.py pull/push` 已禁用。
+- 代码发布使用 `release_manifest.json` 逐文件校验，失败自动恢复；`rollback.py` 回滚最近备份。
+- 无人值守采集由 `collection_watchdog.py` 监管，replica 通过 `poll_master_alerts.py` 转发 ServerChan 报警。
+
+## 历史目标（2026-05-13）
 
 **优先级 1 - 工程化基础** ✅ 基本完成
 - [x] 文档重构：project-brief, architecture, domain-rules, runbook, decision-log, ai-context, worklog
@@ -38,14 +50,13 @@
 - **采集模式**: 自动按申请号采集 + Phase 0 手动按申请人采集 + 公开查询手动/半自动采集
 - **采集对象**: CNIPA 官网 (https://cpquery.cponline.cnipa.gov.cn/)
 - **触发条件**: anjianywzt == '驳回等复审请求' 时才采集发文（以 anjianywzt 为准）
-- **性能目标**: 500 条目 < 30 分钟（单线程）✅ 已验证
-- **成功率**: 99.99%（9421/9422，按 status_code=200 计）✅ 已验证（2026-05-13）
+- **性能目标**: 500 条目 < 30 分钟（单线程，历史批次已验证）
+- **成功率**: 不在本文维护静态快照；以 README 自动统计区块和 Dashboard 为准
 
 ### 代码约束
 
-- **文件路径** ✅ 主要脚本已统一
-  - settings.py 集中管理所有路径，5 个主要脚本已迁移
-  - ⚠️ 残留：update_by_strategy.py, sync.py, import_from_cache.py 仍有硬编码（非核心，待迁移）
+- **文件路径** ✅ 已统一
+  - 运行时文件路径由 `settings.py` 集中管理，脚本不依赖当前工作目录
 
 - **业务规则统一** ✅ 已验证
   - 已确认：falvzt 100% 为 `--`（不可用），anjianywzt 为准
@@ -53,9 +64,9 @@
   - 补采脚本 (collect_fwxx.py line 232) 正确使用 anjianywzt 判定
   - 数据验证：9422 条采集，falvzt 全为 `--`，anjianywzt 有真实分布
 
-- **状态存储** ✅ 已升级（2026-05-12）
-  - detection_log.jsonl，JSONL 追加写入，O_APPEND + fsync，中断安全
-  - detection_log.json 保留为备份，可手动删除
+- **状态存储** ✅ 已升级（2026-07）
+  - `patents.db` 是运行时唯一真相源，采集、补采、分析和 Dashboard 均通过 `PatentsDB` 访问。
+  - `detection_log.jsonl` 是由数据库生成的只读 Git 备份，运行时禁止直接读取。
 
 ### 依赖约束
 
@@ -112,7 +123,8 @@
 | 文件 | 行数 | 关键行 | 改动频率 |
 |------|------|--------|---------|
 | main_automation.py | 360+ | BrowserService/InputService/CoordinateService 调用，MITM 超时 | 🟡 中 |
-| detection_logger.py | 280+ | add_record(JSONL追加), export_to_excel, export_to_json | 🟡 中 |
+| db_manager.py | 700+ | PatentsDB、SQLite upsert、聚合、增量导入导出 | 🟡 中 |
+| detection_logger.py | 280+ | 通过 PatentsDB 写入、导出 Excel/JSON/JSONL | 🟡 中 |
 | patent_mitm_scraper.py | 380+ | 139(缓存写入), 221(缓存写入) | 🟡 中 |
 | coordinate_service.py | 137 | load_or_record_search_coordinates, load_or_record_fwxx_coordinates | 🟢 低 |
 | browser_service.py | 55 | BrowserService.launch_and_login(url, page_load_wait) | 🟢 低 |
@@ -131,7 +143,7 @@
 | 文件 | 作用 | 何时使用 |
 |------|------|----------|
 | start_browser_for_phase0.py | 打开带代理浏览器，用户手动按申请人搜索和翻页 | 已知申请人/关键词，想批量发现申请号 |
-| import_from_cache.py | 将 Phase 0 手动浏览产生的 `patent_cache.json` 导入主日志 | 手动浏览结束后 |
+| import_from_cache.py | 将 Phase 0 手动浏览产生的 `patent_cache.json` 导入 SQLite | 手动浏览结束后 |
 | start_mitm_public_search.py | 启动 publicSearch 专用 MITM 插件 | 公开查询采集前 |
 | launch_browser_with_proxy.py | 打开带代理的 publicSearch 浏览器 | 手动输入公开查询条件 |
 | auto_paginate.py | 对 publicSearch 页面半自动翻页 | 页数较多时减少手动点击 |
@@ -300,7 +312,7 @@
 ### 关键决策点
 
 - [x] ~~确认 falvzt & anjianywzt~~ → 已验证，anjianywzt 为准
-- [ ] SQLite 迁移 vs JSONL（超过 10K 条时评估）→ 影响数据结构设计
+- [x] ~~SQLite 迁移 vs JSONL~~ → 已完成；SQLite 为运行时 SSOT，JSONL 为 Git 备份
 - [ ] 坐标自动识别工具（可选）→ 换机器时不用手动录坐标
 
 ---
@@ -338,7 +350,7 @@ uv run python start_mitm_proxy.py
 # 终端 2：打开带代理浏览器，手动登录、按申请人搜索、翻页
 uv run python start_browser_for_phase0.py
 
-# 浏览完成后：导入缓存到主日志
+# 浏览完成后：导入缓存到 SQLite 运行库
 uv run python import_from_cache.py
 ```
 
@@ -365,11 +377,13 @@ data/
 ├── search_list.txt           # 申请号输入
 ├── config.json               # 鼠标坐标
 ├── patent_cache.json         # MITM 缓存（临时）
+├── patents.db                # ⭐ 运行时唯一真相源
+├── machine_role.txt          # master/replica 本机角色（不进 Git）
 ├── raw_responses/            # 公开查询原始响应
 ├── raw_searches/             # 公开查询 JSONL 记录
 ├── results/
-│   ├── detection_log.jsonl   # ⭐ 主日志
-│   ├── detection_log.json    # 兼容导出/备份
+│   ├── detection_log.jsonl   # Git 备份，由 PatentsDB 导出刷新
+│   ├── detection_log.json    # 兼容导出
 │   ├── patents_data.xlsx     # ⭐ 最终报表
 │   └── public_search_results.xlsx/json
 ```

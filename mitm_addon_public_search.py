@@ -17,6 +17,7 @@ from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from settings import RAW_RESPONSES_DIR, RAW_SEARCHES_DIR
+from atomic_write import write_json_atomic
 
 
 class PublicSearchMITMAddon:
@@ -135,8 +136,7 @@ class PublicSearchMITMAddon:
             filename = f"undomestic_{page_no:04d}_{timestamp}.json"
             filepath = RAW_RESPONSES_DIR / filename
 
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(resp_json, f, ensure_ascii=False, indent=2)
+            write_json_atomic(filepath, resp_json)
 
             print(f"[✓] 已保存原始响应: {filename}")
 

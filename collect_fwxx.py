@@ -62,6 +62,7 @@ import pyautogui
 
 # 导入现有模块
 sys.path.insert(0, os.path.dirname(__file__))
+from atomic_write import write_json_atomic
 from detection_logger import DetectionLogger
 from browser_utils import (
     is_browser_alive,
@@ -210,10 +211,9 @@ def load_standalone_targets(input_file: str = None, app_nos: str = None) -> list
 
 
 def _load_standalone_collected() -> set:
-    """返回 detection_log 中已有 fwxx_list 的申请号（断点续传用）"""
+    """返回已有 fwxx_list 的申请号（断点续传用），走轻量查询避免全表 JSON 解码"""
     try:
-        logger = DetectionLogger()
-        return {r['application_no'] for r in logger._load_records() if r.get('fwxx_list') is not None}
+        return PatentsDB(PATENTS_DB_FILE).fwxx_collected_app_nos()
     except Exception:
         return set()
 
@@ -437,10 +437,7 @@ def _append_unmatched(application_no: str, fwxx_data: dict, reason: str = '') ->
             'bhsjtzs_xiazaisj': fwxx_data.get('bhsjtzs_xiazaisj'),
             'bhsjtzs_data': fwxx_data.get('bhsjtzs_data'),
         })
-        tmp = FWXX_UNMATCHED_FILE + '.tmp'
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, FWXX_UNMATCHED_FILE)
+        write_json_atomic(FWXX_UNMATCHED_FILE, data)
     except Exception as e:
         print(f"    [!] 写入 unmatched 失败: {e}")
 

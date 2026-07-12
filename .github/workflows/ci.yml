@@ -41,5 +41,10 @@ jobs:
       - name: 版本一致性校验（VERSION == pyproject.toml）
         run: python scripts/sync_version.py --check
 
+      - name: 发布清单一致性校验
+        run: |
+          python scripts/generate_code_manifest.py
+          git diff --exit-code -- release_manifest.json
+
       - name: 单元测试（排除依赖真实 DB 的数据质量测试）
         run: xvfb-run -a python -m pytest tests/ -q --ignore=tests/test_validation.py

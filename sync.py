@@ -4,11 +4,11 @@
 采集进度同步脚本
 
 用法：
-  python sync.py pull     # 采集前：拉取最新进度 → 重建本地 DB
-  python sync.py push     # 采集后：导出 DB → 上传 JSONL
   python sync.py status   # 查看当前同步状态
   python sync.py init     # 新机器一键初始化：git pull + 重建 DB
   python sync.py rebuild  # 从现有 JSONL 重建 DB（DB 损坏/迁移/恢复用）
+
+日常数据回流固定使用 sync_pull_from_master.py；旧 pull/push 方向命令已禁用。
 """
 import shlex
 import shutil
@@ -21,6 +21,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from settings import DETECTION_LOG_JSONL_FILE, PATENTS_DB_FILE
 from db_manager import PatentsDB
+from machine_identity import (
+    MachineRoleConfigurationError,
+    require_database_rebuild_authorization,
+)
 
 LOG_FILE = str(DETECTION_LOG_JSONL_FILE)
 
@@ -128,96 +132,6 @@ def _auto_merge_conflict() -> bool:
     return True
 
 
-def cmd_pull():
-    print("=" * 60)
-    print("⬇  拉取最新采集进度")
-    print("=" * 60)
-
-    before = record_count()
-
-    # 检查本地是否有未提交的修改
-    dirty = run('git status --porcelain data/results/detection_log.jsonl').stdout.strip()
-    if dirty:
-        print(f"[!] 本地有未提交的修改（{before} 条），先提交再拉取")
-        if sys.stdin.isatty():
-            ans = input("    是否先提交本地数据？(y/N): ").strip().lower()
-            if ans != 'y':
-                print("[!] 已取消，请手动处理后重试")
-                sys.exit(1)
-        else:
-            # 非交互模式（Dashboard 子进程）：自动提交，避免 stdin 关闭导致 EOFError
-            print("[*] 非交互模式，自动提交本地数据后拉取...")
-        cmd_push()
-
-    result = run('git pull', check=False)
-    if result.returncode != 0:
-        if 'CONFLICT' in result.stdout or 'conflict' in result.stderr:
-            print("[!] 检测到合并冲突，尝试自动合并...")
-            if not _auto_merge_conflict():
-                print("[✗] 自动合并失败，请手动检查 detection_log.jsonl")
-                sys.exit(1)
-        else:
-            print(f"[✗] pull 失败（网络或权限问题）:\n{result.stderr.strip()}")
-            sys.exit(1)
-
-    after = record_count()
-    print(f"[✓] 同步完成：{before} → {after} 条（新增 {after - before} 条）")
-
-    db = PatentsDB(PATENTS_DB_FILE)
-    imported = db.import_from_jsonl(DETECTION_LOG_JSONL_FILE)
-    print(f"[sync] 已从 JSONL 重建 DB，{imported} 条记录")
-
-    print("现在可以开始采集了。")
-
-
-def cmd_push():
-    print("=" * 60)
-    print("⬆  上传本次采集进度")
-    print("=" * 60)
-
-    # 先导出 DB → JSONL，确保 JSONL 与 DB 完全一致（包含 upsert_record 写入的变更）
-    db = PatentsDB(PATENTS_DB_FILE)
-    exported = db.export_to_jsonl(DETECTION_LOG_JSONL_FILE)
-    print(f"[sync] 已从 DB 导出 {exported} 条记录到 JSONL")
-
-    if exported == 0:
-        print("[!] 日志为空，跳过上传")
-        return
-
-    # 先 pull 合并远端（防止冲突）
-    print("[*] 先拉取远端最新版本...")
-    pull = run('git pull', check=False)
-    if pull.returncode != 0:
-        if 'CONFLICT' in pull.stdout or 'conflict' in pull.stderr:
-            print("[!] 检测到合并冲突，尝试自动合并...")
-            if not _auto_merge_conflict():
-                print("[✗] 自动合并失败，请手动检查 detection_log.jsonl")
-                sys.exit(1)
-        else:
-            print(f"[✗] pull 失败（网络或权限问题）:\n{pull.stderr.strip()}")
-            sys.exit(1)
-
-    after_pull = record_count()
-
-    run(f'git add {LOG_FILE}')
-
-    # 检查是否有实质变化
-    diff = run('git diff --cached --stat').stdout.strip()
-    if not diff:
-        print("[✓] 无变化，无需提交")
-        return
-
-    msg = f"sync: update detection_log ({after_pull} records)"
-    run(f'git commit -m "{msg}"')
-
-    push = run('git push', check=False)
-    if push.returncode != 0:
-        print(f"[✗] push 失败:\n{push.stderr}")
-        sys.exit(1)
-
-    print(f"[✓] 上传完成：共 {after_pull} 条记录")
-
-
 def cmd_status():
     print("=" * 60)
     print("📊 同步状态")
@@ -239,6 +153,8 @@ def cmd_status():
 def cmd_init():
     """新机器一键初始化：git pull + 从 JSONL 重建 DB"""
     print("=" * 60)
+
+    require_database_rebuild_authorization(sys.argv[2:])
     print("🆕 初始化新机器")
     print("=" * 60)
 
@@ -275,6 +191,8 @@ def cmd_init():
 def cmd_rebuild():
     """从现有 JSONL 重建 DB（用于 DB 损坏、迁移、恢复场景）"""
     print("=" * 60)
+
+    require_database_rebuild_authorization(sys.argv[2:])
     print("🔄 从 JSONL 重建 DB")
     print("=" * 60)
 
@@ -288,12 +206,18 @@ def cmd_rebuild():
 
 
 if __name__ == '__main__':
-    _commands = {'pull': cmd_pull, 'push': cmd_push, 'status': cmd_status,
-                 'init': cmd_init, 'rebuild': cmd_rebuild}
+    _commands = {'status': cmd_status, 'init': cmd_init, 'rebuild': cmd_rebuild}
+    if len(sys.argv) >= 2 and sys.argv[1] in {'pull', 'push'}:
+        print("[✗] 旧双向同步命令已禁用。replica 请运行: python sync_pull_from_master.py")
+        sys.exit(2)
     if len(sys.argv) < 2 or sys.argv[1] not in _commands:
         print(__doc__)
         sys.exit(0)
 
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-    _commands[sys.argv[1]]()
+    try:
+        _commands[sys.argv[1]]()
+    except MachineRoleConfigurationError as exc:
+        print(f"[✗] {exc}")
+        sys.exit(2)

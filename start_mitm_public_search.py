@@ -26,10 +26,6 @@ print()
 try:
     from mitmproxy.tools import main
 
-    # 创建必要的目录
-    os.makedirs('data/raw_responses', exist_ok=True)
-    os.makedirs('data/raw_searches', exist_ok=True)
-
     print("[+] 启动 mitmproxy 公开搜索模式...")
     print(f"[*] 监听地址: {MITM_HOST}:{PUBLIC_MITM_PORT}")
     print("[*] 脚本文件: mitm_addon_public_search.py")

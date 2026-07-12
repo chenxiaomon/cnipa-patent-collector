@@ -49,6 +49,9 @@ from settings import (
 )
 from db_manager import PatentsDB
 from cache_utils import normalize_app_no, parse_app_no_list, parse_timestamp
+from machine_identity import MASTER_ROLE, read_machine_role
+from collection_health import read_alert_status
+from operator_api_token import api_token_matches, ensure_api_token
 
 _patents_db = PatentsDB(PATENTS_DB_FILE)
 
@@ -376,8 +379,8 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         return {"action": action, "title": "公开查询 MITM 代理", "command": [py, "-u", "start_mitm_public_search.py"]}
     if action == "main_full":
         return {
-            "action": action, "title": "主流程采集",
-            "command": [py, "-u", "main_automation.py"],
+            "action": action, "title": "看门狗主流程采集",
+            "command": [py, "-u", "collection_watchdog.py"],
             "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
         }
     if action == "main_test":
@@ -529,15 +532,14 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         return {"action": action, "title": "从 JSONL 重建 DB", "command": [py, "-u", "sync.py", "rebuild"]}
     if action == "sync_status":
         return {"action": action, "title": "查看同步状态", "command": [py, "-u", "sync.py", "status"]}
-    if action == "sync_pull":
-        return {"action": action, "title": "从远端拉取数据", "command": [py, "-u", "sync.py", "pull"]}
-    if action == "sync_push":
-        return {"action": action, "title": "推送数据到远端", "command": [py, "-u", "sync.py", "push"]}
-    if action == "sync_from_jsonl":
-        # 从本地 detection_log.jsonl 导入到 patents.db（git pull 后同步另一台机器的数据）
-        return {"action": action, "title": "从 JSONL 备份导入", "command": [py, "-u", "sync_from_jsonl.py"]}
+    if action == "sync_pull_master":
+        return {
+            "action": action,
+            "title": "从 master 拉取增量",
+            "command": [py, "-u", "sync_pull_from_master.py"],
+        }
     if action == "upgrade_code":
-        return {"action": action, "title": "更新系统代码", "command": [py, "-u", "upgrade.py"]}
+        return {"action": action, "title": "安全更新系统代码", "command": [py, "-u", "fetch_update.py"]}
     if action == "fetch_update":
         return {"action": action, "title": "无 git 更新代码", "command": [py, "-u", "fetch_update.py"]}
     if action == "check_update":
@@ -554,15 +556,15 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
     focus_strategy = safe_json_load(DATA_DIR / "focus_strategy.json", {})
     status_breakdown = focus_strategy.get("status_breakdown", {}) if isinstance(focus_strategy, dict) else {}
 
-    # 策略分组计算（从 DB 读取最新一份记录用于计算 next_update）
+    # 策略分组计算（轻量快照只含 anjianywzt/timestamp，避免每次轮询全字段解码）
     if status_breakdown:
-        db_records_for_groups = _patents_db.get_all_records()
-        update_groups = build_update_groups(db_records_for_groups, status_breakdown)
+        status_snapshot = _patents_db.get_status_timestamp_snapshot()
+        update_groups = build_update_groups(status_snapshot, status_breakdown)
     else:
         update_groups = []
 
     search_app_nos = parse_app_no_list(safe_read_text(SEARCH_LIST_FILE))
-    stored_app_nos = _patents_db.get_all_app_nos()
+    stored_app_nos = _patents_db.get_processed_app_nos()
     search_count = len(search_app_nos)
     search_collected = sum(1 for app_no in search_app_nos if app_no in stored_app_nos)
     dynamic_count = count_lines(DATA_DIR / "update_list_dynamic.txt")
@@ -590,6 +592,7 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
             "unique": unique,
             "success": db_summary["success"],
             "failed": db_summary["failed"],
+            "pending": db_summary["pending"],
             "success_rate": db_summary["success_rate"],
             "bad_lines": 0,
         },
@@ -687,6 +690,31 @@ def build_update_groups(records: list[dict[str, Any]], status_breakdown: dict[st
     return [groups[key] for key in sorted(groups)]
 
 
+# /api/summary 轮询间隔 5s（app.js setInterval）；TTL 必须小于它，保证每个轮询周期
+# 至少重算一次。POST 后前端手动 refreshSummary() 的即时性由 do_POST 的 discard 保证。
+SUMMARY_SNAPSHOT_TTL_SECONDS = 3.0
+_summary_snapshot_lock = threading.Lock()
+_summary_snapshot: dict[str, Any] | None = None
+_summary_snapshot_at = 0.0
+
+
+def summary_snapshot(job_manager: JobManager) -> dict[str, Any]:
+    """读穿缓存：多标签页/多客户端的 5s 轮询坍缩为每 TTL 一次 build_summary。"""
+    global _summary_snapshot, _summary_snapshot_at
+    with _summary_snapshot_lock:
+        if (_summary_snapshot is None
+                or time.monotonic() - _summary_snapshot_at >= SUMMARY_SNAPSHOT_TTL_SECONDS):
+            _summary_snapshot = build_summary(job_manager)
+            _summary_snapshot_at = time.monotonic()
+        return _summary_snapshot
+
+
+def discard_summary_snapshot() -> None:
+    global _summary_snapshot
+    with _summary_snapshot_lock:
+        _summary_snapshot = None
+
+
 # ══════════════════════════════════════════════════════════════════════
 #  前端资源
 # ══════════════════════════════════════════════════════════════════════
@@ -727,6 +755,8 @@ HTML = r"""<!doctype html>
     <header class="topbar">
       <div class="top-left">
         <span id="clock">--</span>
+        <span class="dot"></span>
+        <span id="machineRolePill" class="pill muted">角色检测中</span>
         <span class="dot"></span>
         <span id="proxyPill" class="pill muted">代理检测中</span>
       </div>
@@ -1116,16 +1146,12 @@ HTML = r"""<!doctype html>
         </article>
       </section>
       <article class="panel" style="margin-bottom:14px">
-        <div class="panel-head"><h2>多机同步</h2><span class="hint">sync（git）</span></div>
+        <div class="panel-head"><h2>多机同步</h2><span class="hint">master → replica</span></div>
         <div class="button-row">
           <button class="btn secondary" data-action="sync_status">查看同步状态</button>
-          <button class="btn secondary" data-action="sync_pull">从远端拉取</button>
-          <button class="btn secondary" data-action="sync_push">推送到远端</button>
+          <button class="btn primary" data-action="sync_pull_master">从 master 拉取增量</button>
         </div>
-        <div class="hint" style="margin-top:8px">git pull 后，另一台机器的采集数据已随 JSONL 备份一并拉下</div>
-        <div class="button-row" style="margin-top:8px">
-          <button class="btn primary" data-action="sync_from_jsonl">📥 从 JSONL 备份导入到本地库</button>
-        </div>
+        <div class="hint" style="margin-top:8px">副本机只从部署机 Dashboard 拉取增量；成功后自动创建数据提交，再由人工执行 git push</div>
       </article>
       <article class="panel operator-only" style="margin-bottom:14px">
         <div class="panel-head"><h2>代理机构导入</h2><span class="hint">CSV / Excel → patents.db</span></div>
@@ -1212,6 +1238,11 @@ HTML = r"""<!doctype html>
             <div class="info-row"><span>动态清单</span><span id="sysDynamic">—</span></div>
             <div class="info-row"><span>重试清单</span><span id="sysRetry">—</span></div>
           </div>
+          <div class="field" style="margin-top:14px">
+            <span>远程写操作 Token</span>
+            <input id="apiTokenInput" type="password" placeholder="本机自动载入；远程操作时粘贴">
+          </div>
+          <button class="btn secondary" id="saveApiToken" style="margin-top:8px">保存到此浏览器</button>
         </article>
       </section>
       <article class="panel operator-only" style="margin-bottom:14px">
@@ -1413,6 +1444,7 @@ h3 { font-size: 13px; }
 }
 .pill.ok   { color: var(--accent-dark); background: #e9f5ef; border-color: #b9dcca; }
 .pill.warn { color: var(--amber);       background: #fff7e8; border-color: #efd19c; }
+.pill.master { color: #fff; background: var(--red); border-color: var(--red); font-weight: 700; }
 
 /* ── Warnings ── */
 .warnings {
@@ -1761,6 +1793,7 @@ JS = r"""const state = {
   searchLoaded: false,
   configLoaded: false,
   roleDetermined: false,
+  apiToken: localStorage.getItem('cnipaApiToken') || '',
 };
 
 const $ = (s) => document.querySelector(s);
@@ -1814,12 +1847,33 @@ function showToast(msg) {
 }
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+  if (state.apiToken) headers['X-CNIPA-Token'] = state.apiToken;
+  const res = await fetch(path, { ...opts, headers });
   const text = await res.text();
   let payload = {};
   try { payload = text ? JSON.parse(text) : {}; } catch { payload = { raw: text }; }
   if (!res.ok) throw new Error(payload.error || res.statusText);
   return payload;
+}
+
+function writeHeaders(extra = {}) {
+  const headers = { ...extra };
+  if (state.apiToken) headers['X-CNIPA-Token'] = state.apiToken;
+  return headers;
+}
+
+async function loadOperatorToken() {
+  try {
+    const res = await fetch('/api/operator-token');
+    if (res.ok) {
+      const payload = await res.json();
+      state.apiToken = payload.token;
+      localStorage.setItem('cnipaApiToken', state.apiToken);
+    }
+  } catch (_) {}
+  const input = $('#apiTokenInput');
+  if (input) input.value = state.apiToken;
 }
 
 // ── Tab Routing ───────────────────────────────────────────────────────
@@ -1919,6 +1973,10 @@ function renderSummary(data) {
     ? '主代理在线 ' + data.proxy.host + ':' + data.proxy.port
     : '主代理未连接 ' + data.proxy.host + ':' + data.proxy.port;
   pp.className = 'pill ' + (data.proxy.reachable ? 'ok' : 'warn');
+  const rolePill = $('#machineRolePill');
+  const machineRole = data.machine_role || 'unconfigured';
+  rolePill.textContent = machineRole === 'master' ? 'MASTER 数据主机' : (machineRole === 'replica' ? 'REPLICA 副本机' : '角色未配置');
+  rolePill.className = 'pill ' + (machineRole === 'master' ? 'master' : (machineRole === 'replica' ? 'ok' : 'warn'));
 
   // 警告
   const wb = $('#warnings');
@@ -1937,7 +1995,7 @@ function renderSummary(data) {
   set('#mUnique',    fmtNumber(data.records.unique));
   set('#mEvents',    fmtNumber(data.records.events) + ' 条写入记录');
   set('#mRate',      data.records.success_rate + '%');
-  set('#mSuccess',   fmtNumber(data.records.success) + ' 成功 / ' + fmtNumber(data.records.failed) + ' 失败');
+  set('#mSuccess',   fmtNumber(data.records.success) + ' 成功 / ' + fmtNumber(data.records.failed) + ' 失败 / ' + fmtNumber(data.records.pending) + ' 待采');
   set('#mRejection', fmtNumber(data.business.rejection));
   set('#mFwxx',      fmtNumber(data.business.fwxx_pending) + ' 待补发文');
   set('#mDue',       fmtNumber(data.business.update_due));
@@ -2188,7 +2246,7 @@ async function uploadCompanyMeta(input) {
   fd.append('file', file);
   try {
     showToast('上传中…');
-    const res = await fetch('/api/company-meta/import', { method: 'POST', body: fd });
+    const res = await fetch('/api/company-meta/import', { method: 'POST', headers: writeHeaders(), body: fd });
     const d = await res.json();
     if (!res.ok) { showToast('上传失败：' + (d.error || res.status)); return; }
     showToast('导入完成：更新 ' + d.updated + ' 条，跳过 ' + d.skipped + ' 条');
@@ -2337,6 +2395,14 @@ function bindEvents() {
     } catch (e) { showToast('保存失败：' + e.message); }
   });
 
+  $('#saveApiToken').addEventListener('click', () => {
+    const input = $('#apiTokenInput');
+    state.apiToken = input ? input.value.trim() : '';
+    if (state.apiToken) localStorage.setItem('cnipaApiToken', state.apiToken);
+    else localStorage.removeItem('cnipaApiToken');
+    showToast(state.apiToken ? 'API token 已保存到此浏览器' : 'API token 已清除');
+  });
+
   $('#resetConfig').addEventListener('click', async () => {
     await api('/api/config/reset', { method: 'POST', body: '{}' });
     showToast('旧坐标已备份，下次采集会重新记录');
@@ -2382,7 +2448,7 @@ function bindEvents() {
     const formData = new FormData();
     formData.append('file', fi.files[0]);
     try {
-      const res = await fetch('/api/import/agency', { method: 'POST', body: formData });
+      const res = await fetch('/api/import/agency', { method: 'POST', headers: writeHeaders(), body: formData });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error || res.statusText);
       if (hint) hint.textContent =
@@ -2518,11 +2584,24 @@ async function importDelta() {
   if (hint) hint.textContent = '正在导入...';
   const text = await fi.files[0].text();
   try {
-    const d = await api('/api/import/delta', {
+    let res = await fetch('/api/import/delta', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-ndjson' },
+      headers: writeHeaders({ 'Content-Type': 'application/x-ndjson' }),
       body: text
     });
+    let d = await res.json();
+    if (res.status === 409 && d.confirmation_required) {
+      const s = d.summary;
+      const confirmed = window.confirm(`MASTER 增量合并确认\n\n输入 ${s.records} 条\n新增申请号 ${s.new_applications} 条\n更新已有 ${s.updated_applications} 条\n时间范围 ${s.timestamp_from || '无'} → ${s.timestamp_to || '无'}\n\n确认继续？`);
+      if (!confirmed) { if (hint) hint.textContent = '已取消导入'; return; }
+      res = await fetch('/api/import/delta', {
+        method: 'POST',
+        headers: writeHeaders({ 'Content-Type': 'application/x-ndjson', 'X-CNIPA-Merge-Confirmed': 'yes' }),
+        body: text
+      });
+      d = await res.json();
+    }
+    if (!res.ok) throw new Error(d.error || res.statusText);
     if (hint) hint.textContent = `✓ 已导入 ${d.imported} 条` + (d.bad_lines > 0 ? `，${d.bad_lines} 行格式错误` : '');
     showToast('导入完成：' + d.imported + ' 条');
   } catch (e) { if (hint) hint.textContent = '导入失败：' + e.message; }
@@ -2615,7 +2694,7 @@ async function previewExport() {
   try {
     const res = await fetch('/api/export/excel-filtered?preview=true', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: writeHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(collectExportFilters()),
     });
     const d = await res.json();
@@ -2631,7 +2710,7 @@ async function exportFiltered() {
   try {
     const res = await fetch('/api/export/excel-filtered', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: writeHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(collectExportFilters()),
     });
     if (!res.ok) {
@@ -2657,6 +2736,7 @@ async function exportFiltered() {
 async function boot() {
   initTabRouting();
   bindEvents();
+  await loadOperatorToken();
   await Promise.all([refreshSummary(), refreshJobs(), loadSearchList(), loadCredentials()]);
   setInterval(refreshSummary, 5000);
   setInterval(refreshJobs, 2500);
@@ -2696,9 +2776,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif path == "/app.js":
                 self.send_text(JS, "application/javascript; charset=utf-8")
             elif path == "/api/summary":
-                summary = build_summary(self.job_manager)
+                # 浅拷贝：is_operator/machine_role 因请求而异，不能写进共享缓存
+                summary = dict(summary_snapshot(self.job_manager))
                 summary['is_operator'] = self.is_operator
+                summary['machine_role'] = read_machine_role()
                 self.send_json(summary)
+            elif path == "/api/alert-status":
+                self.send_json(read_alert_status())
+            elif path == "/api/operator-token":
+                if not self.is_operator:
+                    self.send_json({"error": "仅本机可自动读取 API token"}, status=403)
+                    return
+                self.send_json({"token": ensure_api_token()})
             elif path == "/api/check-update":
                 # 同步调 check_update.py，解析最后一行 JSON 返回前端（轻量，不进 JobManager）
                 proc = subprocess.run(
@@ -2827,6 +2916,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if not since:
                     self.send_json({"error": "缺少 since 参数（格式：2026-05-01T00:00:00Z）"}, status=400)
                     return
+                try:
+                    datetime.fromisoformat(since.replace('Z', '+00:00'))
+                except ValueError:
+                    self.send_json({"error": "since 不是有效的 ISO 时间戳"}, status=400)
+                    return
                 records = _patents_db.export_delta(since)
                 lines = "\n".join(json.dumps(r, ensure_ascii=False) for r in records)
                 data = lines.encode("utf-8")
@@ -2846,6 +2940,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        if path != "/api/requests" and not api_token_matches(self.headers.get('X-CNIPA-Token')):
+            self.send_json({"error": "写操作需要有效的 X-CNIPA-Token"}, status=401)
+            return
         try:
             if path == "/api/jobs":
                 payload = self.read_json_body()
@@ -3043,8 +3140,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         records.append(json.loads(line))
                     except json.JSONDecodeError:
                         bad += 1
+                import_summary = _patents_db.summarize_record_import(records)
+                if read_machine_role() == MASTER_ROLE and self.headers.get('X-CNIPA-Merge-Confirmed') != 'yes':
+                    self.send_json({
+                        "error": "master 增量合并需要确认",
+                        "confirmation_required": True,
+                        "summary": import_summary,
+                    }, status=409)
+                    return
                 imported = _patents_db.upsert_batch(records)
-                self.send_json({"ok": True, "imported": imported, "bad_lines": bad})
+                self.send_json({"ok": True, "imported": imported, "bad_lines": bad, "summary": import_summary})
             elif path == "/api/import/agency":
                 if not self.is_operator:
                     self.send_json({"error": "仅操作员可导入数据"}, status=403)
@@ -3154,6 +3259,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, status=400)
         except Exception as exc:
             self.send_json({"error": str(exc)}, status=500)
+        finally:
+            # 所有 UI 写操作都经由 do_POST；统一在此失效摘要缓存，
+            # 前端 POST 后手动 refreshSummary() 才能立即看到新状态
+            discard_summary_snapshot()
 
     def handle_get_job(self, path: str) -> None:
         job_id = _parse_path_segment(path, 3)
@@ -3210,6 +3319,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 
 def run_server(host: str, port: int) -> None:
+    ensure_api_token()
     job_manager = JobManager()
     DashboardHandler.job_manager = job_manager
     server = ThreadingHTTPServer((host, port), DashboardHandler)

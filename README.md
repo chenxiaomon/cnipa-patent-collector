@@ -1,15 +1,31 @@
 # CNIPA Patent Collector - 专利数据采集系统
 
-自动化从中国知识产权局（CNIPA）采集专利数据的系统。采集 **申请号 + 13 个基础字段 + 3 个发文字段**（条件采集），支持断点续传。**本次采集成功率 99.99%（9421/9422）**。
+自动化从中国知识产权局（CNIPA）采集专利数据的系统。采集 **申请号 + 13 个基础字段 + 3 个发文字段**（条件采集），支持断点续传。
 
 系统同时支持三种采集模式：按申请号自动采集、Phase 0 手动按申请人采集、公开查询手动/半自动翻页采集。
+
+<!-- AUTO_STATS_START -->
+## 当前数据快照
+
+> 由 `update_readme_stats.py` 从 SQLite 自动生成，更新时间：2026-07-11 14:15 UTC。
+
+| 指标 | 数值 |
+|------|-----:|
+| 唯一申请号 | 31,819 |
+| 成功采集 | 26,119 |
+| 采集失败 | 5,395 |
+| 待采记录 | 305 |
+| 已尝试成功率 | 82.88% |
+| 驳回等复审 | 2,171 |
+| 待补发文 | 2 |
+<!-- AUTO_STATS_END -->
 
 ## 🚀 快速开始（30 秒）
 
 ### 可视化控制台
 
 ```bash
-python web_dashboard.py
+uv run python web_dashboard.py --host 127.0.0.1
 ```
 
 打开：`http://127.0.0.1:8765`
@@ -54,8 +70,8 @@ USE_MITM_PROXY=true python main_automation.py
 
 | 模式 | 适用场景 | 主要入口 | 输出 |
 |------|----------|----------|------|
-| 自动按申请号采集 | 已有申请号列表，需要批量采集基础字段 | `main_automation.py` | `detection_log.jsonl`, `patents_data.xlsx` |
-| Phase 0 手动采集 | 按申请人/关键词在 CNIPA 中手动搜索，补充一批申请号 | `start_browser_for_phase0.py`, `import_from_cache.py` | 导入主日志 |
+| 自动按申请号采集 | 已有申请号列表，需要批量采集基础字段 | `main_automation.py` | `patents.db`, `patents_data.xlsx`；批次后刷新 JSONL 备份 |
+| Phase 0 手动采集 | 按申请人/关键词在 CNIPA 中手动搜索，补充一批申请号 | `start_browser_for_phase0.py`, `import_from_cache.py` | 导入 SQLite |
 | 公开查询采集 | 使用 publicSearch 页面手动或半自动翻页采集搜索结果 | `launch_browser_with_proxy.py`, `auto_paginate.py`, `export_public_search.py` | `public_search_results.xlsx/json` |
 
 ### 采集的字段
@@ -80,11 +96,11 @@ search_list.txt (申请号列表)
     ↓
 PyAutoGUI (鼠标操作) → CNIPA 网站
     ↓
-MITM 代理 (127.0.0.1:8082) 拦截 API 响应
+MITM 代理 (127.0.0.1:8083) 拦截 API 响应
     ↓
-detection_logger.py 记录 JSONL
+PatentsDB 写入 patents.db
     ↓
-patents_data.xlsx (Excel 报表) + detection_log.jsonl (完整日志)
+批次结束导出 patents_data.xlsx + detection_log.jsonl Git 备份
 ```
 
 ---
@@ -105,14 +121,14 @@ patents_data.xlsx (Excel 报表) + detection_log.jsonl (完整日志)
 | 文件 | 职责 | 状态 |
 |------|------|------|
 | `web_dashboard.py` | 本地 Web 控制台：采集概览、任务启动、日志查看、清单/配置编辑 | ✅ 活跃 |
-| `sync.py` | 多机同步：导出 DB → 推送 / 拉取 → 重建 DB，5 个命令（见下方） | ✅ 活跃 |
+| `sync.py` | 本机数据库初始化、恢复和状态查看；旧双向 pull/push 已禁用 | ✅ 活跃 |
 | `main_automation.py` | 主流程：浏览器控制、申请号循环、数据采集 | ✅ 活跃 |
-| `detection_logger.py` | 日志记录：JSONL 追加写入、Excel/JSON 导出 | ✅ 活跃 |
+| `detection_logger.py` | 通过 PatentsDB 写入，生成 Excel/JSON/JSONL 导出 | ✅ 活跃 |
 | `patent_mitm_scraper.py` | MITM 插件：API 拦截、字段解析 | ✅ 活跃 |
 | `collect_fwxx.py` | 补采脚本：补采漏掉的发文信息 | ✅ 活跃 |
 | `main_automation.py --update-list` | 重试/强制更新：重新采集指定申请号列表 | ✅ 活跃 |
 | `start_browser_for_phase0.py` | Phase 0：打开带代理浏览器，用户手动按申请人搜索 | ✅ 可用 |
-| `import_from_cache.py` | Phase 0：将手动浏览产生的缓存导入主日志 | ✅ 可用 |
+| `import_from_cache.py` | Phase 0：将手动浏览产生的缓存导入 SQLite | ✅ 可用 |
 | `launch_browser_with_proxy.py` | 公开查询：打开带代理的 publicSearch 浏览器 | ✅ 可用 |
 | `auto_paginate.py` | 公开查询：半自动翻页 | ✅ 可用 |
 | `export_public_search.py` | 公开查询：导出 Excel/JSON | ✅ 可用 |
@@ -133,7 +149,7 @@ data/
 ├── raw_responses/            # 公开查询原始响应
 ├── raw_searches/             # 公开查询 JSONL 记录
 └── results/
-    ├── detection_log.jsonl   # ⭐ git 备份（由 sync.py push 刷新，多机同步载体）
+    ├── detection_log.jsonl   # Git 备份（由 replica 拉取增量后刷新并提交）
     ├── patents_data.xlsx     # 输出：最终报表（Excel，.gitignore 排除）
     └── public_search_results.xlsx/json
 ```
@@ -144,54 +160,52 @@ data/
 
 | 问题 | 优先级 | 状态 | 计划 |
 |------|--------|------|------|
-| **falvzt 不可用（全为 `--`）** | P0 | ✅ 已确认 | 以 anjianywzt 为准（实测 9422 条采集数据验证） |
-| **JSON 文件 RMW 非原子写入** | P0 | ✅ 已完成 | 已升级为 JSONL 追加写入 + fsync；JSON 仅作兼容导出/备份 |
-| **数据缺口** | P0 | ✅ 已收口 | 1 条 2025 年申请暂不可采，5 条缺发文接受现状 |
-| **代码重复（浏览器/输入逻辑）** | P1 | 🟡 未改 | 模块化提取（3 周） |
-| **路径策略不统一** | P1 | 🟡 主要完成 | settings.py 已覆盖核心脚本；少量辅助脚本待迁移 |
-| **文档状态同步** | P1 | ✅ 本轮收口 | README 已同步成功率、JSONL 状态、手动采集入口 |
+| **falvzt 不可用（全为 `--`）** | P0 | ✅ 已确认 | 业务判断统一使用 anjianywzt |
+| **MITM 超时历史失败** | P0 | 🟡 待部署机重采 | 用 `analyze_failures.py` 分析，当前 0 状态均归类为建议重采 |
+| **旧 NULL 状态语义不明** | P0 | 🟡 待部署机迁移 | master 执行 `normalize_pending_status.py --apply` 后统一为 -1（待采） |
+| **文档统计腐化** | P1 | ✅ 已解决 | README 数据快照由 `update_readme_stats.py` 从 SQLite 生成 |
 
 **详见**: [docs/ai-context.md](docs/ai-context.md#当前风险--处理计划)
 
 ---
 
-## 🖥️ 多机协作（GitHub 同步）
+## 🖥️ Master / Replica 协作
 
-跨机器运行时，通过 `sync.py` 同步采集进度，避免重复采集。
+部署机是唯一数据 master；开发机和 Mac 是 replica。每台机器必须在不入 Git 的 `data/machine_role.txt` 中写入角色。
 
-**数据架构**：`patents.db`（SQLite，本地运行时主存储，`.gitignore` 排除）通过 `detection_log.jsonl`（git 追踪的文本备份）在多机之间流转。
+**数据架构**：master 的 `patents.db` 是生产真相源；replica 通过 Dashboard HTTP 增量接口拉取数据，并把刷新后的 `detection_log.jsonl` 提交到 Git。
 
 ### 新机器一键初始化
 
 ```bash
 git clone https://github.com/chenxiaomon/cnipa-patent-collector.git
 cd cnipa-patent-collector
-pip install -r requirements.txt
+uv sync --frozen --python 3.11
+
+echo replica > data/machine_role.txt
 
 # 从远端 JSONL 重建本地 DB（导入历史记录，避免重复采集）
-python sync.py init
+uv run python sync.py init
 ```
 
-### 每次采集前（拉取最新进度）
+### Replica 每日单命令回流
 
 ```bash
-python sync.py pull        # git pull + 重建 DB（知道哪些已采）
+export CNIPA_MASTER_URL=http://部署机IP:8765
+uv run python sync_pull_from_master.py
+git push
 ```
 
-### 每次采集后（推送本次进度）
+脚本以 master 数据库的最后修改时间为游标，覆盖新增记录和已有记录更新；成功后自动合并 SQLite、刷新 JSONL 和 README，并创建 Git 提交。旧游标首次升级会做一次全量重对账，`git push` 保留人工确认。
 
-```bash
-python sync.py push        # 导出 DB → 提交 JSONL → git push
-```
-
-### 其他 sync 命令
+### 数据库恢复命令
 
 | 命令 | 说明 |
 |------|------|
-| `python sync.py status` | 查看本地记录数和同步状态 |
-| `python sync.py rebuild` | 从现有 JSONL 重建 DB（DB 损坏/迁移恢复用） |
+| `uv run python sync.py status` | 查看本地记录数和同步状态 |
+| `uv run python sync.py rebuild` | replica 从现有 JSONL 重建 DB |
 
-> `sync.py pull/push` 均支持冲突自动合并：以申请号为键，timestamp 较新的记录优先。
+> master 默认拒绝重建。只有明确承担风险时，才允许同时添加 `--force --i-know-this-is-master`。
 
 ---
 
@@ -226,7 +240,7 @@ python start_mitm_proxy.py
 # 终端 2：打开带代理浏览器，手动登录、按申请人搜索、翻页
 python start_browser_for_phase0.py
 
-# 浏览完成后：把 patent_cache.json 导入主日志
+# 浏览完成后：把 patent_cache.json 导入 SQLite
 python import_from_cache.py
 ```
 
@@ -272,21 +286,12 @@ python export_public_search.py
 
 ---
 
-## 📊 项目统计
+## 📊 统计口径
 
-| 指标 | 值 |
-|------|-----|
-| **本次采集成功率** | 99.99%（9421 成功 / 9422 总数，status_code=200） |
-| **发文采集覆盖** | 99.64%（1398 有发文 / 1403 驳回复审） |
-| **数据一致性** | JSONL/Excel 行数一致，发文列表数一致 |
-| **数据架构** | 申请号 + 13 个基础字段 + 3 个发文字段（条件采集） |
-| **采集模式** | 自动按申请号采集 + Phase 0 手动采集 + 公开查询采集 |
-| **项目文档** | 7 份（project-brief, architecture, domain-rules, runbook, decision-log, ai-context, worklog） |
-| **核心代码文件** | 5 个（main_automation, detection_logger, patent_mitm_scraper, collect_fwxx, validate_results） |
+实时数量只维护在本文顶部的自动生成区块；成功率分母为已尝试记录（成功 + 失败），不包含 `status_code=-1` 的待采记录。
 
 ---
 
-**最后更新**: 2026-05-13  
-**项目阶段**: 阶段 2 - 工程化优化  
-**下次审查**: 2026-05-17  
+**最后更新**: 2026-07-11
+**项目阶段**: 阶段 3 - 主从部署与无人值守加固
 **维护人**: @minxiaochen

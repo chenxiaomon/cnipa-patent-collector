@@ -6,6 +6,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from db_manager import PENDING_STATUS_CODE
+
 from retry_failed import (
     is_failed_record,
     retry_app_nos,
@@ -17,6 +19,10 @@ from retry_failed import (
 class TestFailedRetryRecords(unittest.TestCase):
     def test_status_zero_is_failed(self):
         self.assertTrue(is_failed_record({'status_code': 0, 'zhuanlimc': None}))
+
+    def test_pending_status_is_not_historical_failure(self):
+        self.assertFalse(is_failed_record({'status_code': PENDING_STATUS_CODE, 'zhuanlimc': None}))
+        self.assertFalse(is_failed_record({'status_code': None, 'zhuanlimc': None}))
 
     def test_success_with_title_is_not_failed(self):
         self.assertFalse(is_failed_record({'status_code': 200, 'zhuanlimc': '一种装置'}))

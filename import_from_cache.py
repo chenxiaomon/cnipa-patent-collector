@@ -16,13 +16,13 @@ Phase 0 缓存导入脚本
   python import_from_cache.py
 """
 
-import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from detection_logger import DetectionLogger, DetectionRecord
 from cache_utils import normalize_app_no, read_json_cache
+from atomic_write import write_json_atomic
 from settings import PATENT_CACHE_FILE, DETECTION_LOG_JSONL_FILE
 
 CACHE_FILE = str(PATENT_CACHE_FILE)
@@ -53,14 +53,13 @@ def load_cache() -> dict:
     return cache_data
 
 
-def load_processed_apps() -> set:
+def load_processed_apps(logger: DetectionLogger) -> set:
     """
     读取日志中已有的申请号集合（标准格式）
 
     Returns:
         已处理申请号的集合（统一为标准格式）
     """
-    logger = DetectionLogger(LOG_FILE)
     processed = logger.get_processed_applications()
 
     # 将所有已有申请号标准化
@@ -122,8 +121,7 @@ def clear_cache() -> bool:
         成功返回 True，否则 False
     """
     try:
-        with open(CACHE_FILE, 'w', encoding='utf-8') as f:
-            json.dump({}, f, ensure_ascii=False, indent=2)
+        write_json_atomic(CACHE_FILE, {})
         print(f"[✓] 缓存已清空")
         return True
     except Exception as e:
@@ -157,19 +155,20 @@ def import_from_cache() -> bool:
         print("[!] 缓存为空，无数据可导入")
         return False
 
+    logger = DetectionLogger(LOG_FILE)
+
     print("\n[*] 加载日志...")
-    processed_normalized = load_processed_apps()
+    processed_normalized = load_processed_apps(logger)
     print(f"[✓] 日志中已有 {len(processed_normalized)} 条记录")
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # 步骤 2：逐条导入
+    # 步骤 2：转换后批量导入（单事务，替代逐条 add_record 的逐条建连开销）
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-    logger = DetectionLogger(LOG_FILE)
 
     imported = 0
     skipped = 0
     failed = 0
+    new_records = []
 
     print("\n[*] 开始导入...")
     print("-" * 70)
@@ -191,13 +190,17 @@ def import_from_cache() -> bool:
 
         # 转换为 DetectionRecord
         try:
-            record = convert_cache_to_record(cache_item, normalized)
-            logger.add_record(record)
-            imported += 1
-            print(f"  [{idx}] [✓] 导入成功: {normalized} - {cache_item.get('zhuanlimc', 'N/A')[:30]}")
+            new_records.append(convert_cache_to_record(cache_item, normalized))
+            print(f"  [{idx}] [✓] 已转换: {normalized} - {cache_item.get('zhuanlimc', 'N/A')[:30]}")
         except Exception as e:
             failed += 1
-            print(f"  [{idx}] [!] 导入失败: {normalized} - {str(e)[:50]}")
+            print(f"  [{idx}] [!] 转换失败: {normalized} - {str(e)[:50]}")
+
+    try:
+        imported = logger.add_records(new_records)
+    except Exception as e:
+        print(f"  [!] 批量写入失败: {e}")
+        failed += len(new_records)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 步骤 3：统计和清理

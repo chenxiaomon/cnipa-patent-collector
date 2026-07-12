@@ -8,6 +8,7 @@
 
 import unittest
 from detection_logger import DetectionLogger
+from machine_identity import MASTER_ROLE, read_machine_role
 
 
 def _load_log_data():
@@ -20,7 +21,10 @@ def _load_log_data():
             'total_records': stats['total'],
             'successful': stats['success'],
             'failed': stats['failed'],
-            'success_rate_percent': round(100 * stats['success'] / max(1, stats['total']), 2),
+            'pending': stats['pending'],
+            'success_rate_percent': round(
+                100 * stats['success'] / max(1, stats['success'] + stats['failed']), 2
+            ),
         },
         'records': records,
     }
@@ -49,7 +53,7 @@ class TestDetectionLogStructure(unittest.TestCase):
     def test_metadata_structure(self):
         """metadata 结构完整"""
         metadata = self.log_data['metadata']
-        for field in ['total_records', 'successful', 'failed', 'success_rate_percent']:
+        for field in ['total_records', 'successful', 'failed', 'pending', 'success_rate_percent']:
             self.assertIn(field, metadata, f"metadata 缺少字段: {field}")
 
     def test_record_structure(self):
@@ -75,10 +79,16 @@ class TestDetectionLogStructure(unittest.TestCase):
 
     def test_valid_status_codes(self):
         """状态码有效"""
-        valid_codes = {0, 200}
+        role = read_machine_role()
+        valid_codes = {-1, 0, 200}
+        if role != MASTER_ROLE:
+            valid_codes.add(None)
         for record in self.log_data['records']:
             self.assertIn(record.get('status_code'), valid_codes,
                           f"{record['application_no']}: 无效的状态码 {record.get('status_code')}")
+        if role == MASTER_ROLE:
+            null_count = sum(1 for record in self.log_data['records'] if record.get('status_code') is None)
+            self.assertEqual(null_count, 0, 'master 必须先执行 normalize_pending_status.py --apply')
 
     def test_anjianywzt_distribution(self):
         """anjianywzt 有真实分布"""
