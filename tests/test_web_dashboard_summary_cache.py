@@ -57,5 +57,38 @@ class TestSummarySnapshot(unittest.TestCase):
         self.assertEqual(self.build_calls, 2)
 
 
+class TestManualFwxxBatchJob(unittest.TestCase):
+    def test_builds_forced_batch_job_from_unique_request_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            request_dir = Path(tmpdir) / "manual_fwxx_lists"
+            with mock.patch.object(web_dashboard, "FWXX_MANUAL_LIST_DIR", request_dir):
+                spec = web_dashboard.build_job_spec(
+                    "collect_fwxx_batch",
+                    {"app_nos": "CN202411006597.0\nCN202111504942.X"},
+                )
+
+            self.assertEqual(spec["action"], "collect_fwxx_batch")
+            self.assertIn("--force", spec["command"])
+            input_index = spec["command"].index("--input") + 1
+            request_path = Path(spec["command"][input_index])
+            self.assertEqual(
+                request_path.read_text(encoding="utf-8"),
+                "2024110065970\n202111504942X\n",
+            )
+            self.assertIn("2 件", spec["title"])
+
+    def test_rejects_invalid_batch_before_starting_process(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(
+                web_dashboard,
+                "FWXX_MANUAL_LIST_DIR",
+                Path(tmpdir) / "manual_fwxx_lists",
+            ):
+                with self.assertRaisesRegex(ValueError, "格式不正确"):
+                    web_dashboard.build_job_spec(
+                        "collect_fwxx_batch",
+                        {"app_nos": "CN202411006597.0\ninvalid"},
+                    )
+
 if __name__ == '__main__':
     unittest.main()

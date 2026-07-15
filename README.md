@@ -232,6 +232,16 @@ USE_MITM_PROXY=true python main_automation.py --update-list data/retry_failed.tx
 python collect_fwxx.py
 ```
 
+### 指定专利列表强制采集发文
+
+在控制台的“发文采集”页粘贴申请号列表，或使用命令行：
+
+```bash
+USE_MITM_PROXY=true python collect_fwxx.py --input data/fwxx_list.txt --force
+```
+
+该模式不限制案件业务状态，也不会跳过已有发文记录；名单会规范化并去重后逐件进入发文流程。
+
 ### Phase 0 手动按申请人采集
 ```bash
 # 终端 1：启动主 MITM 代理

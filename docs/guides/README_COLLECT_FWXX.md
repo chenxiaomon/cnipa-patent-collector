@@ -58,6 +58,16 @@ USE_MITM_PROXY=true python collect_fwxx.py
 2. 打开浏览器，提示登录
 3. 登录后立即开始采集发文信息
 
+### 指定列表强制采集（不限制案件状态）
+
+在可视化控制台进入“发文采集”，将申请号粘贴到“指定专利批量采集发文”区域后启动。也可以准备一行一个申请号的文件并运行：
+
+```bash
+USE_MITM_PROXY=true python collect_fwxx.py --input data/fwxx_list.txt --force
+```
+
+`--force` 会让列表中的申请号全部进入详情页发文流程，不检查是否为“驳回等复审请求”，也不跳过已经存在发文信息的记录。申请号不在主数据库时，采集结果会保存在 `data/fwxx_unmatched.json`。
+
 ## 常见问题
 
 ### Q: 坐标记录时位置不对怎么办？

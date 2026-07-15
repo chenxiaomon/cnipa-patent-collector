@@ -28,6 +28,9 @@ if sys.platform == 'win32':
   # 独立模式：指定多个申请号（逗号分隔）
   USE_MITM_PROXY=true python collect_fwxx.py --app 2022108424726,2023101501868
 
+  # 强制模式：指定列表全部采集，不限制案件状态，也不跳过已有发文记录
+  USE_MITM_PROXY=true python collect_fwxx.py --input data/fwxx_list.txt --force
+
 架构设计：
   1. 筛选目标：从 detection_log.json 中找出待采集的申请号
      或通过 --input / --app 直接指定申请号（独立模式）
@@ -70,7 +73,7 @@ from browser_utils import (
 from coordinate_service import CoordinateService
 from browser_service import BrowserService
 from input_service import InputService
-from cache_utils import write_json_cache, poll_cache_for_key, clear_cache_key
+from cache_utils import write_json_cache, poll_cache_for_key, clear_cache_key, parse_app_no_list
 from settings import (
     CNIPA_URL, DETECTION_LOG_JSONL_FILE, CONFIG_FILE, CONFIG_FWXX_FILE,
     PATENT_CACHE_FILE, PATENT_FWXX_CACHE_FILE, MARKER_FILE,
@@ -156,7 +159,11 @@ def load_target_applications() -> list:
     return targets
 
 
-def load_standalone_targets(input_file: str = None, app_nos: str = None) -> list:
+def load_standalone_targets(
+    input_file: str = None,
+    app_nos: str = None,
+    force: bool = False,
+) -> list:
     """
     独立模式：直接从文件或命令行参数加载申请号列表
 
@@ -165,6 +172,7 @@ def load_standalone_targets(input_file: str = None, app_nos: str = None) -> list
     Args:
         input_file: 申请号列表文件路径（一行一个）
         app_nos: 逗号分隔的申请号字符串
+        force: 不跳过已有发文信息的申请号
 
     Returns:
         申请号列表
@@ -173,7 +181,7 @@ def load_standalone_targets(input_file: str = None, app_nos: str = None) -> list
 
     if app_nos:
         # 从命令行参数解析
-        targets = [no.strip() for no in app_nos.split(',') if no.strip()]
+        targets = parse_app_no_list(app_nos)
         print(f"\n[*] 从命令行参数读取 {len(targets)} 个申请号")
 
     elif input_file:
@@ -183,19 +191,22 @@ def load_standalone_targets(input_file: str = None, app_nos: str = None) -> list
             return []
 
         with open(input_file, 'r', encoding='utf-8') as f:
-            targets = [line.strip() for line in f if line.strip()]
+            targets = parse_app_no_list(f.read())
         print(f"\n[*] 从文件读取 {len(targets)} 个申请号: {input_file}")
 
     if targets:
-        # 加载已采集的结果，支持断点续传
-        collected = _load_standalone_collected()
+        if force:
+            print("[*] 强制采集：不按案件状态筛选，也不跳过已有发文记录")
+        else:
+            # 加载已采集的结果，支持断点续传
+            collected = _load_standalone_collected()
 
-        before = len(targets)
-        targets = [t for t in targets if t not in collected]
-        skipped = before - len(targets)
+            before = len(targets)
+            targets = [t for t in targets if t not in collected]
+            skipped = before - len(targets)
 
-        if skipped > 0:
-            print(f"[*] 跳过已采集: {skipped} 个（断点续传）")
+            if skipped > 0:
+                print(f"[*] 跳过已采集: {skipped} 个（断点续传）")
 
         print(f"[*] 待采集: {len(targets)} 个")
 
@@ -472,6 +483,7 @@ def run_fwxx_collection(args) -> None:
         targets = load_standalone_targets(
             input_file=getattr(args, 'input', None),
             app_nos=getattr(args, 'app', None),
+            force=bool(getattr(args, 'force', False)),
         )
     else:
         # 原有模式：从 detection_log.json 筛选
@@ -634,6 +646,11 @@ if __name__ == "__main__":
         '--app',
         type=str,
         help='独立模式：直接指定申请号（多个用逗号分隔）'
+    )
+    parser.add_argument(
+        '--force',
+        action='store_true',
+        help='独立模式：不按案件状态筛选，也不跳过已有发文记录'
     )
 
     args = parser.parse_args()

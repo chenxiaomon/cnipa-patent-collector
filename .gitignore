@@ -19,6 +19,7 @@ data/patent_cache.json
 data/patent_fwxx_cache.json
 data/current_fwxx_target.json
 data/fwxx_list.txt
+data/manual_fwxx_lists/
 data/failed_applications.txt
 data/search_list_retry.txt
 data/search_list.txt
@@ -66,4 +67,5 @@ selenium-wire-master/
 data/public_query_ready.flag
 data/raw_responses_imported/
 data/results/*_backup_*.jsonl
+data/results/dashboard_*.log
 data/results/public_search_results.json

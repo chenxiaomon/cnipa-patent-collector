@@ -39,6 +39,7 @@ from settings import (
     DATA_DIR,
     DETECTION_LOG_FILE,
     DETECTION_LOG_JSONL_FILE,
+    FWXX_MANUAL_LIST_DIR,
     MITM_HOST,
     MITM_PORT,
     PATENTS_DB_FILE,
@@ -52,6 +53,7 @@ from cache_utils import normalize_app_no, parse_app_no_list, parse_timestamp
 from machine_identity import MASTER_ROLE, read_machine_role
 from collection_health import read_alert_status
 from operator_api_token import api_token_matches, ensure_api_token
+from manual_fwxx_requests import create_manual_fwxx_request
 
 _patents_db = PatentsDB(PATENTS_DB_FILE)
 
@@ -71,6 +73,7 @@ DESKTOP_BROWSER_ACTIONS = {
     "main_update_dynamic",
     "collect_fwxx",
     "collect_fwxx_app",
+    "collect_fwxx_batch",
     "phase0_browser",
     "public_browser",
     "public_auto_paginate",
@@ -417,6 +420,25 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         return {
             "action": action, "title": f"补采发文 {app_no}",
             "command": [py, "-u", "collect_fwxx.py", "--app", app_no],
+            "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
+        }
+    if action == "collect_fwxx_batch":
+        request_path, targets = create_manual_fwxx_request(
+            str(params.get("app_nos") or ""),
+            request_dir=FWXX_MANUAL_LIST_DIR,
+            max_app_nos=MAX_REQUEST_APP_NOS,
+        )
+        return {
+            "action": action,
+            "title": f"指定专利强制采集发文 {len(targets)} 件",
+            "command": [
+                py,
+                "-u",
+                "collect_fwxx.py",
+                "--input",
+                str(request_path),
+                "--force",
+            ],
             "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
         }
     if action == "strategy_generate":
@@ -952,6 +974,19 @@ HTML = r"""<!doctype html>
           </div>
         </article>
       </section>
+
+      <article class="panel operator-only" style="margin-bottom:14px">
+        <div class="panel-head">
+          <h2>指定专利批量采集发文</h2>
+          <span class="hint">不限制案件状态 · 最多 500 件</span>
+        </div>
+        <textarea id="fwxxBatchAppNos" class="codebox" rows="7" style="min-height:140px"
+          placeholder="每行一个申请号，也支持逗号分隔，例如：&#10;CN202411006597.0&#10;CN202111504942.X"></textarea>
+        <div class="button-row" style="margin-top:10px;align-items:center">
+          <button class="btn primary" id="fwxxBatchBtn">强制采集这批专利</button>
+          <span class="hint">名单会去重并全部进入详情页发文流程；已有记录也会重采，库外结果保存到 fwxx_unmatched.json。</span>
+        </div>
+      </article>
 
       <article class="panel">
         <div class="panel-head"><h2>待补采列表</h2><span class="hint" id="fwxxPendingHint">最新 20 条</span></div>
@@ -2367,6 +2402,9 @@ function bindEvents() {
 
   $('#fwxxSingleBtn').addEventListener('click', () =>
     startJob('collect_fwxx_app', { app_no: $('#fwxxAppNo').value }));
+
+  $('#fwxxBatchBtn').addEventListener('click', () =>
+    startJob('collect_fwxx_batch', { app_nos: $('#fwxxBatchAppNos').value }));
 
   $('#stopJob').addEventListener('click', async () => {
     if (!state.selectedJobId) return;

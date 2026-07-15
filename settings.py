@@ -45,6 +45,7 @@ for directory in [DATA_DIR, RESULTS_DIR, RAW_RESPONSES_DIR, RAW_SEARCHES_DIR]:
 
 SEARCH_LIST_FILE = DATA_DIR / 'search_list.txt'
 FWXX_LIST_FILE = DATA_DIR / 'fwxx_list.txt'
+FWXX_MANUAL_LIST_DIR = DATA_DIR / 'manual_fwxx_lists'
 RETRY_FAILED_FILE = DATA_DIR / 'retry_failed.txt'
 
 # ============================================================================
