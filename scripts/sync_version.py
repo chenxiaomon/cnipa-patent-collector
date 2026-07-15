@@ -17,6 +17,10 @@ import re
 import sys
 from pathlib import Path
 
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 # 脚本在 scripts/ 下，项目根是上一级
 _ROOT = Path(__file__).resolve().parent.parent
 _VERSION_FILE = _ROOT / 'VERSION'

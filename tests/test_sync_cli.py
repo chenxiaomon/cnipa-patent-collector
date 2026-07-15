@@ -19,6 +19,8 @@ class TestSyncCli(unittest.TestCase):
                     text=True,
                     capture_output=True,
                     check=False,
+                    encoding='utf-8',
+                    errors='replace',
                 )
                 self.assertEqual(completed.returncode, 2)
                 self.assertIn('旧双向同步命令已禁用', completed.stdout)

@@ -10,9 +10,11 @@ SQLite 数据库管理模块
 """
 
 import json
+import re
 import sqlite3
 import sys
 import threading
+from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,6 +22,7 @@ from pathlib import Path
 _JSON_FIELDS = {'fwxx_list', 'bhsjtzs_data'}
 PENDING_STATUS_CODE = -1
 SYNC_CURSOR_FIELD = '_sync_updated_at'
+_APPLICANT_SPLIT_RE = re.compile(r"[,，;；、\r\n]+")
 
 _CREATE_REQUESTS_TABLE = """
 CREATE TABLE IF NOT EXISTS requests (
@@ -77,6 +80,28 @@ _COLUMNS = [
 ]
 
 
+def _split_applicant_names(value: str | None) -> list[str]:
+    if not value:
+        return []
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for part in _APPLICANT_SPLIT_RE.split(str(value)):
+        name = part.strip()
+        if name and name not in seen:
+            names.append(name)
+            seen.add(name)
+    return names
+
+
+def _count_split_applicants(rows) -> Counter:
+    counts: Counter = Counter()
+    for row in rows:
+        for name in _split_applicant_names(row['shenqingrxm']):
+            counts[name] += row['cnt']
+    return counts
+
+
 class PatentsDB:
     """SQLite 专利数据库（线程安全，WAL 模式）"""
 
@@ -84,29 +109,24 @@ class PatentsDB:
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._thread_connection = threading.local()
         self._init_db()
 
     # ── 内部工具 ──────────────────────────────────────────────────────────
 
     @contextmanager
     def _connect(self):
-        # 每线程复用一个连接（连接创建 + 3 条 PRAGMA 不便宜，之前每次调用都重来）。
-        # 连接归单线程所有，保留默认 check_same_thread 检查。
-        conn = getattr(self._thread_connection, 'conn', None)
-        if conn is None:
-            conn = sqlite3.connect(str(self._db_path))
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA foreign_keys=ON")
-            self._thread_connection.conn = conn
+        conn = sqlite3.connect(str(self._db_path))
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA foreign_keys=ON")
         try:
             yield conn
         except Exception:
-            # 连接跨调用复用后，失败的写事务不能悬挂到下一次调用
             conn.rollback()
             raise
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
         with self._lock, self._connect() as conn:
@@ -338,7 +358,8 @@ class PatentsDB:
                 "WHERE shenqingrxm IS NOT NULL AND shenqingrxm != '' "
                 "GROUP BY shenqingrxm ORDER BY cnt DESC"
             ).fetchall()
-        return [(r['shenqingrxm'], r['cnt']) for r in rows]
+        counts = _count_split_applicants(rows)
+        return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
 
     def query_filtered(
         self,
@@ -361,12 +382,15 @@ class PatentsDB:
         """
         clauses = []
         params: list = []
+        applicant_set = {
+            name
+            for applicant in (applicants or [])
+            for name in _split_applicant_names(applicant)
+        }
 
         # 维度 1：申请人
-        if applicants:
-            placeholders = ','.join('?' * len(applicants))
-            clauses.append(f"shenqingrxm IN ({placeholders})")
-            params.extend(applicants)
+        if applicant_set:
+            clauses.append("shenqingrxm IS NOT NULL AND shenqingrxm != ''")
 
         # 维度 2：采集时间范围
         ts_parts = []
@@ -398,7 +422,42 @@ class PatentsDB:
         sql = f"SELECT * FROM patents WHERE {where} ORDER BY timestamp ASC"
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
-        return [self._decode(r) for r in rows]
+        records = [self._decode(r) for r in rows]
+
+        if not applicant_set:
+            return records
+
+        def matches_applicant(record: dict) -> bool:
+            return bool(applicant_set & set(_split_applicant_names(record.get('shenqingrxm'))))
+
+        def matches_timestamp(record: dict) -> bool:
+            if not (ts_from or ts_to):
+                return False
+            timestamp = record.get('timestamp')
+            if not timestamp:
+                return False
+            if ts_from and timestamp < ts_from:
+                return False
+            if ts_to and timestamp > ts_to:
+                return False
+            return True
+
+        def matches_rejection_date(record: dict) -> bool:
+            if not (rejection_from or rejection_to):
+                return False
+            rejection_date = record.get('bhsjtzs_xiazaisj')
+            if not rejection_date:
+                return False
+            if rejection_from and rejection_date < rejection_from:
+                return False
+            if rejection_to and rejection_date > rejection_to:
+                return False
+            return True
+
+        return [
+            record for record in records
+            if matches_applicant(record) or matches_timestamp(record) or matches_rejection_date(record)
+        ]
 
     def query_update_candidates(self, status: str, freq_days: int) -> tuple[list[dict], list[dict]]:
         """
@@ -587,7 +646,7 @@ class PatentsDB:
             applicant_rows = conn.execute("""
                 SELECT shenqingrxm, COUNT(*) AS cnt FROM patents
                 WHERE shenqingrxm IS NOT NULL
-                GROUP BY shenqingrxm ORDER BY cnt DESC LIMIT 8
+                GROUP BY shenqingrxm ORDER BY cnt DESC
             """).fetchall()
 
             # 4. 近 7 天每日采集量
@@ -620,6 +679,9 @@ class PatentsDB:
                 GROUP BY shenqingrxm ORDER BY cnt DESC
             """, (rejection_status,)).fetchall()
 
+        applicant_counts = _count_split_applicants(applicant_rows)
+        rejection_company_counts = _count_split_applicants(rejection_company_rows)
+
         # 构建返回结构（与原 build_summary() 输出完全兼容）
         unique = agg['unique_count'] or 0
         success = agg['success'] or 0
@@ -644,14 +706,17 @@ class PatentsDB:
             'fwxx_collected': agg['fwxx_collected'] or 0,
             'fwxx_pending': agg['fwxx_pending'] or 0,
             'status_counts': [[r['anjianywzt'], r['cnt']] for r in status_rows],
-            'applicant_counts': [[r['shenqingrxm'], r['cnt']] for r in applicant_rows],
+            'applicant_counts': [
+                [name, count]
+                for name, count in sorted(applicant_counts.items(), key=lambda item: (-item[1], item[0]))[:8]
+            ],
             'daily_counts': daily_counts,
             'recent': [dict(r) for r in recent_rows],
             'fwxx_pending_list': [dict(r) for r in pending_rows],
             # 驳回企业列表：[{"name": str, "invention_count": int}, ...]
             'rejection_companies': [
-                {'name': r['shenqingrxm'], 'invention_count': r['cnt']}
-                for r in rejection_company_rows
+                {'name': name, 'invention_count': count}
+                for name, count in sorted(rejection_company_counts.items(), key=lambda item: (-item[1], item[0]))
             ],
         }
 
@@ -692,9 +757,9 @@ class PatentsDB:
                 GROUP BY shenqingrxm
             """).fetchall()
 
-        total_map = {r['shenqingrxm']: r['cnt'] for r in total_rows}
-        tracked_map = {r['shenqingrxm']: r['cnt'] for r in tracked_rows}
-        rejection_map = {r['shenqingrxm']: r['cnt'] for r in rejection_rows}
+        total_map = _count_split_applicants(total_rows)
+        tracked_map = _count_split_applicants(tracked_rows)
+        rejection_map = _count_split_applicants(rejection_rows)
 
         # 合并去重：取跟踪企业 ∪ 驳回企业
         all_names = set(tracked_map) | set(rejection_map)

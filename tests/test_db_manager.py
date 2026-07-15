@@ -7,6 +7,7 @@ import threading
 import time
 import unittest
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from db_manager import SYNC_CURSOR_FIELD, PatentsDB
@@ -83,7 +84,7 @@ class TestPatentsDBUpdateFields(unittest.TestCase):
             db_path = Path(tmpdir) / "patents.db"
             db = PatentsDB(db_path)
             db.upsert({"application_no": "2023000000001", "timestamp": None})
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     "UPDATE patents SET updated_at=NULL WHERE application_no=?",
                     ("2023000000001",),
@@ -142,17 +143,16 @@ class TestSnapshotPreviousStatus(unittest.TestCase):
             self.assertIsNone(db.get_record("2023000000004")["previous_status"])
 
 
-class TestConnectionReuse(unittest.TestCase):
-    """每线程连接复用（_connect 缓存）"""
+class TestConnectionLifecycle(unittest.TestCase):
+    """数据库连接在操作结束后释放，兼容 Windows 文件锁。"""
 
-    def test_connect_reuses_connection_within_thread(self):
+    def test_connect_closes_connection_after_use(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db = PatentsDB(Path(tmpdir) / "patents.db")
-            with db._connect() as first:
-                pass
-            with db._connect() as second:
-                pass
-            self.assertIs(first, second)
+            with db._connect() as connection:
+                self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+            with self.assertRaises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
 
     def test_failed_write_rolls_back_reused_connection(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -196,6 +196,43 @@ class TestFwxxCollectedAppNos(unittest.TestCase):
             })
             db.upsert({"application_no": "2023000000002"})
             self.assertEqual(db.fwxx_collected_app_nos(), {"2023000000001"})
+
+
+class TestPatentsDBApplicantSplitting(unittest.TestCase):
+    def test_company_views_split_comma_separated_applicants(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = PatentsDB(Path(tmpdir) / "patents.db")
+            db.upsert({
+                "application_no": "202410000001",
+                "status_code": 200,
+                "shenqingrxm": "宁波奥克斯电气有限公司,奥克斯空调股份有限公司",
+                "zhuanlilx": "发明",
+                "anjianywzt": "驳回等复审请求",
+                "timestamp": "2026-07-07T10:00:00",
+            })
+
+            company_rows = db.get_company_meta_rows(["驳回等复审请求"])
+            companies = {row["name"]: row for row in company_rows}
+
+            self.assertIn("宁波奥克斯电气有限公司", companies)
+            self.assertIn("奥克斯空调股份有限公司", companies)
+            self.assertNotIn("宁波奥克斯电气有限公司,奥克斯空调股份有限公司", companies)
+            self.assertEqual(companies["宁波奥克斯电气有限公司"]["total_count"], 1)
+            self.assertEqual(companies["奥克斯空调股份有限公司"]["total_count"], 1)
+
+            applicants = dict(db.list_applicants())
+            self.assertEqual(applicants["宁波奥克斯电气有限公司"], 1)
+            self.assertEqual(applicants["奥克斯空调股份有限公司"], 1)
+
+            filtered = db.query_filtered(applicants=["奥克斯空调股份有限公司"])
+            self.assertEqual([record["application_no"] for record in filtered], ["202410000001"])
+
+            summary_companies = {
+                item["name"]: item["invention_count"]
+                for item in db.get_summary()["rejection_companies"]
+            }
+            self.assertEqual(summary_companies["宁波奥克斯电气有限公司"], 1)
+            self.assertEqual(summary_companies["奥克斯空调股份有限公司"], 1)
 
 
 if __name__ == "__main__":
