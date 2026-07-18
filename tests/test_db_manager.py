@@ -38,6 +38,41 @@ class TestPatentsDBUpdateFields(unittest.TestCase):
             self.assertEqual(record["fwxx_list"], fwxx_list)
             self.assertEqual(record["bhsjtzs_data"], bhsjtzs_data)
 
+    def test_update_fields_round_trips_fee_records(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = PatentsDB(Path(tmpdir) / "patents.db")
+            payable = [{"feiyongzl": "实用新型专利第6年年费", "yingjiaofje": "1200"}]
+            late_schedule = [{"jiaofeisj": "2026-02-04至2026-03-03", "zongji": "1320"}]
+            paid = [{"yijiaofpjdm": "00010125", "yijiaofpjhm": "0026303067"}]
+            receipts = [{"shoujufwsjh": "0026303067", "shoujufwfwrq": ""}]
+            db.upsert({
+                "application_no": "2026102909420",
+                "status_code": 200,
+                "payable_fee_records": payable,
+                "late_fee_schedule_records": late_schedule,
+                "fee_snapshot_at": "2026-07-18T08:30:00Z",
+            })
+
+            inserted = db.get_record("2026102909420")
+            self.assertEqual(inserted["payable_fee_records"], payable)
+            self.assertEqual(inserted["late_fee_schedule_records"], late_schedule)
+            self.assertEqual(inserted["fee_snapshot_at"], "2026-07-18T08:30:00Z")
+
+            db.update_fields("2026102909420", {
+                "payable_fee_records": [],
+                "late_fee_schedule_records": [],
+                "paid_fee_records": paid,
+                "fee_receipt_dispatch_records": receipts,
+                "fee_snapshot_at": "2026-07-18T09:00:00Z",
+            })
+
+            record = db.get_record("2026102909420")
+            self.assertEqual(record["payable_fee_records"], [])
+            self.assertEqual(record["late_fee_schedule_records"], [])
+            self.assertEqual(record["paid_fee_records"], paid)
+            self.assertEqual(record["fee_receipt_dispatch_records"], receipts)
+            self.assertEqual(record["fee_snapshot_at"], "2026-07-18T09:00:00Z")
+
     def test_summarize_record_import_reports_new_updated_and_time_range(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db = PatentsDB(Path(tmpdir) / "patents.db")
@@ -100,11 +135,20 @@ class TestPatentsDBUpdateFields(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             db = PatentsDB(Path(tmpdir) / "patents.db")
             fwxx_list = [{"fawenmc": "驳回决定"}]
+            payable_fee_records = [{"feiyongzl": "恢复权利请求费"}]
+            late_fee_schedule_records = [{"zongji": "1260"}]
+            paid_fee_records = [{"yijiaofpjhm": "0026303067"}]
+            fee_receipt_dispatch_records = [{"shoujufwsjh": "0026303067"}]
             db.upsert({
                 "application_no": "2023000000001",
                 "status_code": -1,
                 "fwxx_list": fwxx_list,
                 "bhsjtzs_xiazaisj": "2026-06-18",
+                "payable_fee_records": payable_fee_records,
+                "late_fee_schedule_records": late_fee_schedule_records,
+                "paid_fee_records": paid_fee_records,
+                "fee_receipt_dispatch_records": fee_receipt_dispatch_records,
+                "fee_snapshot_at": "2026-07-18T08:30:00Z",
                 "error_message": "old timeout",
             })
             db.upsert({
@@ -113,6 +157,11 @@ class TestPatentsDBUpdateFields(unittest.TestCase):
                 "zhuanlimc": "补采成功的专利",
                 "fwxx_list": None,
                 "bhsjtzs_xiazaisj": None,
+                "payable_fee_records": None,
+                "late_fee_schedule_records": None,
+                "paid_fee_records": None,
+                "fee_receipt_dispatch_records": None,
+                "fee_snapshot_at": None,
                 "error_message": None,
             })
             record = db.get_record("2023000000001")
@@ -120,6 +169,14 @@ class TestPatentsDBUpdateFields(unittest.TestCase):
             self.assertEqual(record["zhuanlimc"], "补采成功的专利")
             self.assertEqual(record["fwxx_list"], fwxx_list)
             self.assertEqual(record["bhsjtzs_xiazaisj"], "2026-06-18")
+            self.assertEqual(record["payable_fee_records"], payable_fee_records)
+            self.assertEqual(record["late_fee_schedule_records"], late_fee_schedule_records)
+            self.assertEqual(record["paid_fee_records"], paid_fee_records)
+            self.assertEqual(
+                record["fee_receipt_dispatch_records"],
+                fee_receipt_dispatch_records,
+            )
+            self.assertEqual(record["fee_snapshot_at"], "2026-07-18T08:30:00Z")
             self.assertIsNone(record["error_message"])
 
 
@@ -153,6 +210,82 @@ class TestConnectionLifecycle(unittest.TestCase):
                 self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
             with self.assertRaises(sqlite3.ProgrammingError):
                 connection.execute("SELECT 1")
+
+    def test_initialization_adds_fee_columns_to_legacy_database(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "patents.db"
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute("""
+                    CREATE TABLE patents (
+                        application_no TEXT PRIMARY KEY,
+                        status_code INTEGER,
+                        timestamp TEXT,
+                        updated_at TEXT,
+                        anjianywzt TEXT,
+                        fwxx_list TEXT,
+                        shenqingrxm TEXT,
+                        zhuanlilx TEXT
+                    )
+                """)
+                conn.commit()
+
+            PatentsDB(db_path)
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                columns = {
+                    row[1] for row in conn.execute("PRAGMA table_info(patents)").fetchall()
+                }
+            self.assertIn("paid_fee_records", columns)
+            self.assertIn("fee_receipt_dispatch_records", columns)
+            self.assertIn("payable_fee_records", columns)
+            self.assertIn("late_fee_schedule_records", columns)
+            self.assertIn("fee_snapshot_at", columns)
+
+    def test_initialization_replaces_legacy_detail_pending_index_once(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "patents.db"
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute("""
+                    CREATE TABLE patents (
+                        application_no TEXT PRIMARY KEY,
+                        status_code INTEGER,
+                        timestamp TEXT,
+                        updated_at TEXT,
+                        anjianywzt TEXT,
+                        fwxx_list TEXT,
+                        paid_fee_records TEXT,
+                        fee_receipt_dispatch_records TEXT,
+                        shenqingrxm TEXT,
+                        zhuanlilx TEXT
+                    )
+                """)
+                conn.execute("""
+                    CREATE INDEX idx_detail_enrichment_pending ON patents(anjianywzt)
+                    WHERE fwxx_list IS NULL OR paid_fee_records IS NULL
+                       OR fee_receipt_dispatch_records IS NULL
+                """)
+                conn.commit()
+
+            PatentsDB(db_path)
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                index_sql = conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='index' "
+                    "AND name='idx_detail_enrichment_pending'"
+                ).fetchone()[0]
+                schema_version = conn.execute("PRAGMA schema_version").fetchone()[0]
+            self.assertIn("fwxx_list IS NULL", index_sql)
+            self.assertIn("payable_fee_records IS NULL", index_sql)
+            self.assertIn("paid_fee_records IS NULL", index_sql)
+            self.assertIn("fee_receipt_dispatch_records IS NULL", index_sql)
+            self.assertNotIn("late_fee_schedule_records", index_sql)
+
+            PatentsDB(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                self.assertEqual(
+                    conn.execute("PRAGMA schema_version").fetchone()[0],
+                    schema_version,
+                )
 
     def test_failed_write_rolls_back_reused_connection(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -196,6 +329,58 @@ class TestFwxxCollectedAppNos(unittest.TestCase):
             })
             db.upsert({"application_no": "2023000000002"})
             self.assertEqual(db.fwxx_collected_app_nos(), {"2023000000001"})
+
+
+class TestDetailEnrichmentProgress(unittest.TestCase):
+    def test_only_complete_records_are_skipped_by_resume(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = PatentsDB(Path(tmpdir) / "patents.db")
+            complete_fields = {
+                "fwxx_list": [],
+                "payable_fee_records": [],
+                "paid_fee_records": [],
+                "fee_receipt_dispatch_records": [],
+            }
+            db.upsert({
+                "application_no": "2023000000001",
+                "anjianywzt": "驳回等复审请求",
+                **complete_fields,
+            })
+            db.upsert({
+                "application_no": "2023000000002",
+                "anjianywzt": "驳回等复审请求",
+                "fwxx_list": [{"tongzhismc": "驳回决定"}],
+                "paid_fee_records": [],
+                "fee_receipt_dispatch_records": [],
+            })
+            db.upsert({
+                "application_no": "2023000000003",
+                "anjianywzt": "专利权维持",
+            })
+
+            self.assertEqual(
+                db.detail_enrichment_completed_app_nos(),
+                {"2023000000001"},
+            )
+            self.assertEqual(
+                db.detail_enrichment_pending_app_nos(),
+                ["2023000000002"],
+            )
+            complete_record = db.get_record("2023000000001")
+            self.assertIsNone(complete_record["late_fee_schedule_records"])
+            self.assertIsNone(complete_record["fee_snapshot_at"])
+            pending_record = db.get_record("2023000000002")
+            self.assertIsNone(pending_record["payable_fee_records"])
+
+            summary = db.get_summary()
+            self.assertEqual(summary["detail_enrichment_completed"], 1)
+            self.assertEqual(summary["detail_enrichment_pending"], 1)
+            self.assertEqual(summary["fwxx_pending"], 0)
+            self.assertEqual(summary["fwxx_pending_list"], [])
+            self.assertEqual(
+                [row["application_no"] for row in summary["detail_enrichment_pending_list"]],
+                ["2023000000002"],
+            )
 
 
 class TestPatentsDBApplicantSplitting(unittest.TestCase):

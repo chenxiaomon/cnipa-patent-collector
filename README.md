@@ -1,6 +1,6 @@
 # CNIPA Patent Collector - 专利数据采集系统
 
-自动化从中国知识产权局（CNIPA）采集专利数据的系统。采集 **申请号 + 13 个基础字段 + 3 个发文字段**（条件采集），支持断点续传。
+自动化从中国知识产权局（CNIPA）采集专利数据的系统。采集 **申请号 + 13 个基础字段 + 3 个发文字段 + 4 类费用明细**（条件采集），支持断点续传。
 
 系统同时支持三种采集模式：按申请号自动采集、Phase 0 手动按申请人采集、公开查询手动/半自动翻页采集。
 
@@ -89,6 +89,14 @@ zhufenlh, anjianbh, anjianywzt
 fwxx_list, bhsjtzs_xiazaisj, bhsjtzs_data
 ```
 
+**费用信息 (4 个结构化列表，与发文信息在同一详情页流程采集)**
+```
+payable_fee_records, late_fee_schedule_records,
+paid_fee_records, fee_receipt_dispatch_records, fee_snapshot_at
+```
+
+Excel 额外生成“待缴费分析”和“当前滞纳金”：待缴记录按截止日分为已逾期、今日截止、30 天内、未来和日期未知；滞纳金只选择分析当天所在的一档，不汇总多个时间档。
+
 ### 数据流向
 
 ```
@@ -108,7 +116,7 @@ PatentsDB 写入 patents.db
 ## ⚙️ 系统特点
 
 ✅ **稳定** - MITM + PyAutoGUI，规避反爬虫检测  
-✅ **完整** - 申请号 + 13 个专利字段 + 3 个发文字段  
+✅ **完整** - 申请号 + 13 个专利字段 + 3 个发文字段 + 4 类费用明细<br>
 ✅ **可靠** - 断点续传，浏览器启动自动重试，支持手动重试和补采  
 ✅ **灵活** - 支持自动采集、手动按申请人采集、公开查询采集  
 ✅ **可扩展** - 模块化设计，易于维护和修改  
@@ -125,7 +133,7 @@ PatentsDB 写入 patents.db
 | `main_automation.py` | 主流程：浏览器控制、申请号循环、数据采集 | ✅ 活跃 |
 | `detection_logger.py` | 通过 PatentsDB 写入，生成 Excel/JSON/JSONL 导出 | ✅ 活跃 |
 | `patent_mitm_scraper.py` | MITM 插件：API 拦截、字段解析 | ✅ 活跃 |
-| `collect_fwxx.py` | 补采脚本：补采漏掉的发文信息 | ✅ 活跃 |
+| `collect_fwxx.py` | 详情补采脚本：同页补采发文、应缴/滞纳、已缴和收据发文信息 | ✅ 活跃 |
 | `main_automation.py --update-list` | 重试/强制更新：重新采集指定申请号列表 | ✅ 活跃 |
 | `start_browser_for_phase0.py` | Phase 0：打开带代理浏览器，用户手动按申请人搜索 | ✅ 可用 |
 | `import_from_cache.py` | Phase 0：将手动浏览产生的缓存导入 SQLite | ✅ 可用 |
@@ -146,6 +154,7 @@ data/
 ├── config.json               # 配置：鼠标坐标（本机专用，.gitignore 排除）
 ├── patent_cache.json         # 临时：MITM 缓存（可删除）
 ├── patent_fwxx_cache.json    # 临时：发文 MITM 缓存（可删除）
+├── patent_fee_cache.json     # 临时：费用 MITM 缓存（可删除）
 ├── raw_responses/            # 公开查询原始响应
 ├── raw_searches/             # 公开查询 JSONL 记录
 └── results/
@@ -227,20 +236,20 @@ USE_MITM_PROXY=true python main_automation.py
 USE_MITM_PROXY=true python main_automation.py --update-list data/retry_failed.txt
 ```
 
-### 补采发文信息
+### 补采发文及费用信息
 ```bash
 python collect_fwxx.py
 ```
 
-### 指定专利列表强制采集发文
+### 指定专利列表强制采集发文及费用
 
-在控制台的“发文采集”页粘贴申请号列表，或使用命令行：
+在控制台的“发文与费用”页粘贴申请号列表，或使用命令行：
 
 ```bash
 USE_MITM_PROXY=true python collect_fwxx.py --input data/fwxx_list.txt --force
 ```
 
-该模式不限制案件业务状态，也不会跳过已有发文记录；名单会规范化并去重后逐件进入发文流程。
+该模式不限制案件业务状态，也不会跳过已有详情记录；名单会规范化并去重后逐件进入发文与费用流程。
 
 ### Phase 0 手动按申请人采集
 ```bash

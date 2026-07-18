@@ -12,6 +12,7 @@
 | 文件 | 来源 API | 说明 |
 |------|---------|------|
 | `sqxx_real_response.json` | `/api/view/gn/sqxx` | 专利详情接口，含代理机构字段 `dailijg.dailijgList` |
+| `fyxx_real_response.json` | `/api/view/gn/fyxx` | 脱敏费用结构响应；已缴费/收据段来自真实响应，应缴/滞纳段字段由生产前端脚本核验 |
 
 ## 更新 Fixture 的流程
 
@@ -24,6 +25,6 @@
 
 ## 注意事项
 
-- fixture 内容是真实专利数据，已脱敏（发明人姓名等不包含真实个人信息）
+- fixture 内容已脱敏；`fyxx_real_response.json` 的应缴/滞纳样例值来自页面，字段契约由生产前端脚本核验
 - **不要**把真实用户的申请号/姓名写入 fixture
 - 如果 CNIPA 未改格式但 fixture 过期（版本号变化等），也可按上述流程更新

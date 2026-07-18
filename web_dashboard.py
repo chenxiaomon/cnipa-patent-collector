@@ -411,7 +411,7 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         if count:
             command.extend(["--test", str(count)])
         return {
-            "action": action, "title": "补采发文信息", "command": command,
+            "action": action, "title": "补采发文及费用信息", "command": command,
             "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
         }
     if action == "collect_fwxx_app":
@@ -419,7 +419,7 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         if not app_no:
             raise ValueError("请输入申请号")
         return {
-            "action": action, "title": f"补采发文 {app_no}",
+            "action": action, "title": f"补采发文及费用 {app_no}",
             "command": [py, "-u", "collect_fwxx.py", "--app", app_no],
             "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
         }
@@ -431,7 +431,7 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         )
         return {
             "action": action,
-            "title": f"指定专利强制采集发文 {len(targets)} 件",
+            "title": f"指定专利强制采集发文及费用 {len(targets)} 件",
             "command": [
                 py,
                 "-u",
@@ -626,6 +626,8 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
             "rejection": db_summary["rejection"],
             "fwxx_collected": db_summary["fwxx_collected"],
             "fwxx_pending": db_summary["fwxx_pending"],
+            "detail_enrichment_completed": db_summary["detail_enrichment_completed"],
+            "detail_enrichment_pending": db_summary["detail_enrichment_pending"],
             "tracked_total": sum(group["total"] for group in update_groups),
             "update_due": sum(group["due"] for group in update_groups),
         },
@@ -652,6 +654,7 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
         "warnings": warnings,
         "daily_counts": db_summary["daily_counts"],
         "fwxx_pending_list": db_summary["fwxx_pending_list"],
+        "detail_enrichment_pending_list": db_summary["detail_enrichment_pending_list"],
         "pending_requests_count": len(_patents_db.list_requests(status='pending')),
         # 驳回企业列表，合并手动补录的真实专利数
         "rejection_companies": _merge_company_meta(db_summary["rejection_companies"]),
@@ -766,7 +769,7 @@ HTML = r"""<!doctype html>
     <a class="nav-item" data-tab="overview">               <span>📊</span>概览</a>
     <a class="nav-item operator-only" data-tab="collection"><span>⚡</span>采集控制</a>
     <a class="nav-item" data-tab="strategy">               <span>📅</span>策略管理</a>
-    <a class="nav-item" data-tab="fwxx">                   <span>📋</span>发文采集</a>
+    <a class="nav-item" data-tab="fwxx">                   <span>📋</span>发文与费用</a>
     <a class="nav-item operator-only" data-tab="public">   <span>🔍</span>公开查询</a>
     <a class="nav-item" data-tab="analytics">              <span>📈</span>数据分析</a>
     <a class="nav-item operator-only" data-tab="data">     <span>🗄</span>数据管理</a>
@@ -957,12 +960,12 @@ HTML = r"""<!doctype html>
             </svg>
             <div class="ring-label">
               <strong id="fwxxPct">0%</strong>
-              <span>发文完成率</span>
+              <span>详情完成率</span>
             </div>
           </div>
           <div class="ring-stats">
             <div class="info-row"><span>驳回案件</span><strong id="fwxxRejection">—</strong></div>
-            <div class="info-row"><span>已采集发文</span><strong id="fwxxCollected">—</strong></div>
+            <div class="info-row"><span>发文及费用完整</span><strong id="fwxxCollected">—</strong></div>
             <div class="info-row"><span>待补采</span><strong id="fwxxPending">—</strong></div>
           </div>
         </article>
@@ -982,14 +985,14 @@ HTML = r"""<!doctype html>
 
       <article class="panel operator-only" style="margin-bottom:14px">
         <div class="panel-head">
-          <h2>指定专利批量采集发文</h2>
+          <h2>指定专利批量采集发文及费用</h2>
           <span class="hint">不限制案件状态 · 最多 500 件</span>
         </div>
         <textarea id="fwxxBatchAppNos" class="codebox" rows="7" style="min-height:140px"
           placeholder="每行一个申请号，也支持逗号分隔，例如：&#10;CN202411006597.0&#10;CN202111504942.X"></textarea>
         <div class="button-row" style="margin-top:10px;align-items:center">
           <button class="btn primary" id="fwxxBatchBtn">强制采集这批专利</button>
-          <span class="hint">名单会去重并全部进入详情页发文流程；已有记录也会重采，库外结果保存到 fwxx_unmatched.json。</span>
+          <span class="hint">名单会去重并全部进入详情页发文及费用流程；已有记录也会重采，库外结果保存到 fwxx_unmatched.json。</span>
         </div>
       </article>
 
@@ -2044,7 +2047,7 @@ function renderSummary(data) {
   set('#mRate',      data.records.success_rate + '%');
   set('#mSuccess',   fmtNumber(data.records.success) + ' 成功 / ' + fmtNumber(data.records.failed) + ' 失败 / ' + fmtNumber(data.records.pending) + ' 待采');
   set('#mRejection', fmtNumber(data.business.rejection));
-  set('#mFwxx',      fmtNumber(data.business.fwxx_pending) + ' 待补发文');
+  set('#mFwxx',      fmtNumber(data.business.detail_enrichment_pending) + ' 待补详情');
   set('#mDue',       fmtNumber(data.business.update_due));
   set('#mTracked',   fmtNumber(data.business.tracked_total) + ' 跟踪中');
   set('#mDynamic',   fmtNumber(data.lists.dynamic));
@@ -2067,17 +2070,17 @@ function renderSummary(data) {
   set('#stratDue',     fmtNumber(data.business.update_due));
   renderGroups(data.update_groups || []);
 
-  // 发文采集 Tab
+  // 发文与费用采集 Tab
   const rej = data.business.rejection;
-  const fwxxC = data.business.fwxx_collected;
-  const fwxxP = data.business.fwxx_pending;
+  const fwxxC = data.business.detail_enrichment_completed;
+  const fwxxP = data.business.detail_enrichment_pending;
   const fwxxPct = rej > 0 ? Math.round(fwxxC / rej * 100) : 0;
   updateRing(fwxxPct);
   set('#fwxxPct',       fwxxPct + '%');
   set('#fwxxRejection', fmtNumber(rej));
   set('#fwxxCollected', fmtNumber(fwxxC));
   set('#fwxxPending',   fmtNumber(fwxxP));
-  renderFwxxPending(data.fwxx_pending_list || []);
+  renderFwxxPending(data.detail_enrichment_pending_list || []);
 
   // 数据分析 Tab
   renderBarList('#statusCounts',    data.status_counts    || []);

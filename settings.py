@@ -88,6 +88,7 @@ PATENTS_EXCEL_FILE = RESULTS_DIR / 'patents_data.xlsx'
 # 专利数据缓存（MITM 代理写入）
 PATENT_CACHE_FILE = DATA_DIR / 'patent_cache.json'
 PATENT_FWXX_CACHE_FILE = DATA_DIR / 'patent_fwxx_cache.json'
+PATENT_FEE_CACHE_FILE = DATA_DIR / 'patent_fee_cache.json'
 
 # 断点续传和状态标记
 MARKER_FILE = DATA_DIR / 'current_fwxx_target.json'

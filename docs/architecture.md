@@ -181,6 +181,21 @@ data/
 
 **说明**: collect_fwxx.py 使用 `anjianywzt == '驳回等复审请求'` 作为筛选条件（已验证为准，falvzt 全为 `--` 不可用）
 
+### 3. 费用信息采集（与发文同批）
+
+**采集方式**: 在同一详情页点击“费用信息”，MITM 拦截 `/api/view/gn/fyxx`
+
+**字段列表** (4 个结构化列表 + 采集时间):
+- `payable_fee_records` - 应缴费信息，对应 `data.yingjiaofei.svYingjfList`
+- `late_fee_schedule_records` - 应缴滞纳金时间阶梯，对应 `data.zhinajin.svZnjList`
+- `paid_fee_records` - 已缴费信息，对应 `data.yijiaofei.svYijfList`
+- `fee_receipt_dispatch_records` - 收据发文信息，对应 `data.shoujufawen.svSjfwList`
+- `fee_snapshot_at` - 应缴费栏目成功采集时的 UTC 时间
+
+列表字段使用 `NULL` 表示未采集或接口未提供，`[]` 表示接口明确返回空列表。正常缴费案件可能不返回滞纳金栏目，因此该字段不作为详情完成条件。票据代码、票据号码和收据号按字符串保存。
+
+Excel 将原始四表与分析表分开：应缴表中的未来年度费用不会被算作当前到期；滞纳金表的多行是互斥时间档，只选择分析日所在的一档，禁止求和。
+
 ## 依赖关系
 
 ```

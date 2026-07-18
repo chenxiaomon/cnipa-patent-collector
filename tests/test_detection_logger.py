@@ -10,6 +10,7 @@ import glob
 import json
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
@@ -56,6 +57,20 @@ class TestDetectionRecord(unittest.TestCase):
         )
         self.assertEqual(len(record.fwxx_list), 2)
         self.assertEqual(record.fwxx_list[0]['type'], '驳回')
+
+    def test_record_with_complete_fee_snapshot(self):
+        payable = [{'yingjiaoffyzlmc': '实用新型专利第6年年费'}]
+        late_schedule = [{'zhinajjfsj': '2026年01月06日到2026年02月03日'}]
+        record = DetectionRecord(
+            application_no='2020228959227',
+            payable_fee_records=payable,
+            late_fee_schedule_records=late_schedule,
+            fee_snapshot_at='2026-07-18T00:00:00Z',
+        )
+        serialized = record.to_dict()
+        self.assertEqual(serialized['payable_fee_records'], payable)
+        self.assertEqual(serialized['late_fee_schedule_records'], late_schedule)
+        self.assertEqual(serialized['fee_snapshot_at'], '2026-07-18T00:00:00Z')
 
     def test_record_to_dict(self):
         """序列化为字典"""
@@ -222,6 +237,99 @@ class TestDetectionLoggerWritePath(unittest.TestCase):
                 Path(batched.log_file).read_text(encoding='utf-8'),
                 Path(looped.log_file).read_text(encoding='utf-8'),
             )
+
+
+class TestFeeExcelExport(unittest.TestCase):
+    def test_exports_all_fee_sheets_with_text_identifiers(self):
+        from openpyxl import load_workbook
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = _logger_in(tmpdir)
+            logger.add_record(DetectionRecord(
+                application_no='2026102909420',
+                status_code=200,
+                payable_fee_records=[{
+                    'yingjiaoffyzlmc': '发明专利第6年年费',
+                    'yingjiaoje': 1200,
+                    'jiaofeijzr': '2026-06-03',
+                    'yingjiaoffyzt': '未缴',
+                }],
+                late_fee_schedule_records=[{
+                    'zhinajjfsj': '2026年01月06日到2026年02月03日',
+                    'zhinajdqnfje': 1200,
+                    'zhinajyjznje': 60,
+                    'zhinajzj': 1260,
+                }],
+                paid_fee_records=[{
+                    'yijiaofjfzlmc': '发明专利申请实质审查费',
+                    'yijiaofjfje': 375,
+                    'yijiaofjfrq': '2026-03-11',
+                    'yijiaofjfrxm': '某专利代理事务所',
+                    'yijiaofpjdm': '00010125',
+                    'yijiaofpjhm': '0026303067',
+                }],
+                fee_receipt_dispatch_records=[{
+                    'shoujufwfyzlmc': '发明专利申请实质审查费',
+                    'shoujufwjfje': 375,
+                    'shoujufwjfrxm': '某专利代理事务所',
+                    'shoujufwjfsj': '2026-03-11',
+                    'shoujufwsjh': '0026303067',
+                    'shoujufwsjtt': '某专利代理事务所',
+                    'shoujufwyjdz': '',
+                    'shoujufwtkrq': '',
+                    'shoujufwsfjc': '',
+                    'shoujufwfwrq': '',
+                    'shoujufwghhm': '',
+                    'shoujufwtkhcrq': '',
+                }],
+                fee_snapshot_at='2026-07-18T00:00:00Z',
+            ))
+            excel_path = Path(tmpdir) / 'fees.xlsx'
+
+            self.assertTrue(logger.export_to_excel(
+                str(excel_path),
+                fee_analysis_date=date(2026, 2, 3),
+            ))
+
+            workbook = load_workbook(excel_path)
+            self.assertIn('应缴费信息', workbook.sheetnames)
+            self.assertIn('应缴滞纳金信息', workbook.sheetnames)
+            self.assertIn('待缴费分析', workbook.sheetnames)
+            self.assertIn('当前滞纳金', workbook.sheetnames)
+            self.assertIn('已缴费信息', workbook.sheetnames)
+            self.assertIn('收据发文信息', workbook.sheetnames)
+            payable_sheet = workbook['应缴费信息']
+            late_fee_sheet = workbook['应缴滞纳金信息']
+            payable_analysis_sheet = workbook['待缴费分析']
+            late_fee_analysis_sheet = workbook['当前滞纳金']
+            paid_sheet = workbook['已缴费信息']
+            receipt_sheet = workbook['收据发文信息']
+            self.assertEqual(payable_sheet['A2'].value, '2026102909420')
+            self.assertEqual(payable_sheet['A2'].data_type, 's')
+            self.assertEqual(payable_sheet['A2'].number_format, '@')
+            self.assertEqual(payable_sheet['B2'].value, '发明专利第6年年费')
+            self.assertEqual(late_fee_sheet['B2'].value, '2026年01月06日到2026年02月03日')
+            self.assertEqual(late_fee_sheet['A2'].number_format, '@')
+            self.assertEqual(payable_analysis_sheet['B2'].value, '2026102909420')
+            self.assertEqual(payable_analysis_sheet['G2'].value, '发明专利第6年年费')
+            self.assertEqual(payable_analysis_sheet['L2'].value, '未来')
+            self.assertEqual(late_fee_analysis_sheet['F2'].value, '当前适用')
+            self.assertEqual(late_fee_analysis_sheet['G2'].value, '2026年01月06日到2026年02月03日')
+            self.assertEqual(late_fee_analysis_sheet['K2'].value, 60)
+            self.assertEqual(late_fee_analysis_sheet['L2'].value, 1260)
+            self.assertEqual(paid_sheet['F2'].value, '00010125')
+            self.assertEqual(paid_sheet['F2'].data_type, 's')
+            self.assertEqual(paid_sheet['F2'].number_format, '@')
+            self.assertEqual(paid_sheet['G2'].value, '0026303067')
+            self.assertEqual(paid_sheet['G2'].data_type, 's')
+            self.assertEqual(paid_sheet['G2'].number_format, '@')
+            self.assertEqual(receipt_sheet['F2'].value, '0026303067')
+            self.assertEqual(receipt_sheet['F2'].data_type, 's')
+            self.assertEqual(receipt_sheet['F2'].number_format, '@')
+            self.assertEqual(paid_sheet.freeze_panes, 'A2')
+            self.assertGreaterEqual(paid_sheet.column_dimensions['E'].width, 40)
+            self.assertEqual(receipt_sheet.max_column, 13)
+            workbook.close()
 
 
 if __name__ == '__main__':

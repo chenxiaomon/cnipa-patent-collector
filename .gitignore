@@ -17,6 +17,8 @@ backups/
 # 忽略中间缓存（不需要上传）
 data/patent_cache.json
 data/patent_fwxx_cache.json
+data/patent_fee_cache.json
+data/fwxx_unmatched.json
 data/current_fwxx_target.json
 data/fwxx_list.txt
 data/manual_fwxx_lists/

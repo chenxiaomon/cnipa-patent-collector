@@ -92,6 +92,10 @@ FWXX_RESPONSE = {
     "msg": "成功",
 }
 
+FYXX_RESPONSE = json.loads(
+    (_FIXTURES / 'fyxx_real_response.json').read_text(encoding='utf-8')
+)
+
 # 真实 CNIPA 列表接口响应结构（简化，含一条记录）
 LIST_RESPONSE = {
     "code": 200,
@@ -154,6 +158,15 @@ class TestResponseRouting(unittest.TestCase):
         with patch.object(self.scraper, '_process_fwxx_response') as mock_fwxx:
             self.scraper.response(flow)
             mock_fwxx.assert_called_once_with(flow)
+
+    def test_routes_fyxx_to_handler(self):
+        flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/fyxx?token=abc',
+            body=_json_body(FYXX_RESPONSE),
+        )
+        with patch.object(self.scraper, '_process_fee_response') as mock_fee:
+            self.scraper.response(flow)
+            mock_fee.assert_called_once_with(flow)
 
     def test_routes_sqxx_to_handler(self):
         flow = _make_flow(
@@ -382,6 +395,204 @@ class TestProcessFwxx(unittest.TestCase):
         )
         with patch('patent_mitm_scraper.write_json_cache') as mock_write:
             self.scraper._process_fwxx_response(flow)
+            mock_write.assert_not_called()
+
+
+class TestProcessFeeInformation(unittest.TestCase):
+    """验证费用接口的四个栏目能独立绑定到当前申请号。"""
+
+    def setUp(self):
+        patcher_logger = patch('patent_mitm_scraper.DetectionLogger')
+        patcher_logger.start()
+        self.addCleanup(patcher_logger.stop)
+
+        from patent_mitm_scraper import PatentMITMScraper
+        self.scraper = PatentMITMScraper()
+
+    @patch('patent_mitm_scraper.write_json_cache')
+    @patch('patent_mitm_scraper.read_json_cache')
+    def test_caches_all_sections_without_filtering_raw_fields(self, mock_read, mock_write):
+        now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        mock_read.side_effect = [
+            {'application_no': '2026102909420', 'written_at': now},
+            {},
+        ]
+        response_payload = json.loads(json.dumps(FYXX_RESPONSE, ensure_ascii=False))
+        payable_record = response_payload['data']['yingjiaofei']['svYingjfList'][0]
+        payable_record['cnipaFutureField'] = {'nested': ['value', 3]}
+        flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/fyxx?token=abc',
+            body=_json_body(response_payload),
+        )
+
+        self.scraper._process_fee_response(flow)
+
+        mock_write.assert_called_once()
+        cache_entry = mock_write.call_args[0][1]['2026102909420']
+        self.assertEqual(
+            cache_entry['payable_fee_records'],
+            response_payload['data']['yingjiaofei']['svYingjfList'],
+        )
+        self.assertEqual(
+            cache_entry['late_fee_schedule_records'],
+            response_payload['data']['zhinajin']['svZnjList'],
+        )
+        self.assertTrue({
+            'yingjiaoffyzlmc',
+            'yingjiaoje',
+            'jiaofeijzr',
+            'yingjiaoffyzt',
+        }.issubset(cache_entry['payable_fee_records'][0]))
+        self.assertTrue({
+            'zhinajjfsj',
+            'zhinajdqnfje',
+            'zhinajyjznje',
+            'zhinajzj',
+        }.issubset(cache_entry['late_fee_schedule_records'][0]))
+        self.assertEqual(
+            cache_entry['paid_fee_records'],
+            response_payload['data']['yijiaofei']['svYijfList'],
+        )
+        self.assertEqual(
+            cache_entry['fee_receipt_dispatch_records'],
+            response_payload['data']['shoujufawen']['svSjfwList'],
+        )
+        self.assertEqual(
+            cache_entry['payable_fee_records'][0]['cnipaFutureField'],
+            {'nested': ['value', 3]},
+        )
+        snapshot_at = datetime.fromisoformat(
+            cache_entry['fee_snapshot_at'].replace('Z', '+00:00')
+        )
+        self.assertEqual(snapshot_at.utcoffset().total_seconds(), 0)
+
+    @patch('patent_mitm_scraper.write_json_cache')
+    @patch('patent_mitm_scraper.read_json_cache')
+    def test_empty_tables_are_cached_as_success(self, mock_read, mock_write):
+        now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        mock_read.side_effect = [
+            {'application_no': '2026102909420', 'written_at': now},
+            {},
+        ]
+        empty_response = {
+            'code': 200,
+            'data': {
+                'yingjiaofei': {'isShow': False, 'svYingjfList': []},
+                'zhinajin': {'isShow': False, 'svZnjList': []},
+                'yijiaofei': {'isShow': False, 'svYijfList': []},
+                'shoujufawen': {'isShow': False, 'svSjfwList': []},
+            },
+        }
+        flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/fyxx?token=abc',
+            body=_json_body(empty_response),
+        )
+
+        self.scraper._process_fee_response(flow)
+
+        cache_entry = mock_write.call_args[0][1]['2026102909420']
+        self.assertEqual(cache_entry['payable_fee_records'], [])
+        self.assertEqual(cache_entry['late_fee_schedule_records'], [])
+        self.assertEqual(cache_entry['paid_fee_records'], [])
+        self.assertEqual(cache_entry['fee_receipt_dispatch_records'], [])
+        self.assertIn('fee_snapshot_at', cache_entry)
+
+    @patch('patent_mitm_scraper.write_json_cache')
+    @patch('patent_mitm_scraper.read_json_cache')
+    def test_missing_late_fee_section_preserves_other_sections(self, mock_read, mock_write):
+        now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        mock_read.side_effect = [
+            {'application_no': '2026102909420', 'written_at': now},
+            {},
+        ]
+        incomplete_response = json.loads(json.dumps(FYXX_RESPONSE, ensure_ascii=False))
+        del incomplete_response['data']['zhinajin']
+        flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/fyxx?token=abc',
+            body=_json_body(incomplete_response),
+        )
+
+        self.scraper._process_fee_response(flow)
+
+        cache_entry = mock_write.call_args[0][1]['2026102909420']
+        self.assertNotIn('late_fee_schedule_records', cache_entry)
+        self.assertIn('payable_fee_records', cache_entry)
+        self.assertIn('paid_fee_records', cache_entry)
+        self.assertIn('fee_receipt_dispatch_records', cache_entry)
+        self.assertIn('fee_snapshot_at', cache_entry)
+
+    @patch('patent_mitm_scraper.write_json_cache')
+    @patch('patent_mitm_scraper.read_json_cache')
+    def test_invalid_sections_only_omit_their_own_fields(self, mock_read, mock_write):
+        now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        mock_read.side_effect = [
+            {'application_no': '2026102909420', 'written_at': now},
+            {},
+        ]
+        partial_response = {
+            'code': 200,
+            'data': {
+                'yingjiaofei': {'svYingjfList': [{'valid': True}, 'not-an-object']},
+                'zhinajin': {'isShow': False},
+                'yijiaofei': {'svYijfList': []},
+                'shoujufawen': None,
+            },
+        }
+        flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/fyxx?token=abc',
+            body=_json_body(partial_response),
+        )
+
+        self.scraper._process_fee_response(flow)
+
+        cache_entry = mock_write.call_args[0][1]['2026102909420']
+        self.assertEqual(cache_entry, {'paid_fee_records': []})
+
+    @patch('patent_mitm_scraper.write_json_cache')
+    @patch('patent_mitm_scraper.read_json_cache')
+    def test_no_valid_section_does_not_write_fee_cache(self, mock_read, mock_write):
+        invalid_response = {
+            'code': 200,
+            'data': {
+                'yingjiaofei': {},
+                'zhinajin': None,
+                'yijiaofei': {'svYijfList': None},
+                'shoujufawen': {'isShow': False},
+            },
+        }
+        flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/fyxx?token=abc',
+            body=_json_body(invalid_response),
+        )
+
+        self.scraper._process_fee_response(flow)
+
+        mock_read.assert_not_called()
+        mock_write.assert_not_called()
+
+    @patch('patent_mitm_scraper.write_json_cache')
+    @patch('patent_mitm_scraper.read_json_cache')
+    def test_expired_marker_does_not_write_fee_cache(self, mock_read, mock_write):
+        mock_read.return_value = {
+            'application_no': '2026102909420',
+            'written_at': '2020-01-01T00:00:00Z',
+        }
+        flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/fyxx?token=abc',
+            body=_json_body(FYXX_RESPONSE),
+        )
+
+        self.scraper._process_fee_response(flow)
+
+        mock_write.assert_not_called()
+
+    def test_api_error_does_not_write_fee_cache(self):
+        flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/fyxx?token=abc',
+            body=_json_body({'code': 403, 'msg': '无权限'}),
+        )
+        with patch('patent_mitm_scraper.write_json_cache') as mock_write:
+            self.scraper._process_fee_response(flow)
             mock_write.assert_not_called()
 
 

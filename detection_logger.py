@@ -11,7 +11,7 @@
 import json
 import os
 import shutil
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -19,12 +19,25 @@ from settings import DETECTION_LOG_JSONL_FILE, PATENTS_DB_FILE
 from atomic_write import write_json_atomic
 from db_manager import PatentsDB
 from cache_utils import normalize_app_no as _normalize_app_no
+from payment_obligations import (
+    LATE_FEE_APPLICABLE,
+    LATE_FEE_INVALID_INTERVAL,
+    LATE_FEE_MULTIPLE_APPLICABLE_BRACKETS,
+    LATE_FEE_NOT_COLLECTED,
+    LATE_FEE_NO_APPLICABLE_BRACKET,
+    LATE_FEE_NO_SCHEDULE,
+    build_current_late_fee_analysis,
+    build_payable_fee_analysis,
+)
 
 
 try:
     import pandas as pd
 except ImportError:
     pd = None
+
+
+_CHINA_STANDARD_TIME = timezone(timedelta(hours=8))
 
 
 class DetectionRecord:
@@ -54,8 +67,13 @@ class DetectionRecord:
         fwxx_list: Optional[list] = None,
         bhsjtzs_xiazaisj: Optional[str] = None,
         bhsjtzs_data: Optional[dict] = None,
+        paid_fee_records: Optional[list] = None,
+        fee_receipt_dispatch_records: Optional[list] = None,
         daili_jg: Optional[str] = None,
         daili_r: Optional[str] = None,
+        payable_fee_records: Optional[list] = None,
+        late_fee_schedule_records: Optional[list] = None,
+        fee_snapshot_at: Optional[str] = None,
     ):
         self.application_no = application_no
         self.status_code = status_code
@@ -82,6 +100,11 @@ class DetectionRecord:
         self.fwxx_list = fwxx_list
         self.bhsjtzs_xiazaisj = bhsjtzs_xiazaisj
         self.bhsjtzs_data = bhsjtzs_data
+        self.payable_fee_records = payable_fee_records
+        self.late_fee_schedule_records = late_fee_schedule_records
+        self.paid_fee_records = paid_fee_records
+        self.fee_receipt_dispatch_records = fee_receipt_dispatch_records
+        self.fee_snapshot_at = fee_snapshot_at
         self.daili_jg = daili_jg
         self.daili_r = daili_r
 
@@ -110,6 +133,11 @@ class DetectionRecord:
             'fwxx_list': self.fwxx_list,
             'bhsjtzs_xiazaisj': self.bhsjtzs_xiazaisj,
             'bhsjtzs_data': self.bhsjtzs_data,
+            'payable_fee_records': self.payable_fee_records,
+            'late_fee_schedule_records': self.late_fee_schedule_records,
+            'paid_fee_records': self.paid_fee_records,
+            'fee_receipt_dispatch_records': self.fee_receipt_dispatch_records,
+            'fee_snapshot_at': self.fee_snapshot_at,
             'daili_jg': self.daili_jg,
             'daili_r': self.daili_r,
         }
@@ -249,8 +277,12 @@ class DetectionLogger:
     # 导出（内部改为从 DB 读取）
     # ------------------------------------------------------------------
 
-    def export_to_excel(self, excel_file: str = None) -> bool:
-        """导出到 Excel（Sheet1：专利主信息，Sheet2：发文信息）"""
+    def export_to_excel(
+        self,
+        excel_file: str = None,
+        fee_analysis_date: Optional[date] = None,
+    ) -> bool:
+        """导出专利主信息、发文信息、四类费用明细和待缴分析。"""
         if pd is None:
             print("❌ pandas 未安装，无法导出 Excel")
             return False
@@ -259,6 +291,7 @@ class DetectionLogger:
                 excel_file = os.path.join(os.path.dirname(self.log_file), 'patents_data.xlsx')
 
             records = self._load_records()
+            analysis_date = fee_analysis_date or datetime.now(_CHINA_STANDARD_TIME).date()
 
             column_mapping = {
                 'application_no': '专利申请号',
@@ -281,6 +314,11 @@ class DetectionLogger:
                 'fwxx_list': '发文列表',
                 'bhsjtzs_xiazaisj': '驳回时间',
                 'bhsjtzs_data': '驳回决定详情',
+                'payable_fee_records': '应缴费记录',
+                'late_fee_schedule_records': '应缴滞纳金记录',
+                'paid_fee_records': '已缴费记录',
+                'fee_receipt_dispatch_records': '收据发文记录',
+                'fee_snapshot_at': '费用采集时间',
                 'daili_jg': '代理机构',
                 'daili_r': '代理人',
             }
@@ -328,15 +366,269 @@ class DetectionLogger:
                             row[col] = item.get(k)
                         fwxx_rows.append(row)
 
+            payable_fee_column_mapping = {
+                'yingjiaoffyzlmc': '费用种类',
+                'yingjiaoje': '应缴金额',
+                'jiaofeijzr': '缴费截止日',
+                'yingjiaoffyzt': '费用状态',
+            }
+            payable_fee_rows = []
+            for record in records:
+                app_no = record.get('application_no')
+                for item in record.get('payable_fee_records') or []:
+                    row = {'专利申请号': app_no}
+                    for key, column in payable_fee_column_mapping.items():
+                        row[column] = item.get(key)
+                    row['费用采集时间'] = record.get('fee_snapshot_at')
+                    payable_fee_rows.append(row)
+
+            late_fee_column_mapping = {
+                'zhinajjfsj': '缴费时间区间',
+                'zhinajdqnfje': '当前年费金额',
+                'zhinajyjznje': '应缴滞纳金额',
+                'zhinajzj': '总计',
+            }
+            late_fee_schedule_rows = []
+            for record in records:
+                app_no = record.get('application_no')
+                for item in record.get('late_fee_schedule_records') or []:
+                    row = {'专利申请号': app_no}
+                    for key, column in late_fee_column_mapping.items():
+                        row[column] = item.get(key)
+                    row['费用采集时间'] = record.get('fee_snapshot_at')
+                    late_fee_schedule_rows.append(row)
+
+            payable_analysis_column_mapping = {
+                'analysis_date': '分析日期',
+                'application_no': '专利申请号',
+                'zhuanlimc': '专利名称',
+                'shenqingrxm': '申请人',
+                'zhuanlilx': '专利类型',
+                'anjianywzt': '案件业务状态',
+                'yingjiaoffyzlmc': '费用种类',
+                'yingjiaoje': '应缴金额',
+                'jiaofeijzr': '缴费截止日',
+                'yingjiaoffyzt': '费用状态',
+                'days_to_deadline': '距截止日天数',
+                'deadline_bucket': '处理分类',
+                'fee_snapshot_at': '费用采集时间',
+            }
+            payable_analysis_rows = [
+                {
+                    column: obligation.get(field)
+                    for field, column in payable_analysis_column_mapping.items()
+                }
+                for obligation in build_payable_fee_analysis(records, analysis_date)
+            ]
+
+            late_fee_status_labels = {
+                LATE_FEE_APPLICABLE: '当前适用',
+                LATE_FEE_NOT_COLLECTED: '接口未提供或尚未采集',
+                LATE_FEE_NO_SCHEDULE: '无滞纳金区间',
+                LATE_FEE_NO_APPLICABLE_BRACKET: '当前无适用区间',
+                LATE_FEE_INVALID_INTERVAL: '区间无法解析，需核验',
+                LATE_FEE_MULTIPLE_APPLICABLE_BRACKETS: '多个区间同时适用，需核验',
+            }
+            late_fee_analysis_column_mapping = {
+                'analysis_date': '分析日期',
+                'application_no': '专利申请号',
+                'zhuanlimc': '专利名称',
+                'shenqingrxm': '申请人',
+                'anjianywzt': '案件业务状态',
+                'late_fee_analysis_status': '滞纳金分析状态',
+                'zhinajjfsj': '当前适用区间',
+                'interval_start': '区间开始日',
+                'interval_end': '区间结束日',
+                'zhinajdqnfje': '当前年费金额',
+                'zhinajyjznje': '应缴滞纳金额',
+                'zhinajzj': '总计',
+                'invalid_interval_count': '无效区间数',
+                'applicable_bracket_count': '适用档数',
+                'fee_snapshot_at': '费用采集时间',
+            }
+            fee_snapshot_records = [
+                record
+                for record in records
+                if record.get('fee_snapshot_at')
+                or record.get('late_fee_schedule_records') is not None
+            ]
+            late_fee_analysis_rows = []
+            for late_fee_analysis in build_current_late_fee_analysis(
+                fee_snapshot_records,
+                analysis_date,
+            ):
+                row = {
+                    column: late_fee_analysis.get(field)
+                    for field, column in late_fee_analysis_column_mapping.items()
+                }
+                row['滞纳金分析状态'] = late_fee_status_labels.get(
+                    late_fee_analysis.get('late_fee_analysis_status'),
+                    late_fee_analysis.get('late_fee_analysis_status'),
+                )
+                late_fee_analysis_rows.append(row)
+
+            paid_fee_column_mapping = {
+                'yijiaofjfzlmc': '费用种类',
+                'yijiaofjfje': '应缴金额',
+                'yijiaofjfrq': '缴费日期',
+                'yijiaofjfrxm': '缴费人姓名',
+                'yijiaofpjdm': '票据代码',
+                'yijiaofpjhm': '票据号码',
+            }
+            paid_fee_rows = []
+            for record in records:
+                app_no = record.get('application_no')
+                for item in record.get('paid_fee_records') or []:
+                    row = {'专利申请号': app_no}
+                    for key, column in paid_fee_column_mapping.items():
+                        value = item.get(key)
+                        if key in {'yijiaofpjdm', 'yijiaofpjhm'} and value is not None:
+                            value = str(value)
+                        row[column] = value
+                    paid_fee_rows.append(row)
+
+            receipt_dispatch_column_mapping = {
+                'shoujufwfyzlmc': '费用种类',
+                'shoujufwjfje': '缴费金额',
+                'shoujufwjfrxm': '缴费人姓名',
+                'shoujufwjfsj': '缴费时间',
+                'shoujufwsjh': '收据号',
+                'shoujufwsjtt': '收据抬头',
+                'shoujufwyjdz': '收据邮寄地址',
+                'shoujufwtkrq': '汇款日期',
+                'shoujufwsfjc': '是否寄出',
+                'shoujufwfwrq': '发文日期',
+                'shoujufwghhm': '挂号号码',
+                'shoujufwtkhcrq': '退款汇出日期',
+            }
+            fee_receipt_dispatch_rows = []
+            for record in records:
+                app_no = record.get('application_no')
+                for item in record.get('fee_receipt_dispatch_records') or []:
+                    row = {'专利申请号': app_no}
+                    for key, column in receipt_dispatch_column_mapping.items():
+                        value = item.get(key)
+                        if key in {'shoujufwsjh', 'shoujufwghhm'} and value is not None:
+                            value = str(value)
+                        row[column] = value
+                    fee_receipt_dispatch_rows.append(row)
+
             with pd.ExcelWriter(excel_file, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='专利主信息', index=False)
                 if fwxx_rows:
                     pd.DataFrame(fwxx_rows).to_excel(writer, sheet_name='发文信息', index=False)
+                if payable_fee_rows:
+                    pd.DataFrame(payable_fee_rows).to_excel(
+                        writer,
+                        sheet_name='应缴费信息',
+                        index=False,
+                    )
+                    payable_fee_sheet = writer.sheets['应缴费信息']
+                    payable_fee_sheet.freeze_panes = 'A2'
+                    payable_fee_sheet.auto_filter.ref = payable_fee_sheet.dimensions
+                    for column, width in {
+                        'A': 16, 'B': 42, 'C': 14, 'D': 14, 'E': 12, 'F': 24,
+                    }.items():
+                        payable_fee_sheet.column_dimensions[column].width = width
+                    for cell in payable_fee_sheet['A'][1:]:
+                        cell.number_format = '@'
+                if late_fee_schedule_rows:
+                    pd.DataFrame(late_fee_schedule_rows).to_excel(
+                        writer,
+                        sheet_name='应缴滞纳金信息',
+                        index=False,
+                    )
+                    late_fee_sheet = writer.sheets['应缴滞纳金信息']
+                    late_fee_sheet.freeze_panes = 'A2'
+                    late_fee_sheet.auto_filter.ref = late_fee_sheet.dimensions
+                    for column, width in {
+                        'A': 16, 'B': 34, 'C': 16, 'D': 16, 'E': 16, 'F': 24,
+                    }.items():
+                        late_fee_sheet.column_dimensions[column].width = width
+                    for cell in late_fee_sheet['A'][1:]:
+                        cell.number_format = '@'
+                if payable_analysis_rows:
+                    pd.DataFrame(payable_analysis_rows).to_excel(
+                        writer,
+                        sheet_name='待缴费分析',
+                        index=False,
+                    )
+                    payable_analysis_sheet = writer.sheets['待缴费分析']
+                    payable_analysis_sheet.freeze_panes = 'A2'
+                    payable_analysis_sheet.auto_filter.ref = payable_analysis_sheet.dimensions
+                    for column, width in {
+                        'A': 12, 'B': 16, 'C': 42, 'D': 36, 'E': 12,
+                        'F': 20, 'G': 40, 'H': 14, 'I': 14, 'J': 12,
+                        'K': 14, 'L': 14, 'M': 24,
+                    }.items():
+                        payable_analysis_sheet.column_dimensions[column].width = width
+                    for cell in payable_analysis_sheet['B'][1:]:
+                        cell.number_format = '@'
+                if late_fee_analysis_rows:
+                    pd.DataFrame(late_fee_analysis_rows).to_excel(
+                        writer,
+                        sheet_name='当前滞纳金',
+                        index=False,
+                    )
+                    late_fee_analysis_sheet = writer.sheets['当前滞纳金']
+                    late_fee_analysis_sheet.freeze_panes = 'A2'
+                    late_fee_analysis_sheet.auto_filter.ref = late_fee_analysis_sheet.dimensions
+                    for column, width in {
+                        'A': 12, 'B': 16, 'C': 42, 'D': 36, 'E': 20,
+                        'F': 28, 'G': 34, 'H': 14, 'I': 14, 'J': 16,
+                        'K': 16, 'L': 14, 'M': 14, 'N': 12, 'O': 24,
+                    }.items():
+                        late_fee_analysis_sheet.column_dimensions[column].width = width
+                    for cell in late_fee_analysis_sheet['B'][1:]:
+                        cell.number_format = '@'
+                if paid_fee_rows:
+                    pd.DataFrame(paid_fee_rows).to_excel(writer, sheet_name='已缴费信息', index=False)
+                    paid_fee_sheet = writer.sheets['已缴费信息']
+                    paid_fee_sheet.freeze_panes = 'A2'
+                    paid_fee_sheet.auto_filter.ref = paid_fee_sheet.dimensions
+                    for column, width in {
+                        'A': 16, 'B': 28, 'C': 12, 'D': 14,
+                        'E': 46, 'F': 14, 'G': 16,
+                    }.items():
+                        paid_fee_sheet.column_dimensions[column].width = width
+                    for column in ('A', 'F', 'G'):
+                        for cell in paid_fee_sheet[column][1:]:
+                            cell.number_format = '@'
+                if fee_receipt_dispatch_rows:
+                    pd.DataFrame(fee_receipt_dispatch_rows).to_excel(
+                        writer,
+                        sheet_name='收据发文信息',
+                        index=False,
+                    )
+                    receipt_dispatch_sheet = writer.sheets['收据发文信息']
+                    receipt_dispatch_sheet.freeze_panes = 'A2'
+                    receipt_dispatch_sheet.auto_filter.ref = receipt_dispatch_sheet.dimensions
+                    for column, width in {
+                        'A': 16, 'B': 28, 'C': 12, 'D': 46, 'E': 14,
+                        'F': 16, 'G': 46, 'H': 24, 'I': 14, 'J': 12,
+                        'K': 14, 'L': 16, 'M': 18,
+                    }.items():
+                        receipt_dispatch_sheet.column_dimensions[column].width = width
+                    for column in ('A', 'F', 'L'):
+                        for cell in receipt_dispatch_sheet[column][1:]:
+                            cell.number_format = '@'
 
             print(f"✅ 数据已导出至: {excel_file}")
             print(f"   Sheet1: 专利主信息 ({len(df)} 条)")
             if fwxx_rows:
                 print(f"   Sheet2: 发文信息 ({len(fwxx_rows)} 条)")
+            if payable_fee_rows:
+                print(f"   应缴费信息 ({len(payable_fee_rows)} 条)")
+            if late_fee_schedule_rows:
+                print(f"   应缴滞纳金信息 ({len(late_fee_schedule_rows)} 条)")
+            if payable_analysis_rows:
+                print(f"   待缴费分析 ({len(payable_analysis_rows)} 条，基准日 {analysis_date})")
+            if late_fee_analysis_rows:
+                print(f"   当前滞纳金 ({len(late_fee_analysis_rows)} 件，基准日 {analysis_date})")
+            if paid_fee_rows:
+                print(f"   已缴费信息 ({len(paid_fee_rows)} 条)")
+            if fee_receipt_dispatch_rows:
+                print(f"   收据发文信息 ({len(fee_receipt_dispatch_rows)} 条)")
             return True
         except Exception as e:
             print(f"❌ 导出 Excel 失败: {e}")

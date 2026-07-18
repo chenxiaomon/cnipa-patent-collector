@@ -19,7 +19,14 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-_JSON_FIELDS = {'fwxx_list', 'bhsjtzs_data'}
+_JSON_FIELDS = {
+    'fwxx_list',
+    'bhsjtzs_data',
+    'payable_fee_records',
+    'late_fee_schedule_records',
+    'paid_fee_records',
+    'fee_receipt_dispatch_records',
+}
 PENDING_STATUS_CODE = -1
 SYNC_CURSOR_FIELD = '_sync_updated_at'
 _APPLICANT_SPLIT_RE = re.compile(r"[,，;；、\r\n]+")
@@ -62,6 +69,11 @@ CREATE TABLE IF NOT EXISTS patents (
     fwxx_list           TEXT,
     bhsjtzs_xiazaisj    TEXT,
     bhsjtzs_data        TEXT,
+    payable_fee_records TEXT,
+    late_fee_schedule_records TEXT,
+    paid_fee_records    TEXT,
+    fee_receipt_dispatch_records TEXT,
+    fee_snapshot_at     TEXT,
     previous_status     TEXT,
     updated_at          TEXT,
     daili_jg            TEXT,
@@ -75,9 +87,17 @@ _COLUMNS = [
     'famingzlsqgbg', 'shouquanggh', 'zhuanlimc', 'shenqingrxm',
     'zhuanlilx', 'shenqingr', 'gongkaiggh', 'falvzt', 'gongkaiggr',
     'shouquanggr', 'zhufenlh', 'anjianbh', 'anjianywzt',
-    'fwxx_list', 'bhsjtzs_xiazaisj', 'bhsjtzs_data', 'previous_status',
+    'fwxx_list', 'bhsjtzs_xiazaisj', 'bhsjtzs_data',
+    'payable_fee_records', 'late_fee_schedule_records', 'paid_fee_records',
+    'fee_receipt_dispatch_records', 'fee_snapshot_at', 'previous_status',
     'updated_at', 'daili_jg', 'daili_r',
 ]
+
+_CREATE_DETAIL_ENRICHMENT_PENDING_INDEX = (
+    "CREATE INDEX idx_detail_enrichment_pending ON patents(anjianywzt) "
+    "WHERE fwxx_list IS NULL OR payable_fee_records IS NULL "
+    "OR paid_fee_records IS NULL OR fee_receipt_dispatch_records IS NULL"
+)
 
 
 def _split_applicant_names(value: str | None) -> list[str]:
@@ -145,12 +165,32 @@ class PatentsDB:
             )
             conn.execute(_CREATE_REQUESTS_TABLE)
             # 对已有数据库做无损迁移：列已存在时 SQLite 抛 "duplicate column name"，忽略即可
-            for col in ('daili_jg TEXT', 'daili_r TEXT'):
+            for col in (
+                'daili_jg TEXT',
+                'daili_r TEXT',
+                'payable_fee_records TEXT',
+                'late_fee_schedule_records TEXT',
+                'paid_fee_records TEXT',
+                'fee_receipt_dispatch_records TEXT',
+                'fee_snapshot_at TEXT',
+            ):
                 try:
                     conn.execute(f"ALTER TABLE patents ADD COLUMN {col}")
                 except sqlite3.OperationalError as e:
                     if 'duplicate column' not in str(e).lower():
                         raise  # 非"列已存在"的错误应当暴露
+            index_row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='index' "
+                "AND name='idx_detail_enrichment_pending'"
+            ).fetchone()
+            current_index_sql = ' '.join(index_row['sql'].split()).lower() if index_row else None
+            expected_index_sql = ' '.join(
+                _CREATE_DETAIL_ENRICHMENT_PENDING_INDEX.split()
+            ).lower()
+            if current_index_sql != expected_index_sql:
+                if index_row:
+                    conn.execute("DROP INDEX idx_detail_enrichment_pending")
+                conn.execute(_CREATE_DETAIL_ENRICHMENT_PENDING_INDEX)
             migration_timestamp = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
             conn.execute(
                 "UPDATE patents SET updated_at=COALESCE(NULLIF(timestamp, ''), ?) "
@@ -222,7 +262,7 @@ class PatentsDB:
         记录不存在时静默跳过。
 
         注意：不经过 _encode()，避免把未传入的列填为 NULL。
-        JSON 字段（fwxx_list / bhsjtzs_data）会在此处按需序列化。
+        JSON 字段会在此处按需序列化。
         """
         if not fields:
             return
@@ -524,6 +564,32 @@ class PatentsDB:
             ).fetchall()
         return {r['application_no'] for r in rows}
 
+    def detail_enrichment_pending_app_nos(
+        self,
+        rejection_status: str = '驳回等复审请求',
+    ) -> list[str]:
+        """返回发文或费用任一项尚未采集的驳回案件申请号。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT application_no FROM patents WHERE anjianywzt=? AND "
+                "(fwxx_list IS NULL OR payable_fee_records IS NULL "
+                "OR paid_fee_records IS NULL "
+                "OR fee_receipt_dispatch_records IS NULL)",
+                (rejection_status,),
+            ).fetchall()
+        return [row['application_no'] for row in rows]
+
+    def detail_enrichment_completed_app_nos(self) -> set[str]:
+        """返回发文、应缴、已缴和收据发文均已采集的申请号。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT application_no FROM patents WHERE fwxx_list IS NOT NULL "
+                "AND payable_fee_records IS NOT NULL "
+                "AND paid_fee_records IS NOT NULL "
+                "AND fee_receipt_dispatch_records IS NOT NULL"
+            ).fetchall()
+        return {row['application_no'] for row in rows}
+
     # ── 需求队列 ──────────────────────────────────────────────────────────
 
     def submit_request(self, app_nos: list[str], requester_ip: str, note: str = '') -> str:
@@ -631,9 +697,26 @@ class PatentsDB:
                     SUM(CASE WHEN status_code IS NULL OR status_code=? THEN 1 ELSE 0 END) AS pending,
                     SUM(CASE WHEN anjianywzt=? THEN 1 ELSE 0 END) AS rejection,
                     SUM(CASE WHEN fwxx_list IS NOT NULL THEN 1 ELSE 0 END) AS fwxx_collected,
-                    SUM(CASE WHEN anjianywzt=? AND fwxx_list IS NULL THEN 1 ELSE 0 END) AS fwxx_pending
+                    SUM(CASE WHEN anjianywzt=? AND fwxx_list IS NULL THEN 1 ELSE 0 END) AS fwxx_pending,
+                    SUM(CASE WHEN anjianywzt=? AND fwxx_list IS NOT NULL
+                                  AND payable_fee_records IS NOT NULL
+                                  AND paid_fee_records IS NOT NULL
+                                  AND fee_receipt_dispatch_records IS NOT NULL
+                             THEN 1 ELSE 0 END) AS detail_enrichment_completed,
+                    SUM(CASE WHEN anjianywzt=? AND (
+                                  fwxx_list IS NULL OR payable_fee_records IS NULL
+                                  OR paid_fee_records IS NULL
+                                  OR fee_receipt_dispatch_records IS NULL)
+                             THEN 1 ELSE 0 END) AS detail_enrichment_pending
                 FROM patents
-            """, (PENDING_STATUS_CODE, PENDING_STATUS_CODE, rejection_status, rejection_status)).fetchone()
+            """, (
+                PENDING_STATUS_CODE,
+                PENDING_STATUS_CODE,
+                rejection_status,
+                rejection_status,
+                rejection_status,
+                rejection_status,
+            )).fetchone()
 
             # 2. 业务状态分布 TOP 12
             status_rows = conn.execute("""
@@ -665,10 +748,19 @@ class PatentsDB:
                 FROM patents ORDER BY timestamp DESC LIMIT 16
             """).fetchall()
 
-            # 6. 待补采发文 TOP 20
-            pending_rows = conn.execute("""
+            # 6. 旧发文待补列表与新详情待补列表保持各自兼容语义
+            fwxx_pending_rows = conn.execute("""
                 SELECT application_no, anjianywzt, timestamp FROM patents
                 WHERE anjianywzt=? AND fwxx_list IS NULL
+                ORDER BY timestamp DESC LIMIT 20
+            """, (rejection_status,)).fetchall()
+            detail_pending_rows = conn.execute("""
+                SELECT application_no, anjianywzt, timestamp FROM patents
+                WHERE anjianywzt=? AND (
+                    fwxx_list IS NULL OR payable_fee_records IS NULL
+                    OR paid_fee_records IS NULL
+                    OR fee_receipt_dispatch_records IS NULL
+                )
                 ORDER BY timestamp DESC LIMIT 20
             """, (rejection_status,)).fetchall()
 
@@ -705,6 +797,8 @@ class PatentsDB:
             'rejection': agg['rejection'] or 0,
             'fwxx_collected': agg['fwxx_collected'] or 0,
             'fwxx_pending': agg['fwxx_pending'] or 0,
+            'detail_enrichment_completed': agg['detail_enrichment_completed'] or 0,
+            'detail_enrichment_pending': agg['detail_enrichment_pending'] or 0,
             'status_counts': [[r['anjianywzt'], r['cnt']] for r in status_rows],
             'applicant_counts': [
                 [name, count]
@@ -712,7 +806,8 @@ class PatentsDB:
             ],
             'daily_counts': daily_counts,
             'recent': [dict(r) for r in recent_rows],
-            'fwxx_pending_list': [dict(r) for r in pending_rows],
+            'fwxx_pending_list': [dict(r) for r in fwxx_pending_rows],
+            'detail_enrichment_pending_list': [dict(r) for r in detail_pending_rows],
             # 驳回企业列表：[{"name": str, "invention_count": int}, ...]
             'rejection_companies': [
                 {'name': name, 'invention_count': count}

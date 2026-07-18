@@ -96,18 +96,25 @@ if len(collected_fields) < 14 or timeout:
 
 ---
 
-### 发文信息（3 字段 - 由补采脚本负责）
+### 发文与费用信息（8 字段 - 由补采脚本负责）
 
 **触发条件**:
 - 主流程不负责发文采集
-- 补采脚本筛选：`anjianywzt == '驳回等复审请求'` 且 `fwxx_list == null`
+- 补采脚本筛选：`anjianywzt == '驳回等复审请求'` 且发文、应缴、已缴或收据发文任一字段为 `null`；滞纳金栏目可缺失
 
 **采集流程** (collect_fwxx.py):
-1. 加载 detection_log.json，筛选未采发文的驳回复审案件
+1. 从 SQLite 筛选详情字段未完整的驳回复审案件
 2. 点击"发文信息"标签
 3. MITM 拦截对应 API 响应
 4. 解析 `fwxx_list`、`bhsjtzs_xiazaisj`、`bhsjtzs_data`
-5. 更新 detection_log.json 中对应申请号的发文字段
+5. 点击“费用信息”标签并独立解析 `payable_fee_records`、`late_fee_schedule_records`、`paid_fee_records`、`fee_receipt_dispatch_records`
+6. 字段级更新 SQLite；批次完成后刷新 JSONL 备份和 Excel
+
+**待缴分析口径**:
+- 只分析 CNIPA 费用状态精确为“未缴”的记录
+- 应缴列表包含未来年度年费，按缴费截止日分层，不能将整张表视为当前欠费
+- 滞纳金多行是同一费用在不同日期区间的互斥档位；按分析日选择唯一一档，禁止相加
+- 滞纳金栏目缺失保留为 `NULL`，不伪装为成功空列表 `[]`
 
 **执行方式**:
 ```bash

@@ -67,16 +67,19 @@ import pyautogui
 sys.path.insert(0, os.path.dirname(__file__))
 from atomic_write import write_json_atomic
 from detection_logger import DetectionLogger
-from browser_utils import (
-    is_browser_alive,
-)
+from browser_utils import is_browser_alive
 from coordinate_service import CoordinateService
 from browser_service import BrowserService
 from input_service import InputService
-from cache_utils import write_json_cache, poll_cache_for_key, clear_cache_key, parse_app_no_list
+from cache_utils import (
+    write_json_cache,
+    poll_cache_for_key,
+    clear_cache_key,
+    parse_app_no_list,
+)
 from settings import (
     CNIPA_URL, DETECTION_LOG_JSONL_FILE, CONFIG_FILE, CONFIG_FWXX_FILE,
-    PATENT_CACHE_FILE, PATENT_FWXX_CACHE_FILE, MARKER_FILE,
+    PATENT_CACHE_FILE, PATENT_FEE_CACHE_FILE, PATENT_FWXX_CACHE_FILE, MARKER_FILE,
     FWXX_UNMATCHED_FILE, PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE,
     USE_MITM_PROXY,
     PATENTS_DB_FILE,
@@ -103,6 +106,7 @@ DETECTION_LOG_FILE = str(DETECTION_LOG_JSONL_FILE)
 CONFIG_FILE = str(CONFIG_FILE)
 CONFIG_FWXX_FILE = str(CONFIG_FWXX_FILE)
 PATENT_CACHE_FILE = str(PATENT_CACHE_FILE)
+PATENT_FEE_CACHE_FILE = str(PATENT_FEE_CACHE_FILE)
 PATENT_FWXX_CACHE_FILE = str(PATENT_FWXX_CACHE_FILE)
 MARKER_FILE = str(MARKER_FILE)
 FWXX_UNMATCHED_FILE = str(FWXX_UNMATCHED_FILE)
@@ -132,19 +136,19 @@ def load_target_applications() -> list:
 
     筛选条件：
     1. anjianywzt == '驳回等复审请求'
-    2. fwxx_list IS NULL（支持断点续传）
+    2. 发文、已缴费或收据发文任一项尚未采集（支持断点续传）
     """
     db = PatentsDB(PATENTS_DB_FILE)
     summary = db.get_summary()
     total_bhsj = summary['rejection']
-    already_collected = summary['fwxx_collected']
-    targets = db.fwxx_uncollected_app_nos()
+    targets = db.detail_enrichment_pending_app_nos()
+    already_collected = max(0, total_bhsj - len(targets))
 
     print("\n" + "="*60)
-    print("📊 发文信息采集统计")
+    print("📊 发文及费用信息采集统计")
     print("="*60)
     print(f"✓ 驳回等复审请求: 共 {total_bhsj} 条")
-    print(f"✓ 已采集发文信息: {already_collected} 条")
+    print(f"✓ 已完整采集发文及费用: {already_collected} 条")
     print(f"⏳ 待采集: {len(targets)} 条")
     print("="*60 + "\n")
 
@@ -172,7 +176,7 @@ def load_standalone_targets(
     Args:
         input_file: 申请号列表文件路径（一行一个）
         app_nos: 逗号分隔的申请号字符串
-        force: 不跳过已有发文信息的申请号
+        force: 不跳过已有完整详情信息的申请号
 
     Returns:
         申请号列表
@@ -196,7 +200,7 @@ def load_standalone_targets(
 
     if targets:
         if force:
-            print("[*] 强制采集：不按案件状态筛选，也不跳过已有发文记录")
+            print("[*] 强制采集：不按案件状态筛选，也不跳过已有发文及费用记录")
         else:
             # 加载已采集的结果，支持断点续传
             collected = _load_standalone_collected()
@@ -222,9 +226,9 @@ def load_standalone_targets(
 
 
 def _load_standalone_collected() -> set:
-    """返回已有 fwxx_list 的申请号（断点续传用），走轻量查询避免全表 JSON 解码"""
+    """返回发文和费用均已采集的申请号，供独立模式断点续传。"""
     try:
-        return PatentsDB(PATENTS_DB_FILE).fwxx_collected_app_nos()
+        return PatentsDB(PATENTS_DB_FILE).detail_enrichment_completed_app_nos()
     except Exception:
         return set()
 
@@ -235,6 +239,15 @@ def _load_standalone_collected() -> set:
 # ============================================================================
 # Part 4: 单个申请号采集流程
 # ============================================================================
+
+def _mark_current_detail_target(application_no: str) -> None:
+    """刷新 MITM 关联标记；每次点击详情菜单前调用。"""
+    written_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+    write_json_cache(MARKER_FILE, {
+        'application_no': application_no,
+        'written_at': written_at,
+    })
+
 
 def collect_one_fwxx(
     driver,
@@ -249,15 +262,15 @@ def collect_one_fwxx(
     fwxx_menu_y: int,
 ) -> dict:
     """
-    采集单个申请号的发文信息
+    在同一个详情页采集单个申请号的发文与费用信息。
 
     步骤：
     1. 搜索申请号（PyAutoGUI 输入）
     2. 点击申请号链接进入详情页（新标签）
     3. 点击"发文信息"菜单
-    4. 标记当前申请号
-    5. MITM 拦截 API
-    6. 从缓存读取数据
+    4. 从缓存读取发文数据
+    5. 刷新标记并点击费用信息菜单
+    6. 从缓存读取费用数据
     7. 关闭详情页标签，回到搜索页
 
     Args:
@@ -269,19 +282,21 @@ def collect_one_fwxx(
         fwxx_menu_x, fwxx_menu_y: 发文信息菜单坐标
 
     Returns:
-        发文信息字典，或 None 失败
+        本次成功采集到的字段，或 None
     """
+    collected_fields = {}
     try:
         # 检测浏览器是否还活着
         if not is_browser_alive(driver):
             print(f"    [!] 浏览器已关闭，无法采集")
             return None
 
-        print(f"\n  [{application_no}] 开始采集发文信息...")
+        print(f"\n  [{application_no}] 开始采集发文及费用信息...")
 
         # 清理缓存中的旧数据（防止脏数据干扰）
         try:
             clear_cache_key(PATENT_FWXX_CACHE_FILE, application_no)
+            clear_cache_key(PATENT_FEE_CACHE_FILE, application_no)
         except Exception:
             pass
 
@@ -318,31 +333,27 @@ def collect_one_fwxx(
         # 自动点击申请号链接
         print(f"    [*] 点击申请号链接进入详情页...")
 
-        # 记录点击前的标签数量（用于检测是否成功打开新标签）
         tabs_before = len(driver.window_handles)
 
         InputService.move_and_click(link_x, link_y, post_click_wait=FWXX_DETAIL_CLICK_WAIT)
 
-        # 检查是否打开了新标签页
-        tabs_after = len(driver.window_handles)
-        if tabs_after <= tabs_before:
-            # 没有打开新标签 → 搜索失败、无结果或点击无效
+        if len(driver.window_handles) <= tabs_before:
             print(f"    [!] 搜索结果无效或点击失败（标签数未增加）")
             print(f"    [*] 跳过此申请号，继续下一个...")
             return None
 
-        # Selenium 切换到新标签页（⚠️ 关键）
         driver.switch_to.window(driver.window_handles[-1])
         time.sleep(FWXX_TAB_SWITCH_WAIT)
         print(f"    [✓] 已切换到详情页标签")
+
+        fee_menu_x, fee_menu_y = CoordinateService.load_or_record_fee_menu_coordinates()
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 步骤 3：写入申请号标记文件（解决 MITM 关联问题）
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-        # ⚠️ 在点击"发文信息"之前标记申请号（带时间戳，MITM 端通过 TTL 丢弃陈旧标记）
-        written_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
-        write_json_cache(MARKER_FILE, {'application_no': application_no, 'written_at': written_at})
+        # ⚠️ 点击详情菜单前标记申请号，MITM 端通过 TTL 丢弃陈旧标记。
+        _mark_current_detail_target(application_no)
         print(f"    [*] 标记申请号: {application_no}")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -350,7 +361,11 @@ def collect_one_fwxx(
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
         print(f"    [*] 点击'发文信息'菜单...")
-        InputService.move_and_click(fwxx_menu_x, fwxx_menu_y, post_click_wait=FWXX_MENU_CLICK_WAIT)
+        InputService.move_and_click(
+            fwxx_menu_x,
+            fwxx_menu_y,
+            post_click_wait=FWXX_MENU_CLICK_WAIT,
+        )
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 步骤 5：从缓存读取发文信息（轮询等待）
@@ -364,29 +379,58 @@ def collect_one_fwxx(
             # 降级处理：关闭标签但继续
         else:
             print(f"    [✓] 成功读取发文信息")
+            collected_fields.update(fwxx_data)
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # 步骤 6：关闭详情页标签，回到搜索页
+        # 步骤 6：点击费用信息并读取缓存
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-        # 只有在有多个标签时才关闭
+        _mark_current_detail_target(application_no)
+        print(f"    [*] 点击'费用信息'菜单...")
+        InputService.move_and_click(
+            fee_menu_x,
+            fee_menu_y,
+            post_click_wait=FWXX_MENU_CLICK_WAIT,
+        )
+
+        print(f"    [*] 从 MITM 缓存读取费用信息...")
+        fee_data = poll_cache_for_key(
+            PATENT_FEE_CACHE_FILE,
+            application_no,
+            max_wait=FWXX_CACHE_POLL_TIMEOUT,
+        )
+        if fee_data is None:
+            print(f"    [!] 未从缓存中获得费用信息")
+        else:
+            fee_counts = []
+            for field, label in (
+                ('payable_fee_records', '应缴费'),
+                ('late_fee_schedule_records', '应缴滞纳金'),
+                ('paid_fee_records', '已缴费'),
+                ('fee_receipt_dispatch_records', '收据发文'),
+            ):
+                if field in fee_data:
+                    fee_counts.append(f"{label} {len(fee_data[field])} 条")
+                else:
+                    fee_counts.append(f"{label} 未返回")
+            print(f"    [✓] 成功读取费用信息：{'; '.join(fee_counts)}")
+            collected_fields.update(fee_data)
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 步骤 7：关闭详情页标签，回到搜索页
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
         if len(driver.window_handles) > 1:
             print(f"    [*] 关闭详情页标签...")
             pyautogui.hotkey('ctrl', 'w')
             time.sleep(FWXX_DETAIL_CLOSE_WAIT)
-
-            # Selenium 切回搜索页标签
             driver.switch_to.window(driver.window_handles[0])
             time.sleep(FWXX_TAB_SWITCH_WAIT)
             print(f"    [✓] 已回到搜索页")
-        else:
-            print(f"    [⚠️ ] 没有多余标签可关闭")
-
-        return fwxx_data
+        return collected_fields or None
 
     except Exception as e:
         print(f"    [!] 采集失败: {str(e)[:100]}")
-        # 清理所有多余的标签页，回到搜索页
         try:
             while len(driver.window_handles) > 1:
                 driver.switch_to.window(driver.window_handles[-1])
@@ -395,16 +439,16 @@ def collect_one_fwxx(
             driver.switch_to.window(driver.window_handles[0])
         except Exception:
             pass
-        return None
+        return collected_fields or None
 
 
 # ============================================================================
 # Part 5: 日志更新函数
 # ============================================================================
 
-def update_detection_log(application_no: str, fwxx_data: dict) -> bool:
+def update_detection_log(application_no: str, detail_fields: dict) -> bool:
     """
-    将采集到的发文信息写回 PatentsDB。
+    将本次采集成功的发文与费用字段写回 PatentsDB。
 
     使用 update_fields（字段级更新）而非 upsert（整行覆盖），
     避免与 main_automation.py 的并发写入互相覆盖。
@@ -417,37 +461,57 @@ def update_detection_log(application_no: str, fwxx_data: dict) -> bool:
         db = PatentsDB(PATENTS_DB_FILE)
         if db.get_record(application_no) is None:
             print(f"    [!] {application_no} 不在 DB 中，写入 {FWXX_UNMATCHED_FILE}")
-            _append_unmatched(application_no, fwxx_data, reason='not_found_in_db')
+            _append_unmatched(application_no, detail_fields, reason='not_found_in_db')
             return False
 
-        db.update_fields(application_no, {
-            'fwxx_list':        fwxx_data.get('fwxx_list'),
-            'bhsjtzs_xiazaisj': fwxx_data.get('bhsjtzs_xiazaisj'),
-            'bhsjtzs_data':     fwxx_data.get('bhsjtzs_data'),
-            'timestamp':        datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-        })
+        persisted_fields = {
+            field: detail_fields[field]
+            for field in (
+                'fwxx_list',
+                'bhsjtzs_xiazaisj',
+                'bhsjtzs_data',
+                'payable_fee_records',
+                'late_fee_schedule_records',
+                'paid_fee_records',
+                'fee_receipt_dispatch_records',
+                'fee_snapshot_at',
+            )
+            if field in detail_fields
+        }
+        persisted_fields['timestamp'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        db.update_fields(application_no, persisted_fields)
         return True
     except Exception as e:
         print(f"    [!] 日志更新失败: {e}")
-        _append_unmatched(application_no, fwxx_data, reason=f'update_failed: {e}')
+        _append_unmatched(application_no, detail_fields, reason=f'update_failed: {e}')
         return False
 
 
-def _append_unmatched(application_no: str, fwxx_data: dict, reason: str = '') -> None:
-    """将无法匹配到 detection_log 的游离 fwxx 数据追加到 unmatched 文件"""
+def _append_unmatched(application_no: str, detail_fields: dict, reason: str = '') -> None:
+    """将无法匹配到主库的详情采集字段追加到 unmatched 文件。"""
     try:
         if os.path.exists(FWXX_UNMATCHED_FILE):
             with open(FWXX_UNMATCHED_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
         else:
             data = {'records': []}
-        data['records'].append({
+        unmatched_record = {
             'application_no': application_no,
             'reason': reason,
-            'fwxx_list': fwxx_data.get('fwxx_list'),
-            'bhsjtzs_xiazaisj': fwxx_data.get('bhsjtzs_xiazaisj'),
-            'bhsjtzs_data': fwxx_data.get('bhsjtzs_data'),
-        })
+        }
+        for field in (
+            'fwxx_list',
+            'bhsjtzs_xiazaisj',
+            'bhsjtzs_data',
+            'payable_fee_records',
+            'late_fee_schedule_records',
+            'paid_fee_records',
+            'fee_receipt_dispatch_records',
+            'fee_snapshot_at',
+        ):
+            if field in detail_fields:
+                unmatched_record[field] = detail_fields[field]
+        data['records'].append(unmatched_record)
         write_json_atomic(FWXX_UNMATCHED_FILE, data)
     except Exception as e:
         print(f"    [!] 写入 unmatched 失败: {e}")
@@ -469,9 +533,9 @@ def run_fwxx_collection(args) -> None:
 
     print("\n" + "="*70)
     if standalone_mode:
-        print("🚀 发文信息采集程序启动（独立模式）")
+        print("🚀 发文及费用信息采集程序启动（独立模式）")
     else:
-        print("🚀 发文信息采集程序启动")
+        print("🚀 发文及费用信息采集程序启动")
     print("="*70)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -493,7 +557,7 @@ def run_fwxx_collection(args) -> None:
         if standalone_mode:
             print("✓ 无待采集的申请号（可能已全部采集完毕）")
         else:
-            print("✓ 无需采集，所有驳回案件的发文信息都已采集！")
+            print("✓ 无需采集，所有驳回案件的发文及费用信息都已采集！")
         return
 
     # 测试模式
@@ -552,7 +616,7 @@ def run_fwxx_collection(args) -> None:
             print(f"\n[{idx}/{len(targets)}] 申请号: {application_no}")
 
             # 采集单个申请号
-            fwxx_data = collect_one_fwxx(
+            detail_fields = collect_one_fwxx(
                 driver=driver,
                 application_no=application_no,
                 input_x=input_x,
@@ -566,8 +630,8 @@ def run_fwxx_collection(args) -> None:
             )
 
             # 更新日志（统一写入 detection_log）
-            if fwxx_data:
-                if update_detection_log(application_no, fwxx_data):
+            if detail_fields:
+                if update_detection_log(application_no, detail_fields):
                     print(f"  ✅ 已成功采集并更新日志")
                     success_count += 1
                 else:

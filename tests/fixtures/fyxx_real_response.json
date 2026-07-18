@@ -1,0 +1,60 @@
+{
+  "code": 200,
+  "data": {
+    "yingjiaofei": {
+      "isShow": true,
+      "svYingjfList": [
+        {
+          "yingjiaoffyzlmc": "恢复权利请求费",
+          "yingjiaoje": 1000,
+          "jiaofeijzr": "2026-09-09",
+          "yingjiaoffyzt": "未缴"
+        }
+      ]
+    },
+    "zhinajin": {
+      "isShow": true,
+      "svZnjList": [
+        {
+          "zhinajjfsj": "2026年01月06日至2026年02月03日",
+          "zhinajdqnfje": 1200,
+          "zhinajyjznje": 60,
+          "zhinajzj": 1260
+        }
+      ]
+    },
+    "yijiaofei": {
+      "isShow": true,
+      "svYijfList": [
+        {
+          "yijiaofjfzlmc": "发明专利申请实质审查费",
+          "yijiaofjfje": 375,
+          "yijiaofjfrq": "2026-03-11",
+          "yijiaofjfrxm": "某专利代理事务所",
+          "yijiaofpjdm": "00010125",
+          "yijiaofpjhm": "0026303067"
+        }
+      ]
+    },
+    "shoujufawen": {
+      "isShow": true,
+      "svSjfwList": [
+        {
+          "shoujufwfyzlmc": "发明专利申请实质审查费",
+          "shoujufwjfje": 375,
+          "shoujufwjfrxm": "某专利代理事务所",
+          "shoujufwjfsj": "2026-03-11",
+          "shoujufwsjh": "0026303067",
+          "shoujufwsjtt": "某专利代理事务所",
+          "shoujufwyjdz": "",
+          "shoujufwtkrq": "",
+          "shoujufwsfjc": "",
+          "shoujufwfwrq": "",
+          "shoujufwghhm": "",
+          "shoujufwtkhcrq": ""
+        }
+      ]
+    }
+  },
+  "msg": "成功"
+}

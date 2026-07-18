@@ -128,6 +128,49 @@ class CoordinateService:
         return link_x, link_y, fwxx_menu_x, fwxx_menu_y
 
     @staticmethod
+    def load_or_record_fee_menu_coordinates():
+        """加载费用信息菜单坐标；旧配置缺少该坐标时只补录这一项。"""
+        config = {}
+        if os.path.exists(CONFIG_FWXX_FILE):
+            try:
+                with open(CONFIG_FWXX_FILE, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                if 'fee_menu_x' in config and 'fee_menu_y' in config:
+                    print("\n✓ 从配置文件加载费用信息菜单位置")
+                    print(f"  菜单: ({config['fee_menu_x']}, {config['fee_menu_y']})")
+                    return config['fee_menu_x'], config['fee_menu_y']
+            except Exception as e:
+                print(f"⚠️  配置文件读取失败: {e}")
+
+        return CoordinateService._record_fee_menu_coordinates(config)
+
+    @staticmethod
+    def _record_fee_menu_coordinates(config: dict):
+        """补录详情页左侧的费用信息菜单坐标。"""
+        print("\n" + "="*60)
+        print("📍 鼠标位置记录 - 费用信息菜单")
+        print("="*60)
+        print("⚠️  紧急停止: 把鼠标甩到屏幕左上角")
+        print("\n▶ 详情页已自动打开，请把鼠标移到左侧 [费用信息] 菜单")
+        CoordinateService._countdown(20, "等待用户移动鼠标到费用信息菜单")
+        fee_menu_x, fee_menu_y = pyautogui.position()
+        print(f"  ✓ 费用信息菜单: ({fee_menu_x}, {fee_menu_y})   ")
+
+        updated_config = dict(config) if isinstance(config, dict) else {}
+        updated_config.update({
+            'fee_menu_x': fee_menu_x,
+            'fee_menu_y': fee_menu_y,
+            'last_updated': datetime.now().isoformat(),
+        })
+        try:
+            write_json_atomic(CONFIG_FWXX_FILE, updated_config)
+            print("\n✓ 费用信息菜单位置已保存")
+        except Exception as e:
+            print(f"\n⚠️  保存配置失败: {e}")
+
+        return fee_menu_x, fee_menu_y
+
+    @staticmethod
     def _countdown(seconds: int, message: str = "请手动记录坐标，倒计时"):
         """倒计时提示"""
         for i in range(seconds, 0, -1):

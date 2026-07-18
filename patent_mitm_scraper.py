@@ -18,7 +18,13 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from detection_logger import DetectionLogger
 from cache_utils import normalize_app_no, read_json_cache, write_json_cache
-from settings import FORCE_UPDATE_FLAG, PATENT_CACHE_FILE, PATENT_FWXX_CACHE_FILE, MARKER_FILE
+from settings import (
+    FORCE_UPDATE_FLAG,
+    MARKER_FILE,
+    PATENT_CACHE_FILE,
+    PATENT_FEE_CACHE_FILE,
+    PATENT_FWXX_CACHE_FILE,
+)
 
 # 将 Path 对象转换为字符串（用于文件操作）
 FORCE_UPDATE_FLAG = str(FORCE_UPDATE_FLAG)
@@ -30,6 +36,7 @@ class PatentMITMScraper:
     # 路由表：URL 关键词 → 处理方法名。匹配顺序为列表顺序，首个命中即分派。
     # 不匹配任何路由的 JSON 响应走默认的 _process_record()（提取专利列表数据）。
     _API_ROUTES = [
+        ('/api/view/gn/fyxx', '_process_fee_response'),
         ('/api/view/gn/fwxx', '_process_fwxx_response'),
         ('/api/view/gn/sqxx', '_process_sqxx_response'),
     ]
@@ -262,7 +269,7 @@ class PatentMITMScraper:
             # 从 URL 参数或其他地方提取申请号
             # URL 格式: /api/view/gn/fwxx?hHp4Kgam=...
             # 需要从浏览器上下文获取申请号，暂时使用占位符
-            application_no = self._extract_app_no_from_fwxx(flow, bhsj_data)
+            application_no = self._read_recent_target_app_no()
 
             if not application_no:
                 print(f"[-] 无法提取申请号")
@@ -287,18 +294,93 @@ class PatentMITMScraper:
         except Exception as e:
             print(f"[!] 处理发文信息失败: {e}")
 
-    def _extract_app_no_from_fwxx(self, flow: http.HTTPFlow, bhsj_data: dict) -> str:
+    def _process_fee_response(self, flow: http.HTTPFlow) -> None:
+        """处理费用信息响应，独立保留四个费用栏目的完整原始记录。"""
+        try:
+            response_text = flow.response.content.decode('utf-8', errors='replace')
+            response_payload = json.loads(response_text)
+
+            if response_payload.get('code') != 200:
+                print(
+                    f"[-] 费用信息 API 错误: code={response_payload.get('code')}, "
+                    f"msg={response_payload.get('msg')}"
+                )
+                return
+
+            fee_sections = response_payload.get('data')
+            if not isinstance(fee_sections, dict):
+                print('[-] 费用信息响应缺少 data 对象')
+                return
+
+            def extract_section_records(section_name: str, list_name: str):
+                if section_name not in fee_sections:
+                    print(f'[*] 费用栏目 {section_name} 未返回，已省略')
+                    return None
+                section = fee_sections.get(section_name)
+                if not isinstance(section, dict):
+                    print(f'[-] 费用栏目 {section_name} 不是对象，已省略')
+                    return None
+                if list_name not in section:
+                    print(f'[*] 费用栏目 {section_name}.{list_name} 未返回，已省略')
+                    return None
+                records = section[list_name]
+                if not isinstance(records, list):
+                    print(f'[-] 费用栏目 {section_name}.{list_name} 不是列表')
+                    return None
+                if not all(isinstance(record, dict) for record in records):
+                    print(f'[-] 费用栏目 {section_name}.{list_name} 包含非对象记录')
+                    return None
+                return records
+
+            fee_section_specs = (
+                ('payable_fee_records', 'yingjiaofei', 'svYingjfList'),
+                ('late_fee_schedule_records', 'zhinajin', 'svZnjList'),
+                ('paid_fee_records', 'yijiaofei', 'svYijfList'),
+                ('fee_receipt_dispatch_records', 'shoujufawen', 'svSjfwList'),
+            )
+            fee_cache_entry = {}
+            for cache_field, section_name, list_name in fee_section_specs:
+                records = extract_section_records(section_name, list_name)
+                if records is not None:
+                    fee_cache_entry[cache_field] = records
+
+            if 'payable_fee_records' in fee_cache_entry:
+                fee_cache_entry['fee_snapshot_at'] = (
+                    datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+                )
+
+            if not fee_cache_entry:
+                print('[-] 费用信息响应没有可缓存的有效栏目')
+                return
+
+            application_no = self._read_recent_target_app_no()
+            if not application_no:
+                return
+
+            with self._cache_lock:
+                fee_cache = read_json_cache(str(PATENT_FEE_CACHE_FILE))
+                fee_cache[application_no] = fee_cache_entry
+                write_json_cache(str(PATENT_FEE_CACHE_FILE), fee_cache)
+
+            section_counts = ', '.join(
+                f'{cache_field} {len(fee_cache_entry[cache_field])} 条'
+                for cache_field, _, _ in fee_section_specs
+                if cache_field in fee_cache_entry
+            )
+            print(
+                f"[✓] 费用信息已缓存: {application_no} "
+                f"({section_counts})"
+            )
+        except json.JSONDecodeError as e:
+            print(f'[!] 费用信息 JSON 解析失败: {e}')
+        except Exception as e:
+            print(f'[!] 处理费用信息失败: {e}')
+
+    def _read_recent_target_app_no(self) -> str:
         """
-        从发文信息 API 响应中提取申请号
+        从详情采集标记读取当前申请号。
 
-        ⚠️  优先级策略：
-        1. 从标记文件读取（collect_fwxx.py 设置）- Phase 2 专用
-        2. 从 Request Headers 中的 Referer 提取
-        3. 从最近修改的 patent_cache.json 推断
-
-        Args:
-            flow: HTTP 流对象
-            bhsj_data: 驳回决定数据（可能包含收件人等线索）
+        标记超过 5 秒即视为陈旧，防止异步响应关联到下一件专利。
 
         Returns:
             申请号 或 None
@@ -307,7 +389,7 @@ class PatentMITMScraper:
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             # 方案 0（最优先）：从标记文件读取
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # collect_fwxx.py 在点击"发文信息"前会标记申请号
+            # collect_fwxx.py 在点击详情菜单前会标记申请号
             marker = read_json_cache(str(MARKER_FILE))
             app_no = marker.get('application_no')
             if app_no:
@@ -320,7 +402,7 @@ class PatentMITMScraper:
                         )
                         age = datetime.now(timezone.utc) - written_at
                         if age > timedelta(seconds=5):
-                            print(f"[-] 标记文件已过期（{age.total_seconds():.1f}s 前写入），跳过此发文响应")
+                            print(f"[-] 标记文件已过期（{age.total_seconds():.1f}s 前写入），跳过此详情响应")
                             return None
                     except Exception:
                         pass  # 解析失败时不拒绝，降级为无 TTL 行为
