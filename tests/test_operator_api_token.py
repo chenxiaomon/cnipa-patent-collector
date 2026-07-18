@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import json
 import tempfile
 import threading
 import unittest
@@ -54,3 +55,60 @@ class TestOperatorApiToken(unittest.TestCase):
             server.shutdown()
             server.server_close()
             server_thread.join(timeout=5)
+
+    def test_dashboard_saves_and_resets_all_coordinate_configs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / 'config.json'
+            detail_config_path = Path(tmpdir) / 'config_fwxx.json'
+            web_dashboard.DashboardHandler.job_manager = web_dashboard.JobManager()
+
+            with (
+                patch.object(web_dashboard, 'CONFIG_FILE', config_path),
+                patch.object(web_dashboard, 'CONFIG_FWXX_FILE', detail_config_path),
+                patch.object(web_dashboard, 'api_token_matches', return_value=True),
+            ):
+                server = web_dashboard.ThreadingHTTPServer(
+                    ('127.0.0.1', 0), web_dashboard.DashboardHandler
+                )
+                server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+                server_thread.start()
+                base_url = f'http://127.0.0.1:{server.server_address[1]}'
+
+                def post(path: str, payload: dict) -> dict:
+                    request = urllib.request.Request(
+                        base_url + path,
+                        data=json.dumps(payload).encode('utf-8'),
+                        headers={'Content-Type': 'application/json'},
+                        method='POST',
+                    )
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        return json.loads(response.read().decode('utf-8'))
+
+                try:
+                    search_config = {'input_x': 10, 'input_y': 20, 'button_x': 30, 'button_y': 40}
+                    detail_config = {
+                        'link_x': 50,
+                        'link_y': 60,
+                        'fwxx_menu_x': 70,
+                        'fwxx_menu_y': 80,
+                        'fee_menu_x': 90,
+                        'fee_menu_y': 100,
+                    }
+                    post('/api/config', {
+                        'search_text': json.dumps(search_config),
+                        'detail_text': json.dumps(detail_config),
+                    })
+
+                    self.assertEqual(json.loads(config_path.read_text(encoding='utf-8')), search_config)
+                    self.assertEqual(json.loads(detail_config_path.read_text(encoding='utf-8')), detail_config)
+
+                    reset_response = post('/api/config/reset', {})
+                    self.assertFalse(config_path.exists())
+                    self.assertFalse(detail_config_path.exists())
+                    self.assertEqual(set(reset_response['backups']), {'search', 'detail'})
+                    for backup_path in reset_response['backups'].values():
+                        self.assertTrue(Path(backup_path).exists())
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    server_thread.join(timeout=5)

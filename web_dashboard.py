@@ -36,6 +36,7 @@ from settings import (
     BASE_DIR,
     COMPANY_META_FILE,
     CONFIG_FILE,
+    CONFIG_FWXX_FILE,
     DATA_DIR,
     DETECTION_LOG_FILE,
     DETECTION_LOG_JSONL_FILE,
@@ -593,6 +594,7 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
     retry_count = count_lines(DATA_DIR / "retry_dynamic.txt")
     failed_retry_count = count_lines(RETRY_FAILED_FILE)
     config = safe_json_load(CONFIG_FILE, {})
+    fwxx_config = safe_json_load(CONFIG_FWXX_FILE, {})
 
     active_jobs = [j for j in job_manager.list_jobs() if j.get("status") in {"running", "stopping"}]
 
@@ -603,6 +605,8 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
         warnings.append("鼠标坐标配置不存在")
     elif config.get("input_x") == config.get("button_x") and config.get("input_y") == config.get("button_y"):
         warnings.append("输入框和查询按钮坐标相同，强制测试可能无法点击查询按钮")
+    if not CONFIG_FWXX_FILE.exists():
+        warnings.append("详情页鼠标坐标配置不存在")
     if dynamic_count == 0:
         warnings.append("动态更新清单为空")
 
@@ -638,6 +642,7 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
             "reachable": port_open(MITM_HOST, MITM_PORT),
         },
         "config": config,
+        "fwxx_config": fwxx_config,
         "update_groups": update_groups,
         "status_counts": db_summary["status_counts"],
         "applicant_counts": db_summary["applicant_counts"],
@@ -1263,7 +1268,14 @@ HTML = r"""<!doctype html>
               <button class="btn primary"   id="saveConfig">保存配置</button>
             </div>
           </div>
-          <textarea id="configText" class="codebox" spellcheck="false"></textarea>
+          <label class="field">
+            <span>搜索页</span>
+            <textarea id="configText" class="codebox" spellcheck="false"></textarea>
+          </label>
+          <label class="field" style="margin-top:12px">
+            <span>详情页（申请号、发文信息、费用信息）</span>
+            <textarea id="fwxxConfigText" class="codebox" spellcheck="false"></textarea>
+          </label>
         </article>
         <article class="panel">
           <div class="panel-head"><h2>系统信息</h2><span class="hint">只读</span></div>
@@ -2087,7 +2099,10 @@ function renderSummary(data) {
 
   if (!state.configLoaded) {
     const ct = $('#configText');
-    if (ct) { ct.value = JSON.stringify(data.config || {}, null, 2); state.configLoaded = true; }
+    const ft = $('#fwxxConfigText');
+    if (ct) ct.value = JSON.stringify(data.config || {}, null, 2);
+    if (ft) ft.value = JSON.stringify(data.fwxx_config || {}, null, 2);
+    state.configLoaded = true;
   }
 
   // 角色切换：首次收到 is_operator 后设置 body class
@@ -2424,9 +2439,13 @@ function bindEvents() {
 
   $('#saveConfig').addEventListener('click', async () => {
     const ct = $('#configText');
-    if (!ct) return;
+    const ft = $('#fwxxConfigText');
+    if (!ct || !ft) return;
     try {
-      await api('/api/config', { method: 'POST', body: JSON.stringify({ text: ct.value }) });
+      await api('/api/config', {
+        method: 'POST',
+        body: JSON.stringify({ search_text: ct.value, detail_text: ft.value })
+      });
       showToast('坐标配置已保存');
       state.configLoaded = false;
       await refreshSummary();
@@ -2443,7 +2462,7 @@ function bindEvents() {
 
   $('#resetConfig').addEventListener('click', async () => {
     await api('/api/config/reset', { method: 'POST', body: '{}' });
-    showToast('旧坐标已备份，下次采集会重新记录');
+    showToast('全部旧坐标已备份，下次对应采集会重新记录');
     state.configLoaded = false;
     await refreshSummary();
   });
@@ -2874,7 +2893,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif path == "/api/search-list":
                 self.send_json({"text": safe_read_text(SEARCH_LIST_FILE), "path": str(SEARCH_LIST_FILE)})
             elif path == "/api/config":
-                self.send_json({"text": safe_read_text(CONFIG_FILE, "{}"), "path": str(CONFIG_FILE)})
+                self.send_json({
+                    "text": safe_read_text(CONFIG_FILE, "{}"),
+                    "path": str(CONFIG_FILE),
+                    "detail_text": safe_read_text(CONFIG_FWXX_FILE, "{}"),
+                    "detail_path": str(CONFIG_FWXX_FILE),
+                })
             elif path == "/api/credentials":
                 if not self.is_operator:
                     self.send_json({"error": "仅操作员可查看凭证"}, status=403)
@@ -3077,18 +3101,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "lines": len(search_app_nos)})
             elif path == "/api/config":
                 payload = self.read_json_body()
-                text = str(payload.get("text", "{}"))
-                parsed_json = json.loads(text)
+                search_text = str(payload.get("search_text", payload.get("text", "{}")))
+                detail_text = payload.get("detail_text")
+                search_config = json.loads(search_text)
+                detail_config = json.loads(str(detail_text)) if detail_text is not None else None
+                if not isinstance(search_config, dict):
+                    raise ValueError("搜索页坐标配置必须是 JSON 对象")
+                if detail_config is not None and not isinstance(detail_config, dict):
+                    raise ValueError("详情页坐标配置必须是 JSON 对象")
                 CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-                _write_text_atomic(CONFIG_FILE, json.dumps(parsed_json, ensure_ascii=False, indent=2) + "\n")
+                _write_text_atomic(CONFIG_FILE, json.dumps(search_config, ensure_ascii=False, indent=2) + "\n")
+                if detail_config is not None:
+                    _write_text_atomic(CONFIG_FWXX_FILE, json.dumps(detail_config, ensure_ascii=False, indent=2) + "\n")
                 self.send_json({"ok": True})
             elif path == "/api/config/reset":
-                backup = None
+                backups = {}
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 if CONFIG_FILE.exists():
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     backup = CONFIG_FILE.with_name(f"config_backup_{timestamp}.json")
                     CONFIG_FILE.rename(backup)
-                self.send_json({"ok": True, "backup": str(backup) if backup else None})
+                    backups["search"] = str(backup)
+                if CONFIG_FWXX_FILE.exists():
+                    detail_backup = CONFIG_FWXX_FILE.with_name(f"config_backup_fwxx_{timestamp}.json")
+                    CONFIG_FWXX_FILE.rename(detail_backup)
+                    backups["detail"] = str(detail_backup)
+                self.send_json({"ok": True, "backups": backups})
             elif path == "/api/login-ready":
                 flag = DATA_DIR / "login_ready.flag"
                 flag.parent.mkdir(parents=True, exist_ok=True)
