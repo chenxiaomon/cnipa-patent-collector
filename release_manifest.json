@@ -19,7 +19,27 @@
     },
     {
       "path": ".gitignore",
-      "sha256": "221a417bd9262eb3281606ad4d62634453571f9dd3afcfe77332c2aecfaceffd"
+      "sha256": "a6c5c3c93167a730922eaf90f3858f0fd5c8061b34cfb8fbc35ef867849a1583"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "sha256": "a1d7d3781174eb0aecf190985db520b47a1485ae56518427949ed8c8929cd50f"
+    },
+    {
+      "path": "CLAUDE.md",
+      "sha256": "151aa5ee067c4c1d0b46bf8e6083eeda3f566009c956767ee4e5ff3f9f6cb415"
+    },
+    {
+      "path": "Dockerfile",
+      "sha256": "a8d9642d1278f65d0b0ebc7733b52613f3aa6e2d97fc95ec46620b6b9e04f5f9"
+    },
+    {
+      "path": "QUICK_START.txt",
+      "sha256": "fe9eec52fbb3207fe5e878789905fdf0b6070830e712275849f41a595266c5eb"
+    },
+    {
+      "path": "VERSION",
+      "sha256": "388d4601836eda34344239eceec0fb778089982d042c0e03b31cc3bbceb25548"
     },
     {
       "path": "analyze_collection_status.py",
@@ -50,16 +70,8 @@
       "sha256": "89d7c414365c018b75acc3730d2f14779c52d4b391524e8c82450d6b3e4e7e10"
     },
     {
-      "path": "CHANGELOG.md",
-      "sha256": "a1d7d3781174eb0aecf190985db520b47a1485ae56518427949ed8c8929cd50f"
-    },
-    {
       "path": "check_update.py",
       "sha256": "d5b614bd3bf9f6b9f7b7d4aeac23e78a258e919de05fc6050ba3a52cec3d5532"
-    },
-    {
-      "path": "CLAUDE.md",
-      "sha256": "151aa5ee067c4c1d0b46bf8e6083eeda3f566009c956767ee4e5ff3f9f6cb415"
     },
     {
       "path": "code_release_safety.py",
@@ -96,10 +108,6 @@
     {
       "path": "docker-entrypoint.sh",
       "sha256": "a7ee4c896cc0d96e8ae33f5ca9479418352bd756a610dca4c7b223be791077b0"
-    },
-    {
-      "path": "Dockerfile",
-      "sha256": "a8d9642d1278f65d0b0ebc7733b52613f3aa6e2d97fc95ec46620b6b9e04f5f9"
     },
     {
       "path": "docs/ai-context.md",
@@ -278,10 +286,6 @@
       "sha256": "1c3fc2c83e9e6e8998c6f62982ea86b5ad00f4fcd09f65a79a12535b2baa276e"
     },
     {
-      "path": "QUICK_START.txt",
-      "sha256": "fe9eec52fbb3207fe5e878789905fdf0b6070830e712275849f41a595266c5eb"
-    },
-    {
       "path": "requirements.txt",
       "sha256": "bfb87ccd19c85656bd848d10a62eaa954db6cf6fca052b603ab0d3535ffc353b"
     },
@@ -307,7 +311,7 @@
     },
     {
       "path": "scripts/generate_code_manifest.py",
-      "sha256": "2e24b1b6e66838e16662cb44cd1a619071f42cfecfe443f72affff821cac6e3f"
+      "sha256": "e23cf1119c970b42886e99809e3ae518762fab319eff667665f75bb8919131d6"
     },
     {
       "path": "scripts/sync_version.py",
@@ -350,12 +354,12 @@
       "sha256": "9f37e162611cab997b55a9f3198b11c41bd60c4f1e2ed3e751cb03263febbb05"
     },
     {
-      "path": "tests/fixtures/fyxx_real_response.json",
-      "sha256": "69c38c5ce80a241a1b6952216c5ce15b7fa39c99dc7e169dc551ce99160ec4f8"
-    },
-    {
       "path": "tests/fixtures/README.md",
       "sha256": "d423fd5b6608bb1ea402c8ceb37110a48f57d55fb458b02739f138b3ad0c68a6"
+    },
+    {
+      "path": "tests/fixtures/fyxx_real_response.json",
+      "sha256": "69c38c5ce80a241a1b6952216c5ce15b7fa39c99dc7e169dc551ce99160ec4f8"
     },
     {
       "path": "tests/fixtures/sqxx_real_response.json",
@@ -396,6 +400,10 @@
     {
       "path": "tests/test_fetch_update.py",
       "sha256": "070c77c547968b2c03e744dc3bbe45940d91e8976788053dc75efa17fc160ca6"
+    },
+    {
+      "path": "tests/test_generate_code_manifest.py",
+      "sha256": "9d647f98578169d9f7e9a5f0c412d29749b4ce89ba012bda416b6fb1a0abdc28"
     },
     {
       "path": "tests/test_machine_identity.py",
@@ -468,10 +476,6 @@
     {
       "path": "validate_results.py",
       "sha256": "b7c03fb3523f654a5f080de2bff9f744a2c01542c2b3d049e0ad13b0669d7c33"
-    },
-    {
-      "path": "VERSION",
-      "sha256": "388d4601836eda34344239eceec0fb778089982d042c0e03b31cc3bbceb25548"
     },
     {
       "path": "web_dashboard.py",

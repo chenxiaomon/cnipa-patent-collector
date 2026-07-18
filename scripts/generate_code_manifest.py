@@ -3,14 +3,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_PATH = ROOT / 'release_manifest.json'
-sys.path.insert(0, str(ROOT))
 
 
 def tracked_release_files() -> list[Path]:
@@ -31,14 +30,22 @@ def tracked_release_files() -> list[Path]:
         path = ROOT / raw_path
         if path.is_file():
             files.append(path)
-    return sorted(files)
+    return sorted(files, key=lambda path: path.relative_to(ROOT).as_posix())
+
+
+def release_file_sha256(path: Path) -> str:
+    """Hash repository text as LF while preserving binary bytes unchanged."""
+    content = path.read_bytes()
+    # Git and GitHub raw downloads use LF for repository text; Windows working
+    # trees may contain CRLF. Git uses the same NUL heuristic to identify binary files.
+    if b'\0' not in content[:8000]:
+        content = content.replace(b'\r\n', b'\n')
+    return hashlib.sha256(content).hexdigest()
 
 
 def main() -> None:
-    from code_release_safety import sha256_file
-
     entries = [
-        {'path': path.relative_to(ROOT).as_posix(), 'sha256': sha256_file(path)}
+        {'path': path.relative_to(ROOT).as_posix(), 'sha256': release_file_sha256(path)}
         for path in tracked_release_files()
     ]
     payload = {
@@ -48,7 +55,7 @@ def main() -> None:
     temporary_path = MANIFEST_PATH.with_suffix('.tmp')
     temporary_path.write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
     temporary_path.replace(MANIFEST_PATH)
-    print(f'[✓] 已生成 {MANIFEST_PATH}（{len(entries)} 个文件）')
+    print(f'[OK] 已生成 {MANIFEST_PATH}（{len(entries)} 个文件）')
 
 
 if __name__ == '__main__':
