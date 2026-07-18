@@ -66,6 +66,7 @@ venv/
 Thumbs.db
 cockpit-tools-main/
 selenium-wire-master/
+outputs/
 data/public_query_ready.flag
 data/raw_responses_imported/
 data/results/*_backup_*.jsonl
