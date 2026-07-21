@@ -23,7 +23,7 @@
     },
     {
       "path": "CHANGELOG.md",
-      "sha256": "a1d7d3781174eb0aecf190985db520b47a1485ae56518427949ed8c8929cd50f"
+      "sha256": "c40bb65525462be404aa35eb2ba8adf80c7a7e83fd1f7d6a7ba901b007d36a27"
     },
     {
       "path": "CLAUDE.md",
@@ -39,7 +39,7 @@
     },
     {
       "path": "VERSION",
-      "sha256": "388d4601836eda34344239eceec0fb778089982d042c0e03b31cc3bbceb25548"
+      "sha256": "4f5abb6bfbfda9c1f275bb9898f0209c9a2ec21c8195ab065bfe05f80373e766"
     },
     {
       "path": "analyze_collection_status.py",
@@ -95,7 +95,7 @@
     },
     {
       "path": "db_manager.py",
-      "sha256": "43e5547db9031c25f05ea7c56941fcd6a111ed4323e4c1760ebd087cd88f8582"
+      "sha256": "67ecf9a1ac99675888897fbe9fa78fbaf63ee296554680c4780f92d7c57f4a2e"
     },
     {
       "path": "detection_logger.py",
@@ -279,7 +279,7 @@
     },
     {
       "path": "pyproject.toml",
-      "sha256": "5cf5a49135c43804c45a9b0980ecc129aba6aa5979a55ee9db5cd730b40e4621"
+      "sha256": "b65e9b70e081c76c5703317dd46be0b4763884e39639dda4aa4f0981e48cf868"
     },
     {
       "path": "quick_retry.sh",
@@ -402,6 +402,10 @@
       "sha256": "070c77c547968b2c03e744dc3bbe45940d91e8976788053dc75efa17fc160ca6"
     },
     {
+      "path": "tests/test_fwxx_dashboard_metrics.py",
+      "sha256": "92a35da4e3a62a5fec19e1b14a23bd01bbd28bd369d8321324071ad6007ac87c"
+    },
+    {
       "path": "tests/test_generate_code_manifest.py",
       "sha256": "9d647f98578169d9f7e9a5f0c412d29749b4ce89ba012bda416b6fb1a0abdc28"
     },
@@ -471,7 +475,7 @@
     },
     {
       "path": "uv.lock",
-      "sha256": "14e19765d93d28a38fa1158b31a0e6ca868bd99ee0465f25871e48f89031fdc5"
+      "sha256": "b9f7aefe8e8023d22f7ed3489389f76717c085214a1b7954ed648987d09be281"
     },
     {
       "path": "validate_results.py",
@@ -479,7 +483,7 @@
     },
     {
       "path": "web_dashboard.py",
-      "sha256": "84fdfb7e9ee5417684b7fcb85dc8a8e1bea6b594ad6bfef9648a02cb36cc9b45"
+      "sha256": "68313364a9db1579e5688af009c2e9772d2e374a8e994b7588408875d9b935a9"
     }
   ]
 }

@@ -30,6 +30,9 @@ _JSON_FIELDS = {
 PENDING_STATUS_CODE = -1
 SYNC_CURSOR_FIELD = '_sync_updated_at'
 _APPLICANT_SPLIT_RE = re.compile(r"[,，;；、\r\n]+")
+_NOTICE_DATE_RE = re.compile(
+    r"^(?P<year>\d{4})-?(?P<month>\d{2})-?(?P<day>\d{2})(?:[T\s].*)?$"
+)
 
 _CREATE_REQUESTS_TABLE = """
 CREATE TABLE IF NOT EXISTS requests (
@@ -120,6 +123,21 @@ def _count_split_applicants(rows) -> Counter:
         for name in _split_applicant_names(row['shenqingrxm']):
             counts[name] += row['cnt']
     return counts
+
+
+def _normalize_notice_date(value) -> str | None:
+    """Return a validated YYYYMMDD key for a notice issuance date."""
+    if value is None:
+        return None
+    match = _NOTICE_DATE_RE.fullmatch(str(value).strip())
+    if not match:
+        return None
+    date_key = "".join(match.group(name) for name in ("year", "month", "day"))
+    try:
+        datetime.strptime(date_key, "%Y%m%d")
+    except ValueError:
+        return None
+    return date_key
 
 
 class PatentsDB:
@@ -408,13 +426,18 @@ class PatentsDB:
         ts_to: str | None = None,
         rejection_from: str | None = None,
         rejection_to: str | None = None,
+        notice_name_contains: str | None = None,
+        notice_from: str | None = None,
+        notice_to: str | None = None,
     ) -> list[dict]:
         """按条件筛选专利记录，条件之间为 OR 关系。
 
         各筛选维度：
           applicants:      申请人列表（精确匹配，多值 IN）
           ts_from/ts_to:   采集时间范围（ISO 字符串，闭区间）
-          rejection_from/rejection_to: 驳回发文日期范围（YYYY-MM-DD，闭区间）
+          rejection_from/rejection_to: 驳回决定下载日期范围（YYYY-MM-DD，闭区间）
+          notice_name_contains/notice_from/notice_to:
+                           同一条发文记录的通知书名称和发文日条件
 
         维度内部是 AND（如 ts_from + ts_to 构成区间），
         维度之间是 OR（满足任一维度即选中）。
@@ -427,6 +450,14 @@ class PatentsDB:
             for applicant in (applicants or [])
             for name in _split_applicant_names(applicant)
         }
+        notice_name_fragment = str(notice_name_contains or "").strip()
+        notice_from_key = _normalize_notice_date(notice_from)
+        notice_to_key = _normalize_notice_date(notice_to)
+        notice_filter_active = bool(notice_name_fragment or notice_from or notice_to)
+        notice_date_range_valid = not (
+            (notice_from and notice_from_key is None)
+            or (notice_to and notice_to_key is None)
+        )
 
         # 维度 1：申请人
         if applicant_set:
@@ -443,7 +474,7 @@ class PatentsDB:
         if ts_parts:
             clauses.append("(" + " AND ".join(ts_parts) + ")")
 
-        # 维度 3：驳回发文日期范围
+        # 维度 3：驳回决定下载日期范围
         rej_parts = []
         if rejection_from:
             rej_parts.append("bhsjtzs_xiazaisj >= ?")
@@ -455,6 +486,10 @@ class PatentsDB:
             # 必须有值才参与（bhsjtzs_xiazaisj IS NOT NULL）
             clauses.append("(bhsjtzs_xiazaisj IS NOT NULL AND " + " AND ".join(rej_parts) + ")")
 
+        # 维度 4：发文名称与实际发文日。逐条匹配在解码后的列表中完成。
+        if notice_filter_active:
+            clauses.append("fwxx_list IS NOT NULL")
+
         if not clauses:
             return self.get_all_records()
 
@@ -464,7 +499,7 @@ class PatentsDB:
             rows = conn.execute(sql, params).fetchall()
         records = [self._decode(r) for r in rows]
 
-        if not applicant_set:
+        if not applicant_set and not notice_filter_active:
             return records
 
         def matches_applicant(record: dict) -> bool:
@@ -494,9 +529,42 @@ class PatentsDB:
                 return False
             return True
 
+        def matches_notice(record: dict) -> bool:
+            if not notice_filter_active or not notice_date_range_valid:
+                return False
+            notices = record.get('fwxx_list')
+            if not isinstance(notices, list):
+                return False
+            for notice in notices:
+                if not isinstance(notice, dict):
+                    continue
+                notice_names = (
+                    str(notice.get(field) or '')
+                    for field in ('tongzhismc', 'fawenmc')
+                )
+                if notice_name_fragment and not any(
+                    notice_name_fragment in name for name in notice_names
+                ):
+                    continue
+                if notice_from or notice_to:
+                    notice_date_key = _normalize_notice_date(notice.get('fawenr'))
+                    if notice_date_key is None:
+                        continue
+                    if notice_from_key and notice_date_key < notice_from_key:
+                        continue
+                    if notice_to_key and notice_date_key > notice_to_key:
+                        continue
+                return True
+            return False
+
         return [
             record for record in records
-            if matches_applicant(record) or matches_timestamp(record) or matches_rejection_date(record)
+            if (
+                matches_applicant(record)
+                or matches_timestamp(record)
+                or matches_rejection_date(record)
+                or matches_notice(record)
+            )
         ]
 
     def query_update_candidates(self, status: str, freq_days: int) -> tuple[list[dict], list[dict]]:
@@ -697,6 +765,7 @@ class PatentsDB:
                     SUM(CASE WHEN status_code IS NULL OR status_code=? THEN 1 ELSE 0 END) AS pending,
                     SUM(CASE WHEN anjianywzt=? THEN 1 ELSE 0 END) AS rejection,
                     SUM(CASE WHEN fwxx_list IS NOT NULL THEN 1 ELSE 0 END) AS fwxx_collected,
+                    SUM(CASE WHEN anjianywzt=? AND fwxx_list IS NOT NULL THEN 1 ELSE 0 END) AS rejection_fwxx_collected,
                     SUM(CASE WHEN anjianywzt=? AND fwxx_list IS NULL THEN 1 ELSE 0 END) AS fwxx_pending,
                     SUM(CASE WHEN anjianywzt=? AND fwxx_list IS NOT NULL
                                   AND payable_fee_records IS NOT NULL
@@ -707,11 +776,24 @@ class PatentsDB:
                                   fwxx_list IS NULL OR payable_fee_records IS NULL
                                   OR paid_fee_records IS NULL
                                   OR fee_receipt_dispatch_records IS NULL)
-                             THEN 1 ELSE 0 END) AS detail_enrichment_pending
+                             THEN 1 ELSE 0 END) AS detail_enrichment_pending,
+                    SUM(CASE WHEN anjianywzt=?
+                                  AND payable_fee_records IS NOT NULL
+                                  AND paid_fee_records IS NOT NULL
+                                  AND fee_receipt_dispatch_records IS NOT NULL
+                             THEN 1 ELSE 0 END) AS fee_details_completed,
+                    SUM(CASE WHEN anjianywzt=? AND (
+                                  payable_fee_records IS NULL
+                                  OR paid_fee_records IS NULL
+                                  OR fee_receipt_dispatch_records IS NULL)
+                             THEN 1 ELSE 0 END) AS fee_details_pending
                 FROM patents
             """, (
                 PENDING_STATUS_CODE,
                 PENDING_STATUS_CODE,
+                rejection_status,
+                rejection_status,
+                rejection_status,
                 rejection_status,
                 rejection_status,
                 rejection_status,
@@ -796,9 +878,12 @@ class PatentsDB:
             'pending': agg['pending'] or 0,
             'rejection': agg['rejection'] or 0,
             'fwxx_collected': agg['fwxx_collected'] or 0,
+            'rejection_fwxx_collected': agg['rejection_fwxx_collected'] or 0,
             'fwxx_pending': agg['fwxx_pending'] or 0,
             'detail_enrichment_completed': agg['detail_enrichment_completed'] or 0,
             'detail_enrichment_pending': agg['detail_enrichment_pending'] or 0,
+            'fee_details_completed': agg['fee_details_completed'] or 0,
+            'fee_details_pending': agg['fee_details_pending'] or 0,
             'status_counts': [[r['anjianywzt'], r['cnt']] for r in status_rows],
             'applicant_counts': [
                 [name, count]

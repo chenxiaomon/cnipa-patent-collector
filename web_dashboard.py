@@ -625,9 +625,12 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
         "business": {
             "rejection": db_summary["rejection"],
             "fwxx_collected": db_summary["fwxx_collected"],
+            "rejection_fwxx_collected": db_summary["rejection_fwxx_collected"],
             "fwxx_pending": db_summary["fwxx_pending"],
             "detail_enrichment_completed": db_summary["detail_enrichment_completed"],
             "detail_enrichment_pending": db_summary["detail_enrichment_pending"],
+            "fee_details_completed": db_summary["fee_details_completed"],
+            "fee_details_pending": db_summary["fee_details_pending"],
             "tracked_total": sum(group["total"] for group in update_groups),
             "update_due": sum(group["due"] for group in update_groups),
         },
@@ -960,13 +963,18 @@ HTML = r"""<!doctype html>
             </svg>
             <div class="ring-label">
               <strong id="fwxxPct">0%</strong>
-              <span>详情完成率</span>
+              <span>发文采集率</span>
             </div>
           </div>
           <div class="ring-stats">
             <div class="info-row"><span>驳回案件</span><strong id="fwxxRejection">—</strong></div>
-            <div class="info-row"><span>发文及费用完整</span><strong id="fwxxCollected">—</strong></div>
-            <div class="info-row"><span>待补采</span><strong id="fwxxPending">—</strong></div>
+            <div class="info-row"><span>发文已采集</span><strong id="fwxxCollected">—</strong></div>
+            <div class="info-row"><span>待补发文</span><strong id="fwxxPending">—</strong></div>
+            <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:4px">
+              <div class="info-row"><span>费用资料完整（辅助）</span><strong id="feeDetailsComplete">—</strong></div>
+              <div class="info-row"><span>费用资料待补</span><strong id="feeDetailsPending">—</strong></div>
+              <div class="hint" style="margin-top:5px">费用信息不影响发文采集完整度</div>
+            </div>
           </div>
         </article>
 
@@ -1124,12 +1132,15 @@ HTML = r"""<!doctype html>
         <div class="control-grid">
           <label class="field"><span>采集时间 起</span><input id="exportTsFrom" type="date"></label>
           <label class="field"><span>采集时间 止</span><input id="exportTsTo" type="date"></label>
-          <label class="field"><span>驳回发文日期 起</span><input id="exportRejFrom" type="date"></label>
-          <label class="field"><span>驳回发文日期 止</span><input id="exportRejTo" type="date"></label>
+          <label class="field"><span>通知书名称包含</span><input id="exportNoticeName" type="text" placeholder="例如：补正"></label>
+          <label class="field"><span>通知书发文日 起</span><input id="exportNoticeFrom" type="date"></label>
+          <label class="field"><span>通知书发文日 止</span><input id="exportNoticeTo" type="date"></label>
+          <label class="field"><span>驳回决定下载日 起</span><input id="exportRejFrom" type="date"></label>
+          <label class="field"><span>驳回决定下载日 止</span><input id="exportRejTo" type="date"></label>
         </div>
         <div class="hint" style="margin-top:8px">
-          满足任一条件即导出（如选企业 + 驳回日期范围 = 该企业的全部 ∪ 该日期范围内被驳回的全部）。
-          全部留空 = 导出全量。
+          企业、采集时间、通知书、驳回决定下载日之间为「或」关系；通知书名称与发文日会在同一份通知书上同时匹配。
+          全部留空 = 导出全量。筛选命中的是专利，Excel 会保留这些专利的完整发文列表。
         </div>
         <div class="button-row" style="margin-top:10px;align-items:center">
           <button class="btn secondary" id="exportPreviewBtn">预估数量</button>
@@ -2047,7 +2058,7 @@ function renderSummary(data) {
   set('#mRate',      data.records.success_rate + '%');
   set('#mSuccess',   fmtNumber(data.records.success) + ' 成功 / ' + fmtNumber(data.records.failed) + ' 失败 / ' + fmtNumber(data.records.pending) + ' 待采');
   set('#mRejection', fmtNumber(data.business.rejection));
-  set('#mFwxx',      fmtNumber(data.business.detail_enrichment_pending) + ' 待补详情');
+  set('#mFwxx',      fmtNumber(data.business.fwxx_pending) + ' 待补发文');
   set('#mDue',       fmtNumber(data.business.update_due));
   set('#mTracked',   fmtNumber(data.business.tracked_total) + ' 跟踪中');
   set('#mDynamic',   fmtNumber(data.lists.dynamic));
@@ -2072,15 +2083,17 @@ function renderSummary(data) {
 
   // 发文与费用采集 Tab
   const rej = data.business.rejection;
-  const fwxxC = data.business.detail_enrichment_completed;
-  const fwxxP = data.business.detail_enrichment_pending;
+  const fwxxC = data.business.rejection_fwxx_collected;
+  const fwxxP = data.business.fwxx_pending;
   const fwxxPct = rej > 0 ? Math.round(fwxxC / rej * 100) : 0;
   updateRing(fwxxPct);
   set('#fwxxPct',       fwxxPct + '%');
   set('#fwxxRejection', fmtNumber(rej));
   set('#fwxxCollected', fmtNumber(fwxxC));
   set('#fwxxPending',   fmtNumber(fwxxP));
-  renderFwxxPending(data.detail_enrichment_pending_list || []);
+  set('#feeDetailsComplete', fmtNumber(data.business.fee_details_completed));
+  set('#feeDetailsPending', fmtNumber(data.business.fee_details_pending));
+  renderFwxxPending(data.fwxx_pending_list || []);
 
   // 数据分析 Tab
   renderBarList('#statusCounts',    data.status_counts    || []);
@@ -2736,13 +2749,16 @@ function collectExportFilters() {
   const applicants = Array.from(
     $('#exportApplicantList').querySelectorAll('input:checked')
   ).map(c => c.value);
-  // date input 是 YYYY-MM-DD；采集时间转 ISO（含 Z），驳回日期保持 YYYY-MM-DD
+  // date input 是 YYYY-MM-DD；采集时间转 ISO（含 Z），业务日期保持 YYYY-MM-DD
   const tsFrom = $('#exportTsFrom').value;
   const tsTo = $('#exportTsTo').value;
   return {
     applicants,
     timestamp_from: tsFrom ? tsFrom + 'T00:00:00Z' : '',
     timestamp_to:   tsTo ? tsTo + 'T23:59:59Z' : '',
+    notice_name_contains: $('#exportNoticeName').value.trim(),
+    notice_from: $('#exportNoticeFrom').value,
+    notice_to: $('#exportNoticeTo').value,
     rejection_from: $('#exportRejFrom').value || '',
     rejection_to:   $('#exportRejTo').value || '',
   };
@@ -2758,7 +2774,7 @@ async function previewExport() {
       body: JSON.stringify(collectExportFilters()),
     });
     const d = await res.json();
-    if (hint) hint.textContent = '符合条件：' + d.count + ' 条';
+    if (hint) hint.textContent = '符合条件：' + d.count + ' 件专利';
   } catch (e) {
     if (hint) hint.textContent = '统计失败：' + e.message;
   }
@@ -3162,6 +3178,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 ts_to      = payload.get("timestamp_to") or None
                 rej_from   = payload.get("rejection_from") or None
                 rej_to     = payload.get("rejection_to") or None
+                notice_name = str(payload.get("notice_name_contains") or "").strip() or None
+                notice_from = payload.get("notice_from") or None
+                notice_to = payload.get("notice_to") or None
                 # 去空值：前端可能传 ""
                 if applicants:
                     applicants = [a for a in applicants if a.strip()]
@@ -3171,6 +3190,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 records = _patents_db.query_filtered(
                     applicants=applicants, ts_from=ts_from, ts_to=ts_to,
                     rejection_from=rej_from, rejection_to=rej_to,
+                    notice_name_contains=notice_name,
+                    notice_from=notice_from, notice_to=notice_to,
                 )
 
                 # 预览模式：只返回数量
