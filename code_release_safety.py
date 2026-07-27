@@ -6,8 +6,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from settings import BASE_DIR
@@ -19,10 +20,57 @@ _EXCLUDED_DIRECTORIES = {
 }
 _EXCLUDED_FILES = {'.env', '.DS_Store'}
 _BACKUP_INDEX = '.code_backup_index.json'
+_CALENDAR_VERSION_PATTERN = re.compile(r'([0-9]{4})\.([0-9]{2})\.([0-9]{2})')
 
 
 class CodeReleaseVerificationError(RuntimeError):
     """Raised when a release or backup cannot be trusted."""
+
+
+def parse_calendar_version(version_text: str) -> tuple[int, int, int]:
+    match = _CALENDAR_VERSION_PATTERN.fullmatch(version_text)
+    if match is None:
+        raise CodeReleaseVerificationError(
+            f'Invalid calendar version {version_text!r}; expected YYYY.MM.DD'
+        )
+    year, month, day = (int(component) for component in match.groups())
+    try:
+        date(year, month, day)
+    except ValueError as exc:
+        raise CodeReleaseVerificationError(
+            f'Invalid calendar version {version_text!r}: {exc}'
+        ) from exc
+    return year, month, day
+
+
+def _read_calendar_version_file(version_path: Path) -> tuple[str, tuple[int, int, int]]:
+    try:
+        version_text = version_path.read_text(encoding='utf-8').strip()
+    except OSError as exc:
+        raise CodeReleaseVerificationError(
+            f'Unable to read release version from {version_path}: {exc}'
+        ) from exc
+    try:
+        return version_text, parse_calendar_version(version_text)
+    except CodeReleaseVerificationError as exc:
+        raise CodeReleaseVerificationError(f'{version_path}: {exc}') from exc
+
+
+def verify_staged_release_version(
+    staging_root: Path,
+    project_root: Path = BASE_DIR,
+) -> None:
+    """Reject a staged release whose version is missing, invalid, or older."""
+    installed_version, installed_version_order = _read_calendar_version_file(
+        project_root / 'VERSION'
+    )
+    staged_version, staged_version_order = _read_calendar_version_file(
+        staging_root / 'VERSION'
+    )
+    if staged_version_order < installed_version_order:
+        raise CodeReleaseVerificationError(
+            f'Refusing release downgrade: installed {installed_version}, staged {staged_version}'
+        )
 
 
 def sha256_bytes(content: bytes) -> str:

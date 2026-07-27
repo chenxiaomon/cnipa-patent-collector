@@ -36,6 +36,7 @@ if sys.platform == 'win32':
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from settings import BASE_DIR, VERSION_FILE, GITHUB_BRANCH, raw_file_urls
+from code_release_safety import CodeReleaseVerificationError, parse_calendar_version
 
 _BRANCH = GITHUB_BRANCH
 _CWD = str(BASE_DIR)
@@ -126,8 +127,9 @@ def check_via_http() -> dict:
                 remote = resp.read().decode('utf-8').strip()
             if remote:
                 break
-        except (urllib.error.URLError, OSError) as e:
-            last_error = e
+
+        except (urllib.error.URLError, OSError) as exc:
+            last_error = exc
             continue
 
     if not remote:
@@ -138,8 +140,19 @@ def check_via_http() -> dict:
             "error": f"所有更新源均无法访问（最后错误：{last_error}）",
         }
 
+    try:
+        local_version_order = parse_calendar_version(local)
+        remote_version_order = parse_calendar_version(remote)
+    except CodeReleaseVerificationError as exc:
+        return {
+            "has_update": False, "method": "http",
+            "local_version": local, "remote_version": remote,
+            "pending_commits": [],
+            "error": str(exc),
+        }
+
     return {
-        "has_update": remote != local,
+        "has_update": remote_version_order > local_version_order,
         "method": "http",
         "local_version": local,
         "remote_version": remote,

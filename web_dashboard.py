@@ -75,6 +75,9 @@ DESKTOP_BROWSER_ACTIONS = {
     "collect_fwxx",
     "collect_fwxx_app",
     "collect_fwxx_batch",
+    "collect_fees",
+    "collect_fees_app",
+    "collect_fees_batch",
     "phase0_browser",
     "public_browser",
     "public_auto_paginate",
@@ -82,6 +85,10 @@ DESKTOP_BROWSER_ACTIONS = {
     "strategy_collect",
 }
 
+PUBLIC_BROWSER_COMPANION_ACTIONS = {
+    "public_browser",
+    "public_auto_paginate",
+}
 
 DOWNLOADS = {
     "excel": PATENTS_EXCEL_FILE,
@@ -258,9 +265,6 @@ class JobManager:
 
     def start(self, action: str, params: dict[str, Any]) -> Job:
         spec = build_job_spec(action, params)
-        if self._already_running(spec["action"]):
-            raise ValueError(f"{spec['title']} 已在运行")
-
         job = Job(
             id=uuid.uuid4().hex[:10],
             action=spec["action"],
@@ -278,27 +282,35 @@ class JobManager:
         if sys.platform == 'win32' and not requires_desktop:
             extra_kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
 
-        process = subprocess.Popen(
-            job.command,
-            cwd=str(BASE_DIR),
-            env=env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding='utf-8',
-            bufsize=1,
-            **extra_kwargs,
-        )
-        job.process = process
+        with self._lock:
+            conflicting_job = self._start_conflict_locked(job.action)
+            if conflicting_job:
+                if requires_desktop:
+                    raise ValueError(
+                        f"桌面浏览器正由“{conflicting_job.title}”占用；"
+                        "请等待该任务结束或先停止该任务"
+                    )
+                raise ValueError(f"{conflicting_job.title} 已在运行")
+            process = subprocess.Popen(
+                job.command,
+                cwd=str(BASE_DIR),
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding='utf-8',
+                bufsize=1,
+                **extra_kwargs,
+            )
+            job.process = process
+            self._jobs[job.id] = job
+
         if process.stdin:
             process.stdin.close()
         job.append(f"$ {printable_command(job.command)}")
         if requires_desktop:
             job.append("[dashboard] 此任务会在运行 Dashboard 的机器上启动/控制浏览器；远程访问网页不会在客户端电脑弹出浏览器。")
-
-        with self._lock:
-            self._jobs[job.id] = job
 
         thread = threading.Thread(target=self._watch_process, args=(job,), daemon=True)
         thread.start()
@@ -317,15 +329,27 @@ class JobManager:
         threading.Thread(target=self._force_kill_later, args=(job,), daemon=True).start()
         return True
 
-    def _already_running(self, action: str) -> bool:
+    def _start_conflict_locked(self, action: str) -> Job | None:
+        active_jobs = (
+            job for job in self._jobs.values()
+            if job.status in {"running", "stopping"}
+        )
+        if action in DESKTOP_BROWSER_ACTIONS:
+            for job in active_jobs:
+                if job.action not in DESKTOP_BROWSER_ACTIONS:
+                    continue
+                is_public_companion_pair = (
+                    action != job.action
+                    and action in PUBLIC_BROWSER_COMPANION_ACTIONS
+                    and job.action in PUBLIC_BROWSER_COMPANION_ACTIONS
+                )
+                if not is_public_companion_pair:
+                    return job
+            return None
         singleton_actions = {"mitm_proxy", "public_mitm_proxy", "phase0_browser", "public_browser"}
-        if action not in singleton_actions:
-            return False
-        with self._lock:
-            for job in self._jobs.values():
-                if job.action == action and job.status in {"running", "stopping"}:
-                    return True
-        return False
+        if action in singleton_actions:
+            return next((job for job in active_jobs if job.action == action), None)
+        return None
 
     def _watch_process(self, job: Job) -> None:
         assert job.process is not None
@@ -411,7 +435,7 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         if count:
             command.extend(["--test", str(count)])
         return {
-            "action": action, "title": "补采发文及费用信息", "command": command,
+            "action": action, "title": "补采发文信息", "command": command,
             "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
         }
     if action == "collect_fwxx_app":
@@ -419,7 +443,7 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         if not app_no:
             raise ValueError("请输入申请号")
         return {
-            "action": action, "title": f"补采发文及费用 {app_no}",
+            "action": action, "title": f"补采发文 {app_no}",
             "command": [py, "-u", "collect_fwxx.py", "--app", app_no],
             "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
         }
@@ -431,11 +455,48 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         )
         return {
             "action": action,
-            "title": f"指定专利强制采集发文及费用 {len(targets)} 件",
+            "title": f"指定专利强制采集发文 {len(targets)} 件",
             "command": [
                 py,
                 "-u",
                 "collect_fwxx.py",
+                "--input",
+                str(request_path),
+                "--force",
+            ],
+            "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
+        }
+    if action == "collect_fees":
+        command = [py, "-u", "collect_fees.py"]
+        count = positive_int(params.get("count"), default=None, maximum=10000)
+        if count:
+            command.extend(["--test", str(count)])
+        return {
+            "action": action, "title": "补采费用信息", "command": command,
+            "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
+        }
+    if action == "collect_fees_app":
+        app_no = normalize_app_no(params.get("app_no"))
+        if not app_no:
+            raise ValueError("请输入申请号")
+        return {
+            "action": action, "title": f"补采费用 {app_no}",
+            "command": [py, "-u", "collect_fees.py", "--app", app_no],
+            "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
+        }
+    if action == "collect_fees_batch":
+        request_path, targets = create_manual_fwxx_request(
+            str(params.get("app_nos") or ""),
+            request_dir=FWXX_MANUAL_LIST_DIR,
+            max_app_nos=MAX_REQUEST_APP_NOS,
+        )
+        return {
+            "action": action,
+            "title": f"指定专利强制采集费用 {len(targets)} 件",
+            "command": [
+                py,
+                "-u",
+                "collect_fees.py",
                 "--input",
                 str(request_path),
                 "--force",
@@ -658,6 +719,7 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
         "daily_counts": db_summary["daily_counts"],
         "fwxx_pending_list": db_summary["fwxx_pending_list"],
         "detail_enrichment_pending_list": db_summary["detail_enrichment_pending_list"],
+        "fee_details_pending_list": db_summary["fee_details_pending_list"],
         "pending_requests_count": len(_patents_db.list_requests(status='pending')),
         # 驳回企业列表，合并手动补录的真实专利数
         "rejection_companies": _merge_company_meta(db_summary["rejection_companies"]),
@@ -952,9 +1014,9 @@ HTML = r"""<!doctype html>
       </section>
     </div>
 
-    <!-- ═══ Tab 4：发文采集 ═══ -->
+    <!-- ═══ Tab 4：发文与费用采集 ═══ -->
     <div id="tab-fwxx" class="tab-panel">
-      <section class="grid two" style="margin-bottom:14px">
+      <section style="margin-bottom:14px">
         <article class="panel ring-panel">
           <div class="ring-wrap">
             <svg class="ring-svg" viewBox="0 0 100 100">
@@ -977,42 +1039,70 @@ HTML = r"""<!doctype html>
             </div>
           </div>
         </article>
+      </section>
 
+      <section class="grid two" style="margin-bottom:14px">
         <article class="panel operator-only">
-          <div class="panel-head"><h2>采集操作</h2><span class="hint">collect_fwxx</span></div>
+          <div class="panel-head"><h2>发文信息采集</h2><span class="hint">collect_fwxx</span></div>
           <div class="button-row" style="margin-bottom:14px">
-            <button class="btn primary"   data-action="collect_fwxx">全量补采</button>
+            <button class="btn primary" data-action="collect_fwxx">全量采集</button>
             <button class="btn secondary" id="fwxxTestBtn">测试 5 条</button>
           </div>
-          <div class="check-line">
+          <div class="check-line" style="margin-bottom:12px">
             <input id="fwxxAppNo" placeholder="单号采集：输入申请号">
             <button class="btn primary" id="fwxxSingleBtn">采集</button>
+          </div>
+          <label class="field">
+            <span>批量申请号</span>
+            <textarea id="fwxxBatchAppNos" class="codebox" rows="5"
+              placeholder="每行一个申请号，也支持逗号分隔"></textarea>
+          </label>
+          <div class="button-row" style="margin-top:10px">
+            <button class="btn primary" id="fwxxBatchBtn">批量强制采集</button>
+          </div>
+        </article>
+
+        <article class="panel operator-only">
+          <div class="panel-head"><h2>费用信息采集</h2><span class="hint">collect_fees</span></div>
+          <div class="button-row" style="margin-bottom:14px">
+            <button class="btn primary" data-action="collect_fees">全量采集</button>
+            <button class="btn secondary" id="feeTestBtn">测试 5 条</button>
+          </div>
+          <div class="check-line" style="margin-bottom:12px">
+            <input id="feeAppNo" placeholder="单号采集：输入申请号">
+            <button class="btn primary" id="feeSingleBtn">采集</button>
+          </div>
+          <label class="field">
+            <span>批量申请号</span>
+            <textarea id="feeBatchAppNos" class="codebox" rows="5"
+              placeholder="每行一个申请号，也支持逗号分隔"></textarea>
+          </label>
+          <div class="button-row" style="margin-top:10px">
+            <button class="btn primary" id="feeBatchBtn">批量强制采集</button>
           </div>
         </article>
       </section>
 
-      <article class="panel operator-only" style="margin-bottom:14px">
-        <div class="panel-head">
-          <h2>指定专利批量采集发文及费用</h2>
-          <span class="hint">不限制案件状态 · 最多 500 件</span>
-        </div>
-        <textarea id="fwxxBatchAppNos" class="codebox" rows="7" style="min-height:140px"
-          placeholder="每行一个申请号，也支持逗号分隔，例如：&#10;CN202411006597.0&#10;CN202111504942.X"></textarea>
-        <div class="button-row" style="margin-top:10px;align-items:center">
-          <button class="btn primary" id="fwxxBatchBtn">强制采集这批专利</button>
-          <span class="hint">名单会去重并全部进入详情页发文及费用流程；已有记录也会重采，库外结果保存到 fwxx_unmatched.json。</span>
-        </div>
-      </article>
-
-      <article class="panel">
-        <div class="panel-head"><h2>待补采列表</h2><span class="hint" id="fwxxPendingHint">最新 20 条</span></div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>申请号</th><th>业务状态</th><th>最后采集</th></tr></thead>
-            <tbody id="fwxxPendingRows"></tbody>
-          </table>
-        </div>
-      </article>
+      <section class="grid two">
+        <article class="panel">
+          <div class="panel-head"><h2>待补发文</h2><span class="hint" id="fwxxPendingHint">最新 20 条</span></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>申请号</th><th>业务状态</th><th>最后采集</th></tr></thead>
+              <tbody id="fwxxPendingRows"></tbody>
+            </table>
+          </div>
+        </article>
+        <article class="panel">
+          <div class="panel-head"><h2>待补费用</h2><span class="hint" id="feePendingHint">最新 20 条</span></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>申请号</th><th>业务状态</th><th>最后采集</th></tr></thead>
+              <tbody id="feePendingRows"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
     </div>
 
     <!-- ═══ Tab 5：公开查询 ═══ -->
@@ -1546,6 +1636,7 @@ h3 { font-size: 13px; }
 .grid.wide-left { grid-template-columns: minmax(0, 1.35fr) minmax(300px, .65fr); }
 
 .panel {
+  min-width: 0;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1841,9 +1932,40 @@ td .clip { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-sp
 }
 
 @media (max-width: 720px) {
+  .layout { display: block; }
+  .sidebar {
+    width: 100%;
+    height: auto;
+    position: sticky;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .sidebar-logo {
+    flex: 0 0 auto;
+    margin: 0;
+    padding: 9px 12px;
+    border-right: 1px solid var(--line);
+    border-bottom: 0;
+  }
+  .sidebar-logo small { display: none; }
+  .nav-item {
+    flex: 0 0 auto;
+    padding: 11px 10px;
+    border-left: 0;
+    border-bottom: 3px solid transparent;
+  }
+  .nav-item.active {
+    border-left-color: transparent;
+    border-bottom-color: var(--accent);
+  }
   .metrics { grid-template-columns: 1fr 1fr; }
   .control-grid, .check-line { grid-template-columns: 1fr; }
-  .main { padding: 0 14px 40px; }
+  .main { margin-left: 0; padding: 0 14px 40px; }
+  .topbar { position: static; flex-direction: column; align-items: flex-start; }
+  .top-left { flex-wrap: wrap; }
 }
 """
 
@@ -2094,6 +2216,7 @@ function renderSummary(data) {
   set('#feeDetailsComplete', fmtNumber(data.business.fee_details_completed));
   set('#feeDetailsPending', fmtNumber(data.business.fee_details_pending));
   renderFwxxPending(data.fwxx_pending_list || []);
+  renderFeePending(data.fee_details_pending_list || []);
 
   // 数据分析 Tab
   renderBarList('#statusCounts',    data.status_counts    || []);
@@ -2228,6 +2351,18 @@ function renderFwxxPending(items) {
     '<td>' + shortTime(item.timestamp) + '</td></tr>'
   ).join('');
   set('#fwxxPendingHint', '待补 ' + items.length + ' 条（最新）');
+}
+
+function renderFeePending(items) {
+  const tbody = $('#feePendingRows');
+  if (!tbody) return;
+  if (!items.length) { tbody.innerHTML = '<tr><td colspan="3" style="color:var(--muted)">暂无待补采数据</td></tr>'; return; }
+  tbody.innerHTML = items.map(item =>
+    '<tr><td>' + escHtml(item.application_no || '—') + '</td>' +
+    '<td>' + escHtml(item.anjianywzt || '—') + '</td>' +
+    '<td>' + shortTime(item.timestamp) + '</td></tr>'
+  ).join('');
+  set('#feePendingHint', '待补 ' + items.length + ' 条（最新）');
 }
 
 function renderBarList(sel, rows) {
@@ -2436,6 +2571,15 @@ function bindEvents() {
 
   $('#fwxxBatchBtn').addEventListener('click', () =>
     startJob('collect_fwxx_batch', { app_nos: $('#fwxxBatchAppNos').value }));
+
+  $('#feeTestBtn').addEventListener('click', () =>
+    startJob('collect_fees', { count: 5 }));
+
+  $('#feeSingleBtn').addEventListener('click', () =>
+    startJob('collect_fees_app', { app_no: $('#feeAppNo').value }));
+
+  $('#feeBatchBtn').addEventListener('click', () =>
+    startJob('collect_fees_batch', { app_nos: $('#feeBatchAppNos').value }));
 
   $('#stopJob').addEventListener('click', async () => {
     if (!state.selectedJobId) return;

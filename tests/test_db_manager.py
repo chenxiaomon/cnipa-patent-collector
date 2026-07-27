@@ -383,6 +383,105 @@ class TestDetailEnrichmentProgress(unittest.TestCase):
             )
 
 
+class TestFeeDetailsProgress(unittest.TestCase):
+    def test_pending_query_requires_rejection_status_and_any_missing_required_field(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = PatentsDB(Path(tmpdir) / "patents.db")
+            complete_fee_fields = {
+                "payable_fee_records": [],
+                "paid_fee_records": [],
+                "fee_receipt_dispatch_records": [],
+            }
+            db.upsert({
+                "application_no": "2023000000001",
+                "anjianywzt": "\u9a73\u56de\u7b49\u590d\u5ba1\u8bf7\u6c42",
+                **complete_fee_fields,
+            })
+            db.upsert({
+                "application_no": "2023000000002",
+                "anjianywzt": "\u9a73\u56de\u7b49\u590d\u5ba1\u8bf7\u6c42",
+                "fwxx_list": [{"tongzhismc": "notice"}],
+                "paid_fee_records": [],
+                "fee_receipt_dispatch_records": [],
+            })
+            db.upsert({
+                "application_no": "2023000000003",
+                "anjianywzt": "active",
+            })
+
+            self.assertEqual(
+                db.fee_details_pending_app_nos(),
+                ["2023000000002"],
+            )
+            self.assertEqual(
+                db.fee_details_pending_app_nos("active"),
+                ["2023000000003"],
+            )
+            complete_record = db.get_record("2023000000001")
+            self.assertIsNone(complete_record["late_fee_schedule_records"])
+            self.assertIsNone(complete_record["fwxx_list"])
+
+    def test_completed_query_accepts_empty_arrays_and_does_not_filter_status(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = PatentsDB(Path(tmpdir) / "patents.db")
+            db.upsert({
+                "application_no": "2023000000001",
+                "anjianywzt": "\u9a73\u56de\u7b49\u590d\u5ba1\u8bf7\u6c42",
+                "payable_fee_records": [],
+                "paid_fee_records": [],
+                "fee_receipt_dispatch_records": [],
+            })
+            db.upsert({
+                "application_no": "2023000000002",
+                "anjianywzt": "active",
+                "payable_fee_records": [{"feiyongzl": "annual-fee"}],
+                "paid_fee_records": [],
+                "fee_receipt_dispatch_records": [],
+            })
+            db.upsert({
+                "application_no": "2023000000003",
+                "anjianywzt": "\u9a73\u56de\u7b49\u590d\u5ba1\u8bf7\u6c42",
+                "payable_fee_records": [],
+                "paid_fee_records": [],
+            })
+
+            self.assertEqual(
+                db.fee_details_completed_app_nos(),
+                {"2023000000001", "2023000000002"},
+            )
+
+    def test_summary_lists_latest_twenty_fee_pending_rejection_records(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = PatentsDB(Path(tmpdir) / "patents.db")
+            for day in range(1, 23):
+                db.upsert({
+                    "application_no": f"2023000000{day:03d}",
+                    "anjianywzt": "\u9a73\u56de\u7b49\u590d\u5ba1\u8bf7\u6c42",
+                    "timestamp": f"2026-07-{day:02d}T08:00:00Z",
+                })
+            db.upsert({
+                "application_no": "2023000000098",
+                "anjianywzt": "active",
+                "timestamp": "2026-07-31T08:00:00Z",
+            })
+            db.upsert({
+                "application_no": "2023000000099",
+                "anjianywzt": "\u9a73\u56de\u7b49\u590d\u5ba1\u8bf7\u6c42",
+                "timestamp": "2026-07-30T08:00:00Z",
+                "payable_fee_records": [],
+                "paid_fee_records": [],
+                "fee_receipt_dispatch_records": [],
+            })
+
+            pending_rows = db.get_summary()["fee_details_pending_list"]
+
+            self.assertEqual(len(pending_rows), 20)
+            self.assertEqual(
+                [row["application_no"] for row in pending_rows],
+                [f"2023000000{day:03d}" for day in range(22, 2, -1)],
+            )
+
+
 class TestPatentsDBApplicantSplitting(unittest.TestCase):
     def test_company_views_split_comma_separated_applicants(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -30,6 +30,7 @@ def _make_flow(url, status=200, content_type='application/json', body=b'{}'):
     只设置 patent_mitm_scraper.response() 实际读取的属性。
     """
     flow = Mock()
+    flow.metadata = {}
     flow.request.pretty_url = url
     flow.response.status_code = status
     flow.response.headers = Mock()
@@ -352,6 +353,7 @@ class TestProcessFwxx(unittest.TestCase):
             'https://cponline.cnipa.gov.cn/api/view/gn/fwxx?token=abc',
             body=_json_body(FWXX_RESPONSE),
         )
+        self.scraper.request(flow)
         self.scraper._process_fwxx_response(flow)
 
         mock_write.assert_called_once()
@@ -373,6 +375,7 @@ class TestProcessFwxx(unittest.TestCase):
             'https://cponline.cnipa.gov.cn/api/view/gn/fwxx?token=abc',
             body=_json_body(FWXX_RESPONSE),
         )
+        self.scraper.request(flow)
         self.scraper._process_fwxx_response(flow)
         mock_write.assert_not_called()
 
@@ -384,6 +387,7 @@ class TestProcessFwxx(unittest.TestCase):
             'https://cponline.cnipa.gov.cn/api/view/gn/fwxx?token=abc',
             body=_json_body(FWXX_RESPONSE),
         )
+        self.scraper.request(flow)
         self.scraper._process_fwxx_response(flow)
         mock_write.assert_not_called()
 
@@ -425,6 +429,7 @@ class TestProcessFeeInformation(unittest.TestCase):
             body=_json_body(response_payload),
         )
 
+        self.scraper.request(flow)
         self.scraper._process_fee_response(flow)
 
         mock_write.assert_called_once()
@@ -488,6 +493,7 @@ class TestProcessFeeInformation(unittest.TestCase):
             body=_json_body(empty_response),
         )
 
+        self.scraper.request(flow)
         self.scraper._process_fee_response(flow)
 
         cache_entry = mock_write.call_args[0][1]['2026102909420']
@@ -512,6 +518,7 @@ class TestProcessFeeInformation(unittest.TestCase):
             body=_json_body(incomplete_response),
         )
 
+        self.scraper.request(flow)
         self.scraper._process_fee_response(flow)
 
         cache_entry = mock_write.call_args[0][1]['2026102909420']
@@ -543,6 +550,7 @@ class TestProcessFeeInformation(unittest.TestCase):
             body=_json_body(partial_response),
         )
 
+        self.scraper.request(flow)
         self.scraper._process_fee_response(flow)
 
         cache_entry = mock_write.call_args[0][1]['2026102909420']
@@ -582,6 +590,7 @@ class TestProcessFeeInformation(unittest.TestCase):
             body=_json_body(FYXX_RESPONSE),
         )
 
+        self.scraper.request(flow)
         self.scraper._process_fee_response(flow)
 
         mock_write.assert_not_called()

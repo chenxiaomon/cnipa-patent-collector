@@ -93,6 +93,8 @@ PATENT_FEE_CACHE_FILE = DATA_DIR / 'patent_fee_cache.json'
 # 断点续传和状态标记
 MARKER_FILE = DATA_DIR / 'current_fwxx_target.json'
 FWXX_UNMATCHED_FILE = DATA_DIR / 'fwxx_unmatched.json'
+FEE_UNMATCHED_FILE = DATA_DIR / 'fee_unmatched.json'
+DETAIL_COLLECTION_LOCK_FILE = DATA_DIR / 'detail_collection.lock'
 
 # 补采独立模式的结果
 FWXX_STANDALONE_RESULTS_FILE = RESULTS_DIR / 'fwxx_standalone_results.json'

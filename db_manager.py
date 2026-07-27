@@ -96,10 +96,17 @@ _COLUMNS = [
     'updated_at', 'daili_jg', 'daili_r',
 ]
 
+_REQUIRED_FEE_DETAILS_MISSING_SQL = (
+    "payable_fee_records IS NULL OR paid_fee_records IS NULL "
+    "OR fee_receipt_dispatch_records IS NULL"
+)
+_REQUIRED_FEE_DETAILS_PRESENT_SQL = (
+    "payable_fee_records IS NOT NULL AND paid_fee_records IS NOT NULL "
+    "AND fee_receipt_dispatch_records IS NOT NULL"
+)
 _CREATE_DETAIL_ENRICHMENT_PENDING_INDEX = (
     "CREATE INDEX idx_detail_enrichment_pending ON patents(anjianywzt) "
-    "WHERE fwxx_list IS NULL OR payable_fee_records IS NULL "
-    "OR paid_fee_records IS NULL OR fee_receipt_dispatch_records IS NULL"
+    f"WHERE fwxx_list IS NULL OR {_REQUIRED_FEE_DETAILS_MISSING_SQL}"
 )
 
 
@@ -632,6 +639,28 @@ class PatentsDB:
             ).fetchall()
         return {r['application_no'] for r in rows}
 
+    def fee_details_pending_app_nos(
+        self,
+        rejection_status: str = '\u9a73\u56de\u7b49\u590d\u5ba1\u8bf7\u6c42',
+    ) -> list[str]:
+        """Return rejection cases with any required fee payload still NULL."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT application_no FROM patents WHERE anjianywzt=? AND "
+                f"({_REQUIRED_FEE_DETAILS_MISSING_SQL})",
+                (rejection_status,),
+            ).fetchall()
+        return [row['application_no'] for row in rows]
+
+    def fee_details_completed_app_nos(self) -> set[str]:
+        """Return cases whose required fee payloads are all non-NULL."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT application_no FROM patents WHERE "
+                f"{_REQUIRED_FEE_DETAILS_PRESENT_SQL}"
+            ).fetchall()
+        return {row['application_no'] for row in rows}
+
     def detail_enrichment_pending_app_nos(
         self,
         rejection_status: str = '驳回等复审请求',
@@ -640,9 +669,7 @@ class PatentsDB:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT application_no FROM patents WHERE anjianywzt=? AND "
-                "(fwxx_list IS NULL OR payable_fee_records IS NULL "
-                "OR paid_fee_records IS NULL "
-                "OR fee_receipt_dispatch_records IS NULL)",
+                f"(fwxx_list IS NULL OR {_REQUIRED_FEE_DETAILS_MISSING_SQL})",
                 (rejection_status,),
             ).fetchall()
         return [row['application_no'] for row in rows]
@@ -651,10 +678,8 @@ class PatentsDB:
         """返回发文、应缴、已缴和收据发文均已采集的申请号。"""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT application_no FROM patents WHERE fwxx_list IS NOT NULL "
-                "AND payable_fee_records IS NOT NULL "
-                "AND paid_fee_records IS NOT NULL "
-                "AND fee_receipt_dispatch_records IS NOT NULL"
+                "SELECT application_no FROM patents WHERE fwxx_list IS NOT NULL AND "
+                f"{_REQUIRED_FEE_DETAILS_PRESENT_SQL}"
             ).fetchall()
         return {row['application_no'] for row in rows}
 
@@ -757,7 +782,7 @@ class PatentsDB:
         """
         with self._connect() as conn:
             # 1. 主聚合
-            agg = conn.execute("""
+            agg = conn.execute(f"""
                 SELECT
                     COUNT(*) AS unique_count,
                     SUM(CASE WHEN status_code=200 THEN 1 ELSE 0 END) AS success,
@@ -768,24 +793,14 @@ class PatentsDB:
                     SUM(CASE WHEN anjianywzt=? AND fwxx_list IS NOT NULL THEN 1 ELSE 0 END) AS rejection_fwxx_collected,
                     SUM(CASE WHEN anjianywzt=? AND fwxx_list IS NULL THEN 1 ELSE 0 END) AS fwxx_pending,
                     SUM(CASE WHEN anjianywzt=? AND fwxx_list IS NOT NULL
-                                  AND payable_fee_records IS NOT NULL
-                                  AND paid_fee_records IS NOT NULL
-                                  AND fee_receipt_dispatch_records IS NOT NULL
+                                  AND ({_REQUIRED_FEE_DETAILS_PRESENT_SQL})
                              THEN 1 ELSE 0 END) AS detail_enrichment_completed,
                     SUM(CASE WHEN anjianywzt=? AND (
-                                  fwxx_list IS NULL OR payable_fee_records IS NULL
-                                  OR paid_fee_records IS NULL
-                                  OR fee_receipt_dispatch_records IS NULL)
+                                  fwxx_list IS NULL OR {_REQUIRED_FEE_DETAILS_MISSING_SQL})
                              THEN 1 ELSE 0 END) AS detail_enrichment_pending,
-                    SUM(CASE WHEN anjianywzt=?
-                                  AND payable_fee_records IS NOT NULL
-                                  AND paid_fee_records IS NOT NULL
-                                  AND fee_receipt_dispatch_records IS NOT NULL
+                    SUM(CASE WHEN anjianywzt=? AND ({_REQUIRED_FEE_DETAILS_PRESENT_SQL})
                              THEN 1 ELSE 0 END) AS fee_details_completed,
-                    SUM(CASE WHEN anjianywzt=? AND (
-                                  payable_fee_records IS NULL
-                                  OR paid_fee_records IS NULL
-                                  OR fee_receipt_dispatch_records IS NULL)
+                    SUM(CASE WHEN anjianywzt=? AND ({_REQUIRED_FEE_DETAILS_MISSING_SQL})
                              THEN 1 ELSE 0 END) AS fee_details_pending
                 FROM patents
             """, (
@@ -836,15 +851,19 @@ class PatentsDB:
                 WHERE anjianywzt=? AND fwxx_list IS NULL
                 ORDER BY timestamp DESC LIMIT 20
             """, (rejection_status,)).fetchall()
-            detail_pending_rows = conn.execute("""
+            detail_pending_rows = conn.execute(f"""
                 SELECT application_no, anjianywzt, timestamp FROM patents
                 WHERE anjianywzt=? AND (
-                    fwxx_list IS NULL OR payable_fee_records IS NULL
-                    OR paid_fee_records IS NULL
-                    OR fee_receipt_dispatch_records IS NULL
+                    fwxx_list IS NULL OR {_REQUIRED_FEE_DETAILS_MISSING_SQL}
                 )
                 ORDER BY timestamp DESC LIMIT 20
             """, (rejection_status,)).fetchall()
+            fee_pending_rows = conn.execute(f"""
+                SELECT application_no, anjianywzt, timestamp FROM patents
+                WHERE anjianywzt=? AND ({_REQUIRED_FEE_DETAILS_MISSING_SQL})
+                ORDER BY timestamp DESC LIMIT 20
+            """, (rejection_status,)).fetchall()
+
 
             # 7. 驳回企业发明专利数（按企业聚合，仅发明专利）
             rejection_company_rows = conn.execute("""
@@ -893,6 +912,7 @@ class PatentsDB:
             'recent': [dict(r) for r in recent_rows],
             'fwxx_pending_list': [dict(r) for r in fwxx_pending_rows],
             'detail_enrichment_pending_list': [dict(r) for r in detail_pending_rows],
+            'fee_details_pending_list': [dict(r) for r in fee_pending_rows],
             # 驳回企业列表：[{"name": str, "invention_count": int}, ...]
             'rejection_companies': [
                 {'name': name, 'invention_count': count}

@@ -49,12 +49,20 @@
         └────────────┬──────────────────────────────────────────┘
                      │
         ┌────────────▼──────────────────────────────────────────┐
-        │ 6（可选）补采发文信息                                  │
+        │ 6a（可选、独立）补采发文信息                            │
         │ python collect_fwxx.py                                 │
         │ 筛选: anjianywzt == '驳回等复审请求' && fwxx_list==null │
         │ → update_fields() 更新 patents.db                    │
         └────────────────────────────────────────────────────────┘
+        ┌────────────────────────────────────────────────────────┐
+        │ 6b（可选、独立）补采费用信息                            │
+        │ python collect_fees.py                                 │
+        │ 筛选: 驳回案件 && 任一必需费用列表为 null               │
+        │ → update_fields() 更新 patents.db                    │
+        └────────────────────────────────────────────────────────┘
 ```
+
+6a 和 6b 分别生成计划、判断完成并写入各自字段，不要求按固定先后顺序执行。
 
 ## 模式 B：Phase 0 手动采集链路
 
@@ -76,7 +84,7 @@ python import_from_cache.py
 patents.db（按申请号 upsert）
 ```
 
-注意：Phase 0 导入的是基础字段，不负责发文信息；如需发文，后续仍由 `collect_fwxx.py` 处理。
+注意：Phase 0 导入的是基础字段，不负责发文或费用信息；后续分别由 `collect_fwxx.py` 和 `collect_fees.py` 处理。
 
 ## 模式 C：公开查询手动/半自动采集链路
 
@@ -108,7 +116,9 @@ data/results/public_search_results.xlsx/json
 | **db_manager.py** | SQLite 运行时唯一真相源、聚合查询、增量导入导出 | 活跃 |
 | **detection_logger.py** | 通过 PatentsDB 写入，导出 Excel/JSON/JSONL 备份 | 活跃 |
 | **patent_mitm_scraper.py** | MITM 代理插件，拦截 API 响应，JSON 解析 | 活跃 |
+| **desktop_collection_lock.py** | 发文与费用详情采集共用的跨进程桌面文件锁 | 活跃 |
 | **collect_fwxx.py** | 补采脚本，用于补采漏掉的发文信息 | 活跃 |
+| **collect_fees.py** | 独立费用补采脚本，用于补采应缴、滞纳、已缴和收据发文信息 | 活跃 |
 | **main_automation.py --update-list** | 失败重试/强制更新指定申请号列表 | 活跃 |
 | **export_public_search.py** | 公开查询导出辅助 | 可选 |
 | **start_browser_for_phase0.py** | Phase 0 手动采集：启动带代理浏览器，用户手动搜索/翻页 | 可用 |
@@ -125,7 +135,8 @@ data/results/public_search_results.xlsx/json
 ```
 data/
 ├── search_list.txt          # 申请号列表（一行一个）
-└── config.json              # 鼠标坐标配置（由 PyAutoGUI 坐标记录工具生成）
+├── config.json              # 搜索页鼠标坐标配置
+└── config_fwxx.json         # 详情页、发文和费用鼠标坐标配置（两个补采任务共用）
 ```
 
 ### 输出与缓存
@@ -136,6 +147,7 @@ data/
 ├── machine_role.txt        # 本机角色 master/replica（不进 Git）
 ├── patent_cache.json        # MITM 拦截的原始 API 响应（临时，可删除）
 ├── patent_fwxx_cache.json   # 发文信息缓存（临时，可删除）
+├── patent_fee_cache.json    # 费用信息缓存（临时，可删除）
 ├── raw_responses/           # 公开查询原始响应
 ├── raw_searches/            # 公开查询 JSONL 记录
 ├── results/
@@ -181,9 +193,13 @@ data/
 
 **说明**: collect_fwxx.py 使用 `anjianywzt == '驳回等复审请求'` 作为筛选条件（已验证为准，falvzt 全为 `--` 不可用）
 
-### 3. 费用信息采集（与发文同批）
+**待采集/完成口径**: 自动计划只看 `fwxx_list`；`NULL` 为待采集，非 `NULL`（包括 `[]`）为完成。费用字段不会影响发文计划。
 
-**采集方式**: 在同一详情页点击“费用信息”，MITM 拦截 `/api/view/gn/fyxx`
+### 3. 费用信息采集（独立任务）
+
+**入口**: `collect_fees.py`
+
+**采集方式**: 打开详情页后只点击“费用信息”，MITM 拦截 `/api/view/gn/fyxx`；不会点击或解析发文信息。
 
 **字段列表** (4 个结构化列表 + 采集时间):
 - `payable_fee_records` - 应缴费信息，对应 `data.yingjiaofei.svYingjfList`
@@ -192,9 +208,17 @@ data/
 - `fee_receipt_dispatch_records` - 收据发文信息，对应 `data.shoujufawen.svSjfwList`
 - `fee_snapshot_at` - 应缴费栏目成功采集时的 UTC 时间
 
-列表字段使用 `NULL` 表示未采集或接口未提供，`[]` 表示接口明确返回空列表。正常缴费案件可能不返回滞纳金栏目，因此该字段不作为详情完成条件。票据代码、票据号码和收据号按字符串保存。
+**待采集/完成口径**: 自动计划限定 `anjianywzt == '驳回等复审请求'`。`payable_fee_records`、`paid_fee_records`、`fee_receipt_dispatch_records` 是三个必需栏目，任一为 `NULL` 即待采集；三者均非 `NULL` 即完成，`[]` 也算接口明确返回并完成。正常缴费案件可能不返回 `late_fee_schedule_records`，因此该字段不作为完成条件。
+
+费用写入只更新费用字段和 `fee_snapshot_at`，不刷新基础案件状态使用的通用 `timestamp`。票据代码、票据号码和收据号按字符串保存。
 
 Excel 将原始四表与分析表分开：应缴表中的未来年度费用不会被算作当前到期；滞纳金表的多行是互斥时间档，只选择分析日所在的一档，禁止求和。
+
+### 4. 桌面浏览器互斥
+
+`collect_fwxx.py` 和 `collect_fees.py` 虽然数据职责独立，但都通过 PyAutoGUI 控制同一桌面浏览器，并共用详情页坐标与当前申请号标记。两个入口在整个采集周期内通过 `desktop_collection_lock.py` 获取同一个非阻塞操作系统文件锁；因此无论由 Dashboard 还是命令行启动，第二个发文/费用进程都会在控制浏览器前收到桌面占用错误，进程退出时自动释放锁。
+
+Dashboard 仍在任务层对处于 `running` 或 `stopping` 的桌面任务做额外冲突检查。跨进程文件锁只约束发文与费用详情采集；直接运行其他未接入该锁的 CLI 桌面脚本时，仍须避免同时控制桌面。
 
 ## 依赖关系
 
@@ -205,6 +229,10 @@ main_automation.py
 └── PyAutoGUI                    (物理操作)
 
 collect_fwxx.py
+├── detection_logger.py
+└── undetected_chromedriver      (浏览器控制)
+
+collect_fees.py
 ├── detection_logger.py
 └── undetected_chromedriver      (浏览器控制)
 
@@ -241,5 +269,5 @@ Phase 0 手动采集
 
 ---
 
-*最后更新*: 2026-05-10  
+*最后更新*: 2026-07-27
 *架构审查*: 已验证

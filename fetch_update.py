@@ -20,6 +20,7 @@ from code_release_safety import (
     sha256_bytes,
     validate_release_manifest,
     verify_staged_release,
+    verify_staged_release_version,
 )
 from settings import BASE_DIR, raw_file_urls
 
@@ -68,6 +69,7 @@ def install_release(project_root: Path = BASE_DIR, backups_dir: Path = BACKUPS_D
                 staged_path.write_bytes(content)
                 print(f"  [{index}/{len(manifest_entries)}] {entry['path']}")
             verify_staged_release(staging_root, manifest_entries)
+            verify_staged_release_version(staging_root, project_root)
             install_staged_release(staging_root, manifest_entries, project_root)
         prune_code_backups(backups_dir, keep=5)
         print('[✓] 新代码已通过完整哈希校验并安装。')

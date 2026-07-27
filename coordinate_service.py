@@ -71,6 +71,61 @@ class CoordinateService:
         return input_x, input_y, button_x, button_y
 
     @staticmethod
+    def load_or_record_detail_link_coordinates():
+        """加载或记录搜索结果中的详情链接坐标，不读取详情页菜单坐标。"""
+        coordinate_config = {}
+        if os.path.exists(CONFIG_FWXX_FILE):
+            try:
+                with open(CONFIG_FWXX_FILE, 'r', encoding='utf-8') as config_stream:
+                    coordinate_config = json.load(config_stream)
+                if {'link_x', 'link_y'} <= coordinate_config.keys():
+                    print("\n✓ 从配置文件加载详情链接位置")
+                    print(
+                        f"  详情链接: ({coordinate_config['link_x']}, "
+                        f"{coordinate_config['link_y']})"
+                    )
+                    return (
+                        coordinate_config['link_x'],
+                        coordinate_config['link_y'],
+                    )
+            except Exception as error:
+                print(f"⚠️  配置文件读取失败: {error}")
+
+        return CoordinateService._record_detail_link_coordinates(
+            coordinate_config
+        )
+
+    @staticmethod
+    def _record_detail_link_coordinates(coordinate_config: dict):
+        """在搜索页记录详情链接坐标并保留已有详情页坐标。"""
+        print("\n" + "=" * 60)
+        print("📍 鼠标位置记录 - 详情链接")
+        print("=" * 60)
+        print("⚠️  紧急停止: 把鼠标甩到屏幕左上角")
+        print("\n▶ 请把鼠标移到搜索结果中的 [申请号详情链接]")
+        CoordinateService._countdown(15, "等待用户移动鼠标到详情链接")
+        link_x, link_y = pyautogui.position()
+        print(f"  ✓ 详情链接坐标: ({link_x}, {link_y})   ")
+
+        updated_coordinates = (
+            dict(coordinate_config)
+            if isinstance(coordinate_config, dict)
+            else {}
+        )
+        updated_coordinates.update({
+            'link_x': link_x,
+            'link_y': link_y,
+            'last_updated': datetime.now().isoformat(),
+        })
+        try:
+            write_json_atomic(CONFIG_FWXX_FILE, updated_coordinates)
+            print("\n✓ 详情链接位置已保存")
+        except Exception as error:
+            print(f"\n⚠️  保存配置失败: {error}")
+
+        return link_x, link_y
+
+    @staticmethod
     def load_or_record_fwxx_coordinates():
         """
         加载或记录发文信息页坐标（发文链接和菜单位置）
@@ -78,22 +133,41 @@ class CoordinateService:
         Returns:
             tuple: (link_x, link_y, fwxx_menu_x, fwxx_menu_y)
         """
+        coordinate_config = {}
         if os.path.exists(CONFIG_FWXX_FILE):
             try:
                 with open(CONFIG_FWXX_FILE, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
+                    coordinate_config = json.load(f)
+                required_coordinates = {
+                    'link_x',
+                    'link_y',
+                    'fwxx_menu_x',
+                    'fwxx_menu_y',
+                }
+                if required_coordinates <= coordinate_config.keys():
                     print("\n✓ 从配置文件加载发文信息页鼠标位置")
-                    print(f"  发文链接: ({config['link_x']}, {config['link_y']})")
-                    print(f"  菜单: ({config['fwxx_menu_x']}, {config['fwxx_menu_y']})")
-                    return config['link_x'], config['link_y'], config['fwxx_menu_x'], config['fwxx_menu_y']
+                    print(
+                        f"  发文链接: ({coordinate_config['link_x']}, "
+                        f"{coordinate_config['link_y']})"
+                    )
+                    print(
+                        f"  菜单: ({coordinate_config['fwxx_menu_x']}, "
+                        f"{coordinate_config['fwxx_menu_y']})"
+                    )
+                    return (
+                        coordinate_config['link_x'],
+                        coordinate_config['link_y'],
+                        coordinate_config['fwxx_menu_x'],
+                        coordinate_config['fwxx_menu_y'],
+                    )
             except Exception as e:
                 print(f"⚠️  配置文件读取失败: {e}")
 
-        return CoordinateService._record_fwxx_coordinates()
+        return CoordinateService._record_fwxx_coordinates(coordinate_config)
 
     @staticmethod
-    def _record_fwxx_coordinates():
-        """手动记录发文信息页坐标"""
+    def _record_fwxx_coordinates(coordinate_config: dict | None = None):
+        """手动记录发文信息页坐标，并保留已有费用菜单坐标。"""
         print("\n" + "="*60)
         print("📍 鼠标位置记录 - 发文信息页")
         print("="*60)
@@ -112,15 +186,20 @@ class CoordinateService:
         print(f"  ✓ 菜单坐标: ({fwxx_menu_x}, {fwxx_menu_y})   ")
 
         # 保存到配置文件
-        config = {
+        updated_coordinates = (
+            dict(coordinate_config)
+            if isinstance(coordinate_config, dict)
+            else {}
+        )
+        updated_coordinates.update({
             'link_x': link_x,
             'link_y': link_y,
             'fwxx_menu_x': fwxx_menu_x,
             'fwxx_menu_y': fwxx_menu_y,
             'last_updated': datetime.now().isoformat()
-        }
+        })
         try:
-            write_json_atomic(CONFIG_FWXX_FILE, config)
+            write_json_atomic(CONFIG_FWXX_FILE, updated_coordinates)
             print("\n✓ 位置已保存到配置文件")
         except Exception as e:
             print(f"\n⚠️  保存配置失败: {e}")

@@ -26,7 +26,7 @@
 
 **采集规则**:
 ```python
-# 补采脚本 (collect_fwxx.py: line 232)
+# 发文补采脚本
 if anjianywzt == '驳回等复审请求':
     采集发文信息
 ```
@@ -96,19 +96,35 @@ if len(collected_fields) < 14 or timeout:
 
 ---
 
-### 发文与费用信息（8 字段 - 由补采脚本负责）
+### 发文信息（3 字段 - 由 `collect_fwxx.py` 负责）
 
 **触发条件**:
-- 主流程不负责发文采集
-- 补采脚本筛选：`anjianywzt == '驳回等复审请求'` 且发文、应缴、已缴或收据发文任一字段为 `null`；滞纳金栏目可缺失
+- 主流程不负责发文采集。
+- 自动补采筛选：`anjianywzt == '驳回等复审请求'` 且 `fwxx_list IS NULL`。
+- `fwxx_list` 非 `NULL` 即为完成，接口明确返回的空列表 `[]` 也算完成。
+- 费用字段是否缺失不影响发文待采集数量。
 
 **采集流程** (collect_fwxx.py):
-1. 从 SQLite 筛选详情字段未完整的驳回复审案件
+1. 从 SQLite 筛选 `fwxx_list` 尚未采集的驳回复审案件
 2. 点击"发文信息"标签
 3. MITM 拦截对应 API 响应
 4. 解析 `fwxx_list`、`bhsjtzs_xiazaisj`、`bhsjtzs_data`
-5. 点击“费用信息”标签并独立解析 `payable_fee_records`、`late_fee_schedule_records`、`paid_fee_records`、`fee_receipt_dispatch_records`
-6. 字段级更新 SQLite；批次完成后刷新 JSONL 备份和 Excel
+5. 只更新发文字段；批次完成后刷新 JSONL 备份和 Excel
+
+### 费用信息（4 类明细 - 由 `collect_fees.py` 负责）
+
+**触发条件**:
+- 自动补采限定 `anjianywzt == '驳回等复审请求'`。
+- `payable_fee_records`、`paid_fee_records`、`fee_receipt_dispatch_records` 任一为 `NULL` 即为待采集。
+- 三个必需列表均非 `NULL` 即为完成，接口明确返回的空列表 `[]` 也算完成。
+- `late_fee_schedule_records` 是可选栏目；接口不返回时保留 `NULL`，不阻止费用任务完成。
+
+**采集流程** (`collect_fees.py`):
+1. 从 SQLite 筛选必需费用栏目未完整的驳回复审案件
+2. 进入详情页后只点击“费用信息”标签
+3. MITM 拦截并解析 `payable_fee_records`、`late_fee_schedule_records`、`paid_fee_records`、`fee_receipt_dispatch_records`
+4. 只更新费用字段和 `fee_snapshot_at`，不刷新基础案件状态的通用 `timestamp`
+5. 批次完成后刷新 JSONL 备份和 Excel
 
 **待缴分析口径**:
 - 只分析 CNIPA 费用状态精确为“未缴”的记录
@@ -118,8 +134,11 @@ if len(collected_fields) < 14 or timeout:
 
 **执行方式**:
 ```bash
-python collect_fwxx.py  # 主流程完成后运行（可选）
+python collect_fwxx.py  # 只补采发文（可选）
+python collect_fees.py  # 只补采费用（可选）
 ```
+
+两个脚本的数据计划互相独立，但共用桌面浏览器、PyAutoGUI 坐标和当前申请号标记，因此不可并行运行。两个采集入口统一通过 `desktop_collection_lock.py` 持有跨进程文件锁；无论从 Dashboard 还是命令行启动，第二个发文/费用任务都会在控制浏览器前被自动拒绝，不再仅依赖操作者人工协调。
 
 **覆盖率**:
 - 驳回复审案件：1403 条
@@ -140,6 +159,7 @@ python collect_fwxx.py  # 主流程完成后运行（可选）
 | 部分字段缺失（<13 字段） | 0 | ✓ |
 | 成功采集 | 200 | - |
 | 发文采集失败 | 200 (基础字段成功) | ✓ (collect_fwxx.py) |
+| 费用采集失败 | 200 (基础字段成功) | ✓ (collect_fees.py) |
 
 ### 重试策略
 
@@ -153,6 +173,9 @@ python collect_fwxx.py  # 主流程完成后运行（可选）
 
 **collect_fwxx.py**:
 - 补采 `fwxx_list=null` 且 `anjianywzt=='驳回等复审请求'` 的记录
+
+**collect_fees.py**:
+- 补采必需费用列表任一为 `null` 且 `anjianywzt=='驳回等复审请求'` 的记录
 
 ---
 
@@ -235,5 +258,5 @@ python collect_fwxx.py  # 补采脚本
 
 ---
 
-*更新时间*: 2026-05-11  
+*更新时间*: 2026-07-27
 *验证完成*: falvzt vs anjianywzt - 已确认 falvzt 不可用，anjianywzt 为准

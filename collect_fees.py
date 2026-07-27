@@ -1,0 +1,537 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""CNIPA 费用信息独立采集程序。
+
+自动模式仅处理驳回案件中必需费用栏目尚未采集的申请号。
+`--input` 和 `--app` 可用于指定申请号，`--force` 可强制重采。
+"""
+
+import argparse
+import json
+import os
+import random
+import sys
+import time
+from datetime import datetime, timezone
+
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
+# 虚拟显示器必须在 pyautogui / Xlib 任何 import 之前启动。
+if os.getenv('USE_VIRTUAL_DISPLAY', '').lower() in ('true', '1', 'yes') \
+        and sys.platform.startswith('linux'):
+    try:
+        from pyvirtualdisplay import Display as _VD
+
+        _vd_w = int(os.getenv('VIRTUAL_DISPLAY_WIDTH', '1920'))
+        _vd_h = int(os.getenv('VIRTUAL_DISPLAY_HEIGHT', '1080'))
+        _vd_inst = _VD(visible=False, size=(_vd_w, _vd_h), color_depth=24)
+        _vd_inst.start()
+        print(f"✓ 虚拟显示器已启动 ({_vd_w}x{_vd_h})")
+    except ImportError:
+        print("⚠️  pyvirtualdisplay 未安装，使用物理桌面")
+
+import pyautogui
+
+sys.path.insert(0, os.path.dirname(__file__))
+from atomic_write import write_json_atomic
+from browser_service import BrowserService
+from browser_utils import is_browser_alive
+from cache_utils import (
+    clear_cache_key,
+    parse_app_no_list,
+    poll_cache_for_key,
+    write_json_cache,
+)
+from coordinate_service import CoordinateService
+from db_manager import PatentsDB
+from detection_logger import DetectionLogger
+from input_service import InputService
+from desktop_collection_lock import (
+    DetailCollectionDesktopBusyError,
+    reserve_detail_collection_desktop,
+)
+from settings import (
+    CNIPA_URL,
+    DETECTION_LOG_JSONL_FILE,
+    FEE_UNMATCHED_FILE,
+    FWXX_ANTI_CRAWL_BATCH_SIZE,
+    FWXX_ANTI_CRAWL_WAIT_MAX,
+    FWXX_ANTI_CRAWL_WAIT_MIN,
+    FWXX_CACHE_POLL_TIMEOUT,
+    FWXX_DETAIL_CLICK_WAIT,
+    FWXX_DETAIL_CLOSE_WAIT,
+    FWXX_INPUT_DELAY_MAX,
+    FWXX_INPUT_DELAY_MIN,
+    FWXX_INPUT_PAUSE_PROB,
+    FWXX_MENU_CLICK_WAIT,
+    FWXX_PAGE_LOAD_WAIT,
+    FWXX_POST_SEARCH_WAIT,
+    FWXX_STARTUP_COUNTDOWN,
+    FWXX_TAB_SWITCH_WAIT,
+    MARKER_FILE,
+    PATENT_FEE_CACHE_FILE,
+    PATENTS_DB_FILE,
+    PYAUTOGUI_FAILSAFE,
+    PYAUTOGUI_PAUSE,
+    USE_MITM_PROXY,
+)
+
+pyautogui.PAUSE = PYAUTOGUI_PAUSE
+pyautogui.FAILSAFE = PYAUTOGUI_FAILSAFE
+
+SEARCH_PAGE_URL = CNIPA_URL
+PATENT_FEE_CACHE_FILE = str(PATENT_FEE_CACHE_FILE)
+MARKER_FILE = str(MARKER_FILE)
+FEE_UNMATCHED_FILE = str(FEE_UNMATCHED_FILE)
+
+_FEE_PAYLOAD_FIELDS = (
+    'payable_fee_records',
+    'late_fee_schedule_records',
+    'paid_fee_records',
+    'fee_receipt_dispatch_records',
+    'fee_snapshot_at',
+)
+
+
+def countdown(seconds: int, message: str = "请手动记录坐标，倒计时") -> None:
+    for remaining in range(seconds, 0, -1):
+        print(f"\r{message}: {remaining:2d} 秒...", end="", flush=True)
+        time.sleep(1)
+    print(f"\r{message}: 0 秒...完成！    ")
+
+
+def load_target_applications() -> list[str]:
+    """返回驳回案件中任一必需费用栏目仍为 NULL 的申请号。"""
+    db = PatentsDB(PATENTS_DB_FILE)
+    summary = db.get_summary()
+    total_rejections = summary['rejection']
+    targets = db.fee_details_pending_app_nos()
+    completed = max(0, total_rejections - len(targets))
+
+    print("\n" + "=" * 60)
+    print("📊 费用信息采集统计")
+    print("=" * 60)
+    print(f"✓ 驳回等复审请求: 共 {total_rejections} 条")
+    print(f"✓ 已完整采集必需费用栏目: {completed} 条")
+    print(f"⏳ 待采集费用: {len(targets)} 条")
+    print("=" * 60 + "\n")
+
+    if targets:
+        print("待采集申请号列表:")
+        for index, application_no in enumerate(targets[:10], 1):
+            print(f"  {index}. {application_no}")
+        if len(targets) > 10:
+            print(f"  ... 及其他 {len(targets) - 10} 个")
+        print()
+
+    return targets
+
+
+def load_standalone_targets(
+    input_file: str | None = None,
+    app_nos: str | None = None,
+    force: bool = False,
+) -> list[str]:
+    """从文件或命令行加载指定申请号，并支持断点续传。"""
+    targets: list[str] = []
+
+    if app_nos:
+        targets = parse_app_no_list(app_nos)
+        print(f"\n[*] 从命令行参数读取 {len(targets)} 个申请号")
+    elif input_file:
+        if not os.path.exists(input_file):
+            print(f"[!] 文件不存在: {input_file}")
+            return []
+        with open(input_file, 'r', encoding='utf-8') as input_stream:
+            targets = parse_app_no_list(input_stream.read())
+        print(f"\n[*] 从文件读取 {len(targets)} 个申请号: {input_file}")
+
+    if targets:
+        if force:
+            print("[*] 强制采集：不按案件状态筛选，也不跳过已有费用记录")
+        else:
+            collected = _load_standalone_collected()
+            before = len(targets)
+            targets = [target for target in targets if target not in collected]
+            skipped = before - len(targets)
+            if skipped:
+                print(f"[*] 跳过已采集: {skipped} 个（断点续传）")
+
+        print(f"[*] 待采集: {len(targets)} 个")
+        print("\n待采集申请号列表:")
+        for index, application_no in enumerate(targets[:10], 1):
+            print(f"  {index}. {application_no}")
+        if len(targets) > 10:
+            print(f"  ... 及其他 {len(targets) - 10} 个")
+        print()
+
+    return targets
+
+
+def _load_standalone_collected() -> set[str]:
+    """返回必需费用栏目已采集的申请号。"""
+    try:
+        return PatentsDB(PATENTS_DB_FILE).fee_details_completed_app_nos()
+    except Exception:
+        return set()
+
+
+def _mark_current_fee_target(application_no: str) -> None:
+    """在点击费用菜单前刷新 MITM 关联标记。"""
+    written_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+    write_json_cache(MARKER_FILE, {
+        'application_no': application_no,
+        'written_at': written_at,
+    })
+
+
+def collect_one_fee(
+    driver,
+    application_no: str,
+    input_x: int,
+    input_y: int,
+    button_x: int,
+    button_y: int,
+    link_x: int,
+    link_y: int,
+) -> dict | None:
+    """在详情页采集单个申请号的费用信息。"""
+    fee_fields: dict = {}
+    try:
+        if not is_browser_alive(driver):
+            print("    [!] 浏览器已关闭，无法采集")
+            return None
+
+        print(f"\n  [{application_no}] 开始采集费用信息...")
+        try:
+            clear_cache_key(PATENT_FEE_CACHE_FILE, application_no)
+        except Exception as error:
+            print(f"    [!] 无法清理旧费用缓存，已停止本件采集: {error}")
+            return None
+
+        print("    [*] 输入申请号并点击查询按钮...")
+        InputService.type_in_search(
+            input_x,
+            input_y,
+            button_x,
+            button_y,
+            application_no,
+            delay_range=(FWXX_INPUT_DELAY_MIN, FWXX_INPUT_DELAY_MAX),
+            pause_prob=FWXX_INPUT_PAUSE_PROB,
+            post_search_wait=FWXX_POST_SEARCH_WAIT,
+        )
+
+        try:
+            page_text = driver.page_source.lower()
+            if any(
+                keyword in page_text
+                for keyword in ('无查询结果', '无搜索结果', '请输入查询', '没有找到')
+            ):
+                print("    [!] 搜索无结果或出现异常提示")
+                return None
+        except Exception:
+            pass
+
+        print("    [*] 点击申请号链接进入详情页...")
+        _mark_current_fee_target(application_no)
+        print(f"    [*] 预先标记详情请求: {application_no}")
+        tabs_before = len(driver.window_handles)
+        InputService.move_and_click(
+            link_x,
+            link_y,
+            post_click_wait=FWXX_DETAIL_CLICK_WAIT,
+        )
+        if len(driver.window_handles) <= tabs_before:
+            print("    [!] 搜索结果无效或点击失败（标签数未增加）")
+            return None
+
+        driver.switch_to.window(driver.window_handles[-1])
+        time.sleep(FWXX_TAB_SWITCH_WAIT)
+        print("    [✓] 已切换到详情页标签")
+        fee_menu_x, fee_menu_y = (
+            CoordinateService.load_or_record_fee_menu_coordinates()
+        )
+
+        _mark_current_fee_target(application_no)
+        print(f"    [*] 标记申请号: {application_no}")
+        print("    [*] 点击'费用信息'菜单...")
+        InputService.move_and_click(
+            fee_menu_x,
+            fee_menu_y,
+            post_click_wait=FWXX_MENU_CLICK_WAIT,
+        )
+
+        print("    [*] 从 MITM 缓存读取费用信息...")
+        fee_payload = poll_cache_for_key(
+            PATENT_FEE_CACHE_FILE,
+            application_no,
+            max_wait=FWXX_CACHE_POLL_TIMEOUT,
+        )
+        if fee_payload is None:
+            print("    [!] 未从缓存中获得费用信息")
+        else:
+            fee_counts = []
+            for field, label in (
+                ('payable_fee_records', '应缴费'),
+                ('late_fee_schedule_records', '应缴滞纳金'),
+                ('paid_fee_records', '已缴费'),
+                ('fee_receipt_dispatch_records', '收据发文'),
+            ):
+                if field in fee_payload:
+                    fee_counts.append(f"{label} {len(fee_payload[field])} 条")
+                else:
+                    fee_counts.append(f"{label} 未返回")
+            print(f"    [✓] 成功读取费用信息：{'; '.join(fee_counts)}")
+            fee_fields.update(fee_payload)
+
+        if len(driver.window_handles) > 1:
+            print("    [*] 关闭详情页标签...")
+            pyautogui.hotkey('ctrl', 'w')
+            time.sleep(FWXX_DETAIL_CLOSE_WAIT)
+            driver.switch_to.window(driver.window_handles[0])
+            time.sleep(FWXX_TAB_SWITCH_WAIT)
+            print("    [✓] 已回到搜索页")
+        return fee_fields or None
+
+    except Exception as error:
+        print(f"    [!] 采集失败: {str(error)[:100]}")
+        try:
+            while len(driver.window_handles) > 1:
+                driver.switch_to.window(driver.window_handles[-1])
+                pyautogui.hotkey('ctrl', 'w')
+                time.sleep(FWXX_TAB_SWITCH_WAIT)
+            driver.switch_to.window(driver.window_handles[0])
+        except Exception:
+            pass
+        return fee_fields or None
+
+
+def persist_fee_fields(application_no: str, fee_fields: dict) -> bool:
+    """字段级写入费用快照，不改变案件状态的 `timestamp`。"""
+    try:
+        db = PatentsDB(PATENTS_DB_FILE)
+        if db.get_record(application_no) is None:
+            print(f"    [!] {application_no} 不在 DB 中，写入 {FEE_UNMATCHED_FILE}")
+            _append_unmatched_fee(application_no, fee_fields, reason='not_found_in_db')
+            return False
+
+        persisted_fields = {
+            field: fee_fields[field]
+            for field in _FEE_PAYLOAD_FIELDS
+            if field in fee_fields
+        }
+        db.update_fields(application_no, persisted_fields)
+        return True
+    except Exception as error:
+        print(f"    [!] 费用字段更新失败: {error}")
+        _append_unmatched_fee(
+            application_no,
+            fee_fields,
+            reason=f'update_failed: {error}',
+        )
+        return False
+
+
+def _append_unmatched_fee(
+    application_no: str,
+    fee_fields: dict,
+    reason: str = '',
+) -> None:
+    """将无法匹配到主库的费用字段追加到独立备份。"""
+    try:
+        if os.path.exists(FEE_UNMATCHED_FILE):
+            with open(FEE_UNMATCHED_FILE, 'r', encoding='utf-8') as input_stream:
+                unmatched_payload = json.load(input_stream)
+        else:
+            unmatched_payload = {'records': []}
+        unmatched_record = {
+            'application_no': application_no,
+            'reason': reason,
+        }
+        for field in _FEE_PAYLOAD_FIELDS:
+            if field in fee_fields:
+                unmatched_record[field] = fee_fields[field]
+        unmatched_payload['records'].append(unmatched_record)
+        write_json_atomic(FEE_UNMATCHED_FILE, unmatched_payload)
+    except Exception as error:
+        print(f"    [!] 写入费用 unmatched 失败: {error}")
+
+
+def run_fee_collection(args) -> None:
+    """独占共享桌面并执行完整费用采集。"""
+    with reserve_detail_collection_desktop("费用信息采集"):
+        _run_fee_collection(args)
+
+
+def _run_fee_collection(args) -> None:
+    """执行已取得桌面独占权的费用采集主循环。"""
+    test_count = args.test
+    standalone_mode = bool(getattr(args, 'input', None) or getattr(args, 'app', None))
+
+    print("\n" + "=" * 70)
+    if standalone_mode:
+        print("🚀 费用信息采集程序启动（独立模式）")
+    else:
+        print("🚀 费用信息采集程序启动")
+    print("=" * 70)
+
+    if standalone_mode:
+        targets = load_standalone_targets(
+            input_file=getattr(args, 'input', None),
+            app_nos=getattr(args, 'app', None),
+            force=bool(getattr(args, 'force', False)),
+        )
+    else:
+        targets = load_target_applications()
+
+    if not targets:
+        if standalone_mode:
+            print("✓ 无待采集的申请号（可能已全部采集完毕）")
+        else:
+            print("✓ 无需采集，所有驳回案件的必需费用栏目都已采集！")
+        return
+
+    if test_count:
+        targets = targets[:test_count]
+        print(f"📋 测试模式：仅采集前 {len(targets)} 个\n")
+
+    driver = None
+    try:
+        print(f"\n[*] 打开搜索页: {args.url}")
+        driver = BrowserService.launch_and_login(
+            args.url,
+            page_load_wait=FWXX_PAGE_LOAD_WAIT,
+        )
+
+        print("\n[*] 正在加载坐标配置...")
+        input_x, input_y, button_x, button_y = (
+            CoordinateService.load_or_record_search_coordinates()
+        )
+        link_x, link_y = (
+            CoordinateService.load_or_record_detail_link_coordinates()
+        )
+
+        countdown(FWXX_STARTUP_COUNTDOWN, "搜索页坐标已就绪，即将开始费用采集")
+
+        print("\n" + "=" * 70)
+        print("费用采集进度")
+        print("=" * 70)
+        success_count = 0
+        failed_count = 0
+
+        for index, application_no in enumerate(targets, 1):
+            if not is_browser_alive(driver):
+                print("\n⚠️  浏览器已关闭，停止采集")
+                remaining = len(targets) - index + 1
+                print(
+                    f"\n已采集 {success_count} 条，失败 {failed_count} 条，"
+                    f"还有 {remaining} 条未采集"
+                )
+                break
+
+            print(f"\n[{index}/{len(targets)}] 申请号: {application_no}")
+            fee_fields = collect_one_fee(
+                driver=driver,
+                application_no=application_no,
+                input_x=input_x,
+                input_y=input_y,
+                button_x=button_x,
+                button_y=button_y,
+                link_x=link_x,
+                link_y=link_y,
+            )
+
+            if fee_fields:
+                if persist_fee_fields(application_no, fee_fields):
+                    print("  ✅ 已成功采集并更新费用字段")
+                    success_count += 1
+                else:
+                    print(f"  ⚠️  主库未更新，费用信息已备份到 {FEE_UNMATCHED_FILE}")
+                    failed_count += 1
+            else:
+                print("  ❌ 未采集到费用数据")
+                failed_count += 1
+
+            if index % FWXX_ANTI_CRAWL_BATCH_SIZE == 0 and index < len(targets):
+                wait_time = random.uniform(
+                    FWXX_ANTI_CRAWL_WAIT_MIN,
+                    FWXX_ANTI_CRAWL_WAIT_MAX,
+                )
+                print(f"\n  [*] 防爬虫等待 {wait_time:.1f} 秒...")
+                time.sleep(wait_time)
+
+        print("\n" + "=" * 70)
+        print(f"✓ 费用采集完成！成功: {success_count}, 失败: {failed_count}")
+        print("=" * 70)
+
+        print("\n[*] 导出 Excel...")
+        logger = DetectionLogger()
+        if logger.export_to_excel():
+            print("[✓] Excel 导出成功!")
+
+        exported = PatentsDB(PATENTS_DB_FILE).export_to_jsonl(
+            DETECTION_LOG_JSONL_FILE
+        )
+        print(f"[✓] JSONL 备份已刷新：{exported} 条（含费用信息）")
+
+    except Exception as error:
+        print(f"\n[!] 费用采集过程出错: {error}")
+        import traceback
+        traceback.print_exc()
+        raise
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+        print("\n[✓] 程序结束")
+
+
+def _build_argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="费用信息采集模块")
+    parser.add_argument('--test', type=int, help='测试模式，仅采集前 N 个申请号')
+    parser.add_argument(
+        '--url',
+        type=str,
+        default=SEARCH_PAGE_URL,
+        help=f'搜索页 URL（默认：{SEARCH_PAGE_URL}）',
+    )
+    parser.add_argument('--input', type=str, help='独立模式：从文件读取申请号列表')
+    parser.add_argument('--app', type=str, help='独立模式：直接指定申请号，多个用逗号分隔')
+    parser.add_argument(
+        '--force',
+        action='store_true',
+        help='独立模式：不按案件状态筛选，也不跳过已有费用记录',
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """运行费用采集 CLI，并将桌面占用转换为明确的退出状态。"""
+    arguments = _build_argument_parser().parse_args(argv)
+    if not USE_MITM_PROXY:
+        print(
+            "\n[!] MITM 代理未启用，费用采集依赖代理拦截，无法继续",
+            file=sys.stderr,
+        )
+        print("    请先启动代理后重试：", file=sys.stderr)
+        print("      python start_mitm_proxy.py", file=sys.stderr)
+        print(
+            "    或设置环境变量：USE_MITM_PROXY=true python collect_fees.py",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        run_fee_collection(arguments)
+    except DetailCollectionDesktopBusyError as error:
+        print(f"\n[!] {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

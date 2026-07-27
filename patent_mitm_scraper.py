@@ -29,6 +29,9 @@ from settings import (
 # 将 Path 对象转换为字符串（用于文件操作）
 FORCE_UPDATE_FLAG = str(FORCE_UPDATE_FLAG)
 
+_DETAIL_API_PATTERNS = ('/api/view/gn/fwxx', '/api/view/gn/fyxx')
+_DETAIL_TARGET_METADATA_KEY = 'cnipa_detail_target_application_no'
+
 
 class PatentMITMScraper:
     """MITM 爬虫，用于拦截和处理专利 API 响应"""
@@ -46,6 +49,20 @@ class PatentMITMScraper:
         self.processed_count = 0
         # mitmproxy 在线程池中并发回调 response()，缓存读-改-写必须加锁
         self._cache_lock = threading.Lock()
+
+    def request(self, flow: http.HTTPFlow) -> None:
+        """在详情 API 请求发出时绑定申请号，避免迟到响应串到下一件。"""
+        url = flow.request.pretty_url
+        if (
+            'cponline.cnipa.gov.cn' not in url
+            or not any(pattern in url for pattern in _DETAIL_API_PATTERNS)
+        ):
+            return
+
+        application_no = self._read_recent_target_app_no()
+        if application_no:
+            flow.metadata[_DETAIL_TARGET_METADATA_KEY] = application_no
+            print(f"[✓] 详情请求已绑定申请号: {application_no}")
 
     def response(self, flow: http.HTTPFlow) -> None:
         """拦截响应的钩子函数：CNIPA 域名 + 200 + JSON 才处理。"""
@@ -250,10 +267,19 @@ class PatentMITMScraper:
                 print(f"[-] 发文信息 API 错误: code={data.get('code')}, msg={data.get('msg')}")
                 return
 
-            # 提取发文列表
-            fwxx_list = data.get('data', {}).get('tongzhishufw', {}).get('tongzhishufwList', [])
-            if not fwxx_list:
-                print(f"[-] 未找到发文列表数据")
+            response_data = data.get('data')
+            fwxx_section = (
+                response_data.get('tongzhishufw')
+                if isinstance(response_data, dict)
+                else None
+            )
+            if not isinstance(fwxx_section, dict) or 'tongzhishufwList' not in fwxx_section:
+                print("[-] 发文信息响应缺少 tongzhishufwList")
+                return
+
+            fwxx_list = fwxx_section['tongzhishufwList']
+            if not isinstance(fwxx_list, list):
+                print("[-] 发文信息 tongzhishufwList 类型错误")
                 return
 
             print(f"[*] 成功提取 {len(fwxx_list)} 条发文数据")
@@ -266,10 +292,7 @@ class PatentMITMScraper:
                     print(f"[*] 找到驳回决定: {bhsj_data.get('xiazaisj')}")
                     break
 
-            # 从 URL 参数或其他地方提取申请号
-            # URL 格式: /api/view/gn/fwxx?hHp4Kgam=...
-            # 需要从浏览器上下文获取申请号，暂时使用占位符
-            application_no = self._read_recent_target_app_no()
+            application_no = self._read_bound_detail_target(flow)
 
             if not application_no:
                 print(f"[-] 无法提取申请号")
@@ -353,7 +376,7 @@ class PatentMITMScraper:
                 print('[-] 费用信息响应没有可缓存的有效栏目')
                 return
 
-            application_no = self._read_recent_target_app_no()
+            application_no = self._read_bound_detail_target(flow)
             if not application_no:
                 return
 
@@ -375,6 +398,21 @@ class PatentMITMScraper:
             print(f'[!] 费用信息 JSON 解析失败: {e}')
         except Exception as e:
             print(f'[!] 处理费用信息失败: {e}')
+
+    @staticmethod
+    def _read_bound_detail_target(flow: http.HTTPFlow) -> str | None:
+        """读取 request() 已绑定到当前 HTTP 流的申请号。"""
+        metadata = getattr(flow, 'metadata', None)
+        if not isinstance(metadata, dict):
+            print('[-] 详情响应缺少请求元数据，跳过')
+            return None
+        application_no = normalize_app_no(
+            metadata.get(_DETAIL_TARGET_METADATA_KEY)
+        )
+        if not application_no:
+            print('[-] 详情响应没有请求时绑定的申请号，跳过')
+            return None
+        return application_no
 
     def _read_recent_target_app_no(self) -> str:
         """
@@ -441,6 +479,11 @@ class PatentMITMScraper:
 scraper = PatentMITMScraper()
 
 
+def request(flow: http.HTTPFlow) -> None:
+    """mitmproxy 的请求拦截钩子。"""
+    scraper.request(flow)
+
+
 def response(flow: http.HTTPFlow) -> None:
-    """mitmproxy 的响应拦截钩子"""
+    """mitmproxy 的响应拦截钩子。"""
     scraper.response(flow)

@@ -6,11 +6,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from collect_fwxx import (
-    _append_unmatched,
-    load_standalone_targets,
-    update_detection_log,
-)
+from collect_fees import _append_unmatched_fee, persist_fee_fields
+from collect_fwxx import load_standalone_targets
 from manual_fwxx_requests import create_manual_fwxx_request, parse_manual_fwxx_targets
 
 
@@ -71,13 +68,13 @@ class TestStandaloneFwxxForceMode(unittest.TestCase):
         self.assertEqual(targets, ["202111504942X"])
 
 
-class TestDetailFieldPersistence(unittest.TestCase):
-    @patch("collect_fwxx.PatentsDB")
+class TestFeeFieldPersistence(unittest.TestCase):
+    @patch("collect_fees.PatentsDB")
     def test_partial_fee_success_does_not_clear_missing_fwxx_fields(self, mock_db_class):
         mock_db = mock_db_class.return_value
         mock_db.get_record.return_value = {"application_no": "2026102909420"}
 
-        self.assertTrue(update_detection_log(
+        self.assertTrue(persist_fee_fields(
             "2026102909420",
             {
                 "payable_fee_records": [],
@@ -92,16 +89,16 @@ class TestDetailFieldPersistence(unittest.TestCase):
         self.assertEqual(persisted["paid_fee_records"], [])
         self.assertEqual(persisted["fee_receipt_dispatch_records"], [])
         self.assertEqual(persisted["fee_snapshot_at"], "2026-07-18T00:00:00Z")
-        self.assertIn("timestamp", persisted)
+        self.assertNotIn("timestamp", persisted)
         self.assertNotIn("fwxx_list", persisted)
         self.assertNotIn("bhsjtzs_data", persisted)
         self.assertNotIn("late_fee_schedule_records", persisted)
 
     def test_unmatched_backup_omits_fee_sections_not_returned_by_api(self):
         with TemporaryDirectory() as temp_dir:
-            unmatched_path = Path(temp_dir) / "fwxx_unmatched.json"
-            with patch("collect_fwxx.FWXX_UNMATCHED_FILE", str(unmatched_path)):
-                _append_unmatched(
+            unmatched_path = Path(temp_dir) / "fee_unmatched.json"
+            with patch("collect_fees.FEE_UNMATCHED_FILE", str(unmatched_path)):
+                _append_unmatched_fee(
                     "2026102909420",
                     {
                         "payable_fee_records": [],
@@ -117,5 +114,7 @@ class TestDetailFieldPersistence(unittest.TestCase):
             self.assertEqual(backed_up["payable_fee_records"], [])
             self.assertNotIn("late_fee_schedule_records", backed_up)
             self.assertNotIn("fee_receipt_dispatch_records", backed_up)
+
+
 if __name__ == "__main__":
     unittest.main()

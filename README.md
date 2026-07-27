@@ -89,7 +89,7 @@ zhufenlh, anjianbh, anjianywzt
 fwxx_list, bhsjtzs_xiazaisj, bhsjtzs_data
 ```
 
-**费用信息 (4 个结构化列表，与发文信息在同一详情页流程采集)**
+**费用信息 (4 个结构化列表 + 快照时间，由独立费用任务采集)**
 ```
 payable_fee_records, late_fee_schedule_records,
 paid_fee_records, fee_receipt_dispatch_records, fee_snapshot_at
@@ -133,7 +133,8 @@ PatentsDB 写入 patents.db
 | `main_automation.py` | 主流程：浏览器控制、申请号循环、数据采集 | ✅ 活跃 |
 | `detection_logger.py` | 通过 PatentsDB 写入，生成 Excel/JSON/JSONL 导出 | ✅ 活跃 |
 | `patent_mitm_scraper.py` | MITM 插件：API 拦截、字段解析 | ✅ 活跃 |
-| `collect_fwxx.py` | 详情补采脚本：同页补采发文、应缴/滞纳、已缴和收据发文信息 | ✅ 活跃 |
+| `collect_fwxx.py` | 发文补采脚本：仅采集发文列表和驳回决定信息 | ✅ 活跃 |
+| `collect_fees.py` | 费用补采脚本：仅采集应缴/滞纳、已缴和收据发文信息 | ✅ 活跃 |
 | `main_automation.py --update-list` | 重试/强制更新：重新采集指定申请号列表 | ✅ 活跃 |
 | `start_browser_for_phase0.py` | Phase 0：打开带代理浏览器，用户手动按申请人搜索 | ✅ 可用 |
 | `import_from_cache.py` | Phase 0：将手动浏览产生的缓存导入 SQLite | ✅ 可用 |
@@ -152,6 +153,7 @@ data/
 ├── patents.db                # ⭐ 运行时主存储（SQLite，.gitignore 排除，所有读写经此）
 ├── search_list.txt           # 输入：申请号列表
 ├── config.json               # 配置：鼠标坐标（本机专用，.gitignore 排除）
+├── config_fwxx.json          # 配置：详情页/发文/费用坐标（本机专用，两个补采任务共用）
 ├── patent_cache.json         # 临时：MITM 缓存（可删除）
 ├── patent_fwxx_cache.json    # 临时：发文 MITM 缓存（可删除）
 ├── patent_fee_cache.json     # 临时：费用 MITM 缓存（可删除）
@@ -236,20 +238,30 @@ USE_MITM_PROXY=true python main_automation.py
 USE_MITM_PROXY=true python main_automation.py --update-list data/retry_failed.txt
 ```
 
-### 补采发文及费用信息
+### 分别补采发文和费用信息
 ```bash
-python collect_fwxx.py
+# 只补采发文信息
+USE_MITM_PROXY=true python collect_fwxx.py
+
+# 只补采费用信息
+USE_MITM_PROXY=true python collect_fees.py
 ```
 
-### 指定专利列表强制采集发文及费用
+自动模式下，发文计划只包含 `anjianywzt == '驳回等复审请求'` 且 `fwxx_list IS NULL` 的记录；费用计划只包含同一案件状态下应缴、已缴或收据发文任一必需列表仍为 `NULL` 的记录。两类计划和完成数量互不影响。
+
+### 指定专利列表强制采集发文或费用
 
 在控制台的“发文与费用”页粘贴申请号列表，或使用命令行：
 
 ```bash
+# 强制重采发文
 USE_MITM_PROXY=true python collect_fwxx.py --input data/fwxx_list.txt --force
+
+# 强制重采费用
+USE_MITM_PROXY=true python collect_fees.py --input data/fwxx_list.txt --force
 ```
 
-该模式不限制案件业务状态，也不会跳过已有详情记录；名单会规范化并去重后逐件进入发文与费用流程。
+`--force` 不限制案件业务状态，也不会跳过对应任务已经完成的记录；名单会规范化并去重后逐件进入所选流程。发文和费用任务都会控制同一台机器的桌面浏览器并共用当前申请号标记，因此不可并行运行。两个采集入口统一使用 `desktop_collection_lock.py` 的跨进程文件锁；无论从 Dashboard 还是命令行启动，第二个发文/费用任务都会在控制浏览器前被自动拒绝。Dashboard 还会额外阻止其管理的其他桌面任务冲突。
 
 ### Phase 0 手动按申请人采集
 ```bash
@@ -311,6 +323,6 @@ python export_public_search.py
 
 ---
 
-**最后更新**: 2026-07-11
+**最后更新**: 2026-07-27
 **项目阶段**: 阶段 3 - 主从部署与无人值守加固
 **维护人**: @minxiaochen

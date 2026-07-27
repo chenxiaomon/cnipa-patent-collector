@@ -296,7 +296,31 @@ USE_MITM_PROXY=true uv run python collect_fwxx.py --input data/fwxx_list.txt
 USE_MITM_PROXY=true uv run python collect_fwxx.py --app CN201880002233
 ```
 
-### 5. 导出 Excel 报表
+自动模式只计划 `anjianywzt == '驳回等复审请求'` 且 `fwxx_list IS NULL` 的记录。`fwxx_list=[]` 表示接口明确返回空列表，仍视为发文采集完成；费用字段是否缺失不会扩大这份计划。
+
+### 5. 补采费用信息
+
+费用信息由独立脚本处理，不会附带执行发文采集：
+
+```bash
+# 执行补采（从 patents.db 中筛选待补采目标）
+USE_MITM_PROXY=true uv run python collect_fees.py
+
+# 或仅补采前 5 条（测试模式）
+USE_MITM_PROXY=true uv run python collect_fees.py --test 5
+
+# 或指定申请号文件
+USE_MITM_PROXY=true uv run python collect_fees.py --input data/fwxx_list.txt
+
+# 或指定单个申请号
+USE_MITM_PROXY=true uv run python collect_fees.py --app CN201880002233
+```
+
+自动模式只计划驳回案件中 `payable_fee_records`、`paid_fee_records`、`fee_receipt_dispatch_records` 任一仍为 `NULL` 的记录。三个必需列表都非 `NULL` 即视为费用采集完成，明确返回的 `[]` 算完成；`late_fee_schedule_records` 可能不由接口返回，不作为完成条件。费用字段写入不会刷新基础状态的通用 `timestamp`。
+
+发文和费用任务共用桌面、浏览器坐标以及当前申请号标记，不可同时运行。两个脚本在整个采集周期内都会持有同一个跨进程文件锁；无论从 Dashboard 还是命令行启动，第二个发文/费用任务都会在打开或控制浏览器前报桌面占用并退出，不需要仅靠人工协调。Dashboard 还会拒绝其管理的其他桌面任务冲突；直接运行未接入该锁的其他 CLI 桌面脚本时，仍应避免同时操作桌面。
+
+### 6. 导出 Excel 报表
 
 采集完成后自动导出，若需要重新导出：
 
@@ -478,6 +502,6 @@ open data/results/patents_data.xlsx
 
 ---
 
-*更新时间*: 2026-07-11
+*更新时间*: 2026-07-27
 *验证平台*: macOS / Windows, Python 3.11
 *上次测试*: 2026-07-11
