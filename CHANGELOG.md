@@ -9,12 +9,20 @@
 
 ## [2026.08.05]
 
+### 新增
+- 费用采集数据集：新增 `fee_targets` 表与 `import_fee_targets.py`（CSV/Excel 导入，支持 `--dry` 预览，兼容无表头纯申请号名单），Dashboard「发文与费用」页可直接上传导入。
+- Dashboard 费用面板新增数据集统计（总数/已采/待采/未建档）、「强制重采数据集」与「未建档转入主采集清单」按钮。
+
 ### 修复
 - 修复 macOS 上浏览器启动不动：Chrome 版本探测新增 macOS 分支（读 `Info.plist`，退回二进制自报版本），此前探测不到版本导致每次下载与本机不匹配的最新版 ChromeDriver 并反复失败。
 - 修复每次启动都重新联网下载 ChromeDriver（约 10MB）：已下载的驱动版本匹配时直接复用（三平台通用），实测二次启动从 10.5 秒降到 1.2 秒；驱动仅在 Chrome 大版本升级后重新下载一次。
 - 修复 example 模板的全 0 占位坐标被当成有效配置：此前会让 pyautogui 点击屏幕左上角且无任何报错，现在自动触发重新录制。
 
 ### 变更
+- **费用采集目标改由导入的数据集决定**，与驳回案件状态彻底解耦；数据集内未建档的申请号单独计数并提示先跑主采集（见 decision-log D011）。`collect_fees.py --force`（不带 `--input`/`--app`）改为强制重采整个数据集；数据集为空时打印导入指引后退出。
+- 移除驳回口径的费用查询与 `detail_enrichment_*` 混合指标（生产代码零调用）及其部分索引。
+- 让 `.env` 真正生效：`settings.py` 启动时载入 `.env`（进程显式环境变量优先），`MITM_PORT`、`WATCHDOG_*`、`SERVERCHAN_SENDKEY` 等不再是死配置。
+- 连续失败熔断覆盖全部采集入口：主采集、发文、费用任一连续失败 20 条（`WATCHDOG_FAILURE_THRESHOLD`）即停止并写入报警，退出码 3；此前仅无人值守 watchdog 模式生效。
 - `USE_MITM_PROXY=true` 但代理未启动时，启动浏览器前秒级报错并提示启动命令，不再打开浏览器后静默卡约 2 分钟。
 - 首屏加载新增 60 秒上限（`BROWSER_PAGE_LOAD_TIMEOUT`，可用环境变量调整），此前沿用 chromedriver 默认 300 秒。
 - 浏览器初始化失败的报错带上本机 Chrome 版本和原始异常，并提示手动放置 ChromeDriver 的目录（`chromedriver-mac-x64/` 等，放入即自动生效）。

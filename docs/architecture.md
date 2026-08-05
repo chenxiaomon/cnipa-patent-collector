@@ -55,9 +55,10 @@
         │ → update_fields() 更新 patents.db                    │
         └────────────────────────────────────────────────────────┘
         ┌────────────────────────────────────────────────────────┐
-        │ 6b（可选、独立）补采费用信息                            │
+        │ 6b（可选、独立）采集费用信息                            │
+        │ python import_fee_targets.py 名单.xlsx  # 导入数据集   │
         │ python collect_fees.py                                 │
-        │ 筛选: 驳回案件 && 任一必需费用列表为 null               │
+        │ 筛选: 费用数据集内已建档 && 任一必需费用列表为 null     │
         │ → update_fields() 更新 patents.db                    │
         └────────────────────────────────────────────────────────┘
 ```
@@ -208,7 +209,7 @@ data/
 - `fee_receipt_dispatch_records` - 收据发文信息，对应 `data.shoujufawen.svSjfwList`
 - `fee_snapshot_at` - 应缴费栏目成功采集时的 UTC 时间
 
-**待采集/完成口径**: 自动计划限定 `anjianywzt == '驳回等复审请求'`。`payable_fee_records`、`paid_fee_records`、`fee_receipt_dispatch_records` 是三个必需栏目，任一为 `NULL` 即待采集；三者均非 `NULL` 即完成，`[]` 也算接口明确返回并完成。正常缴费案件可能不返回 `late_fee_schedule_records`，因此该字段不作为完成条件。
+**待采集/完成口径**: 自动计划来自用户导入的**费用数据集**（`fee_targets` 表，`import_fee_targets.py` 或 Dashboard 上传，导入即整表替换），与案件状态无关（见 decision-log D011）。数据集内已建档的记录中，`payable_fee_records`、`paid_fee_records`、`fee_receipt_dispatch_records` 三个必需栏目任一为 `NULL` 即待采集；三者均非 `NULL` 即完成，`[]` 也算接口明确返回并完成。数据集内主库无记录的申请号计为「未建档」，不进计划。正常缴费案件可能不返回 `late_fee_schedule_records`，因此该字段不作为完成条件。
 
 费用写入只更新费用字段和 `fee_snapshot_at`，不刷新基础案件状态使用的通用 `timestamp`。票据代码、票据号码和收据号按字符串保存。
 

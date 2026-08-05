@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from atomic_write import write_json_atomic
 from browser_service import BrowserService
 from browser_utils import is_browser_alive
+from collection_health import CollectionFailureStreak, CollectionFailureStreakExceeded
 from cache_utils import (
     clear_cache_key,
     parse_app_no_list,
@@ -102,20 +103,39 @@ def countdown(seconds: int, message: str = "请手动记录坐标，倒计时") 
     print(f"\r{message}: 0 秒...完成！    ")
 
 
-def load_target_applications() -> list[str]:
-    """返回驳回案件中任一必需费用栏目仍为 NULL 的申请号。"""
+def load_fee_dataset_targets(force: bool = False) -> list[str]:
+    """返回费用数据集内的待采申请号（force 时为整个数据集）。
+
+    费用采集范围由用户导入的数据集（fee_targets 表）决定，与驳回状态无关。
+    """
     db = PatentsDB(PATENTS_DB_FILE)
-    summary = db.get_summary()
-    total_rejections = summary['rejection']
-    targets = db.fee_details_pending_app_nos()
-    completed = max(0, total_rejections - len(targets))
+    progress = db.fee_dataset_progress()
+
+    if progress['total'] == 0:
+        print("\n" + "=" * 60)
+        print("📭 费用采集数据集为空")
+        print("=" * 60)
+        print("请先导入需要采集费用的申请号名单：")
+        print("  uv run python import_fee_targets.py 名单.xlsx")
+        print("或在 Dashboard「发文与费用」页上传 CSV/Excel 文件。")
+        print("=" * 60 + "\n")
+        return []
+
+    if force:
+        targets = db.fee_dataset_app_nos()
+    else:
+        targets = db.fee_dataset_pending_app_nos()
 
     print("\n" + "=" * 60)
-    print("📊 费用信息采集统计")
+    print("📊 费用信息采集统计（数据集口径）")
     print("=" * 60)
-    print(f"✓ 驳回等复审请求: 共 {total_rejections} 条")
-    print(f"✓ 已完整采集必需费用栏目: {completed} 条")
-    print(f"⏳ 待采集费用: {len(targets)} 条")
+    print(f"✓ 数据集共: {progress['total']} 条")
+    print(f"✓ 已完整采集必需费用栏目: {progress['collected']} 条")
+    print(f"⏳ 待采集费用: {progress['pending']} 条")
+    if progress['unregistered']:
+        print(f"⚠️  未建档: {progress['unregistered']} 条（主库无记录，需先跑主采集建档）")
+    if force:
+        print(f"🔁 强制重采：本次目标为整个数据集 {len(targets)} 条")
     print("=" * 60 + "\n")
 
     if targets:
@@ -384,13 +404,13 @@ def _run_fee_collection(args) -> None:
             force=bool(getattr(args, 'force', False)),
         )
     else:
-        targets = load_target_applications()
+        targets = load_fee_dataset_targets(force=bool(getattr(args, 'force', False)))
 
     if not targets:
         if standalone_mode:
             print("✓ 无待采集的申请号（可能已全部采集完毕）")
         else:
-            print("✓ 无需采集，所有驳回案件的必需费用栏目都已采集！")
+            print("✓ 本次无采集目标（数据集为空或已全部采集，见上方统计）")
         return
 
     if test_count:
@@ -420,6 +440,7 @@ def _run_fee_collection(args) -> None:
         print("=" * 70)
         success_count = 0
         failed_count = 0
+        failure_streak = CollectionFailureStreak('费用信息采集')
 
         for index, application_no in enumerate(targets, 1):
             if not is_browser_alive(driver):
@@ -447,12 +468,15 @@ def _run_fee_collection(args) -> None:
                 if persist_fee_fields(application_no, fee_fields):
                     print("  ✅ 已成功采集并更新费用字段")
                     success_count += 1
+                    failure_streak.record_success()
                 else:
                     print(f"  ⚠️  主库未更新，费用信息已备份到 {FEE_UNMATCHED_FILE}")
                     failed_count += 1
+                    failure_streak.record_failure()
             else:
                 print("  ❌ 未采集到费用数据")
                 failed_count += 1
+                failure_streak.record_failure()
 
             if index % FWXX_ANTI_CRAWL_BATCH_SIZE == 0 and index < len(targets):
                 wait_time = random.uniform(
@@ -476,6 +500,9 @@ def _run_fee_collection(args) -> None:
         )
         print(f"[✓] JSONL 备份已刷新：{exported} 条（含费用信息）")
 
+    except CollectionFailureStreakExceeded:
+        # 熔断信息已由 CollectionFailureStreak 打点并写入报警，无需 traceback
+        raise
     except Exception as error:
         print(f"\n[!] 费用采集过程出错: {error}")
         import traceback
@@ -504,7 +531,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--force',
         action='store_true',
-        help='独立模式：不按案件状态筛选，也不跳过已有费用记录',
+        help='独立模式（--input/--app）下不筛选不续传；单独使用时强制重采整个费用数据集',
     )
     return parser
 
@@ -530,6 +557,9 @@ def main(argv: list[str] | None = None) -> int:
     except DetailCollectionDesktopBusyError as error:
         print(f"\n[!] {error}", file=sys.stderr)
         return 2
+    except CollectionFailureStreakExceeded as error:
+        print(f"\n⛔ {error}", file=sys.stderr)
+        return 3
     return 0
 
 

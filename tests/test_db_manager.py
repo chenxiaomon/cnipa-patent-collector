@@ -241,7 +241,7 @@ class TestConnectionLifecycle(unittest.TestCase):
             self.assertIn("late_fee_schedule_records", columns)
             self.assertIn("fee_snapshot_at", columns)
 
-    def test_initialization_replaces_legacy_detail_pending_index_once(self):
+    def test_initialization_drops_legacy_detail_pending_index_and_creates_fee_targets(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "patents.db"
             with closing(sqlite3.connect(db_path)) as conn:
@@ -269,16 +269,16 @@ class TestConnectionLifecycle(unittest.TestCase):
             PatentsDB(db_path)
 
             with closing(sqlite3.connect(db_path)) as conn:
-                index_sql = conn.execute(
+                index_row = conn.execute(
                     "SELECT sql FROM sqlite_master WHERE type='index' "
                     "AND name='idx_detail_enrichment_pending'"
-                ).fetchone()[0]
+                ).fetchone()
+                fee_targets_row = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='fee_targets'"
+                ).fetchone()
                 schema_version = conn.execute("PRAGMA schema_version").fetchone()[0]
-            self.assertIn("fwxx_list IS NULL", index_sql)
-            self.assertIn("payable_fee_records IS NULL", index_sql)
-            self.assertIn("paid_fee_records IS NULL", index_sql)
-            self.assertIn("fee_receipt_dispatch_records IS NULL", index_sql)
-            self.assertNotIn("late_fee_schedule_records", index_sql)
+            self.assertIsNone(index_row)
+            self.assertIsNotNone(fee_targets_row)
 
             PatentsDB(db_path)
             with closing(sqlite3.connect(db_path)) as conn:
@@ -331,96 +331,59 @@ class TestFwxxCollectedAppNos(unittest.TestCase):
             self.assertEqual(db.fwxx_collected_app_nos(), {"2023000000001"})
 
 
-class TestDetailEnrichmentProgress(unittest.TestCase):
-    def test_only_complete_records_are_skipped_by_resume(self):
+class TestFeeDatasetProgress(unittest.TestCase):
+    def test_replace_fee_targets_reports_previous_and_imported_counts(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db = PatentsDB(Path(tmpdir) / "patents.db")
-            complete_fields = {
-                "fwxx_list": [],
+            first = db.replace_fee_targets(["2023000000001", "2023000000002"])
+            self.assertEqual(first, {"previous_count": 0, "imported_count": 2})
+
+            second = db.replace_fee_targets(["2023000000003"])
+            self.assertEqual(second, {"previous_count": 2, "imported_count": 1})
+            # 替换语义：旧目标彻底消失
+            self.assertEqual(db.fee_dataset_app_nos(), ["2023000000003"])
+
+    def test_pending_excludes_unregistered_and_collected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = PatentsDB(Path(tmpdir) / "patents.db")
+            # 已采齐（空列表也算已采）
+            db.upsert({
+                "application_no": "2023000000001",
                 "payable_fee_records": [],
                 "paid_fee_records": [],
                 "fee_receipt_dispatch_records": [],
-            }
-            db.upsert({
-                "application_no": "2023000000001",
-                "anjianywzt": "驳回等复审请求",
-                **complete_fields,
             })
+            # 费用缺失；非驳回状态也照采——费用口径与案件状态解耦
             db.upsert({
                 "application_no": "2023000000002",
-                "anjianywzt": "驳回等复审请求",
-                "fwxx_list": [{"tongzhismc": "驳回决定"}],
-                "paid_fee_records": [],
-                "fee_receipt_dispatch_records": [],
-            })
-            db.upsert({
-                "application_no": "2023000000003",
                 "anjianywzt": "专利权维持",
+                "paid_fee_records": [],
             })
+            # 2023000000009 未建档：只计入 unregistered，不进待采队列
+            db.replace_fee_targets([
+                "2023000000001", "2023000000002", "2023000000009",
+            ])
 
+            self.assertEqual(db.fee_dataset_pending_app_nos(), ["2023000000002"])
+            self.assertEqual(db.fee_dataset_progress(), {
+                "total": 3, "collected": 1, "pending": 1, "unregistered": 1,
+            })
             self.assertEqual(
-                db.detail_enrichment_completed_app_nos(),
-                {"2023000000001"},
+                db.fee_dataset_unregistered_app_nos(), ["2023000000009"],
             )
-            self.assertEqual(
-                db.detail_enrichment_pending_app_nos(),
-                ["2023000000002"],
-            )
-            complete_record = db.get_record("2023000000001")
-            self.assertIsNone(complete_record["late_fee_schedule_records"])
-            self.assertIsNone(complete_record["fee_snapshot_at"])
-            pending_record = db.get_record("2023000000002")
-            self.assertIsNone(pending_record["payable_fee_records"])
 
+    def test_empty_dataset_progress_is_all_zero(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = PatentsDB(Path(tmpdir) / "patents.db")
+            self.assertEqual(db.fee_dataset_progress(), {
+                "total": 0, "collected": 0, "pending": 0, "unregistered": 0,
+            })
             summary = db.get_summary()
-            self.assertEqual(summary["detail_enrichment_completed"], 1)
-            self.assertEqual(summary["detail_enrichment_pending"], 1)
-            self.assertEqual(summary["fwxx_pending"], 0)
-            self.assertEqual(summary["fwxx_pending_list"], [])
-            self.assertEqual(
-                [row["application_no"] for row in summary["detail_enrichment_pending_list"]],
-                ["2023000000002"],
-            )
+            self.assertEqual(summary["fee_dataset_total"], 0)
+            self.assertEqual(summary["fee_dataset_pending_list"], [])
 
 
 class TestFeeDetailsProgress(unittest.TestCase):
-    def test_pending_query_requires_rejection_status_and_any_missing_required_field(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db = PatentsDB(Path(tmpdir) / "patents.db")
-            complete_fee_fields = {
-                "payable_fee_records": [],
-                "paid_fee_records": [],
-                "fee_receipt_dispatch_records": [],
-            }
-            db.upsert({
-                "application_no": "2023000000001",
-                "anjianywzt": "\u9a73\u56de\u7b49\u590d\u5ba1\u8bf7\u6c42",
-                **complete_fee_fields,
-            })
-            db.upsert({
-                "application_no": "2023000000002",
-                "anjianywzt": "\u9a73\u56de\u7b49\u590d\u5ba1\u8bf7\u6c42",
-                "fwxx_list": [{"tongzhismc": "notice"}],
-                "paid_fee_records": [],
-                "fee_receipt_dispatch_records": [],
-            })
-            db.upsert({
-                "application_no": "2023000000003",
-                "anjianywzt": "active",
-            })
-
-            self.assertEqual(
-                db.fee_details_pending_app_nos(),
-                ["2023000000002"],
-            )
-            self.assertEqual(
-                db.fee_details_pending_app_nos("active"),
-                ["2023000000003"],
-            )
-            complete_record = db.get_record("2023000000001")
-            self.assertIsNone(complete_record["late_fee_schedule_records"])
-            self.assertIsNone(complete_record["fwxx_list"])
-
     def test_completed_query_accepts_empty_arrays_and_does_not_filter_status(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db = PatentsDB(Path(tmpdir) / "patents.db")
@@ -450,30 +413,32 @@ class TestFeeDetailsProgress(unittest.TestCase):
                 {"2023000000001", "2023000000002"},
             )
 
-    def test_summary_lists_latest_twenty_fee_pending_rejection_records(self):
+    def test_summary_lists_latest_twenty_fee_dataset_pending_records(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db = PatentsDB(Path(tmpdir) / "patents.db")
             for day in range(1, 23):
                 db.upsert({
                     "application_no": f"2023000000{day:03d}",
-                    "anjianywzt": "\u9a73\u56de\u7b49\u590d\u5ba1\u8bf7\u6c42",
                     "timestamp": f"2026-07-{day:02d}T08:00:00Z",
                 })
-            db.upsert({
-                "application_no": "2023000000098",
-                "anjianywzt": "active",
-                "timestamp": "2026-07-31T08:00:00Z",
-            })
+            # \u5df2\u91c7\u9f50\u7684\u6570\u636e\u96c6\u6210\u5458\u4e0d\u8fdb\u5f85\u8865\u5217\u8868
             db.upsert({
                 "application_no": "2023000000099",
-                "anjianywzt": "\u9a73\u56de\u7b49\u590d\u5ba1\u8bf7\u6c42",
                 "timestamp": "2026-07-30T08:00:00Z",
                 "payable_fee_records": [],
                 "paid_fee_records": [],
                 "fee_receipt_dispatch_records": [],
             })
+            # \u5e93\u91cc\u5b58\u5728\u4f46\u4e0d\u5728\u6570\u636e\u96c6\u5185\u7684\u8bb0\u5f55\u4e0d\u8fdb\u5f85\u8865\u5217\u8868
+            db.upsert({
+                "application_no": "2023000000098",
+                "timestamp": "2026-07-31T08:00:00Z",
+            })
+            db.replace_fee_targets(
+                [f"2023000000{day:03d}" for day in range(1, 23)] + ["2023000000099"]
+            )
 
-            pending_rows = db.get_summary()["fee_details_pending_list"]
+            pending_rows = db.get_summary()["fee_dataset_pending_list"]
 
             self.assertEqual(len(pending_rows), 20)
             self.assertEqual(

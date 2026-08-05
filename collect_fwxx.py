@@ -68,6 +68,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from atomic_write import write_json_atomic
 from detection_logger import DetectionLogger
 from browser_utils import is_browser_alive
+from collection_health import CollectionFailureStreak, CollectionFailureStreakExceeded
 from coordinate_service import CoordinateService
 from browser_service import BrowserService
 from input_service import InputService
@@ -564,6 +565,7 @@ def _run_fwxx_collection(args) -> None:
 
         success_count = 0
         failed_count = 0
+        failure_streak = CollectionFailureStreak('发文信息采集')
 
         for idx, application_no in enumerate(targets, 1):
             # 检测浏览器是否还活着
@@ -593,12 +595,15 @@ def _run_fwxx_collection(args) -> None:
                 if persist_fwxx_fields(application_no, fwxx_fields):
                     print(f"  ✅ 已成功采集并更新日志")
                     success_count += 1
+                    failure_streak.record_success()
                 else:
                     print(f"  ⚠️  主日志未更新，发文信息已备份到 {FWXX_UNMATCHED_FILE}")
                     failed_count += 1
+                    failure_streak.record_failure()
             else:
                 print(f"  ❌ 未采集到数据")
                 failed_count += 1
+                failure_streak.record_failure()
 
             # 申请号之间的随机延迟（防反爬）
             if idx % FWXX_ANTI_CRAWL_BATCH_SIZE == 0 and idx < len(targets):
@@ -625,6 +630,9 @@ def _run_fwxx_collection(args) -> None:
         exported = PatentsDB(PATENTS_DB_FILE).export_to_jsonl(DETECTION_LOG_JSONL_FILE)
         print(f"[✓] JSONL 备份已刷新：{exported} 条（含发文信息）")
 
+    except CollectionFailureStreakExceeded:
+        # 熔断信息已由 CollectionFailureStreak 打点并写入报警，无需 traceback
+        raise
     except Exception as e:
         print(f"\n[!] 采集过程出错: {e}")
         import traceback
@@ -692,3 +700,6 @@ if __name__ == "__main__":
     except DetailCollectionDesktopBusyError as error:
         print(f"\n[!] {error}")
         sys.exit(2)
+    except CollectionFailureStreakExceeded as error:
+        print(f"\n⛔ {error}")
+        sys.exit(3)

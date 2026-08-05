@@ -47,6 +47,8 @@ from cache_utils import clear_cache_key, normalize_app_no, parse_app_no_list, po
 from coordinate_service import CoordinateService
 from browser_service import BrowserService, stop_virtual_display
 from collection_health import (
+    CollectionFailureStreak,
+    CollectionFailureStreakExceeded,
     write_collection_progress_heartbeat,
     write_collection_start_heartbeat,
     write_collection_stopped_heartbeat,
@@ -283,7 +285,7 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
     run_total = 0
     run_success = 0
     run_failed = 0
-    consecutive_failures = 0
+    failure_streak = CollectionFailureStreak('主采集')
     write_collection_start_heartbeat(len(pending))
     try:
         if update_list:
@@ -335,22 +337,25 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
                 logger,
                 force_update=bool(update_list),
             )
-            if record is not None:
-                run_total += 1
-                if record.status_code == 200:
-                    run_success += 1
-                    consecutive_failures = 0
+            # finally 保证熔断抛出时本条心跳也已写入，watchdog 能看到最终计数
+            try:
+                if record is not None:
+                    run_total += 1
+                    if record.status_code == 200:
+                        run_success += 1
+                        failure_streak.record_success()
+                    else:
+                        run_failed += 1
+                        failure_streak.record_failure()
                 else:
-                    run_failed += 1
-                    consecutive_failures += 1
-            else:
-                consecutive_failures += 1
-            write_collection_progress_heartbeat(
-                app_no,
-                i,
-                len(pending),
-                consecutive_failures,
-            )
+                    failure_streak.record_failure()
+            finally:
+                write_collection_progress_heartbeat(
+                    app_no,
+                    i,
+                    len(pending),
+                    failure_streak.count,
+                )
 
             # 每处理 N 个后随机等待（优化：每条省 ~0.25s）
             if i % AUTOMATION_ANTI_CRAWL_BATCH_SIZE == 0:
@@ -429,4 +434,8 @@ if __name__ == '__main__':
                         help='强制更新模式：从文件读取申请号并重新检索')
     args = parser.parse_args()
 
-    run_automation(test_count=args.test, update_list=args.update_list)
+    try:
+        run_automation(test_count=args.test, update_list=args.update_list)
+    except CollectionFailureStreakExceeded as error:
+        print(f"\n⛔ {error}")
+        sys.exit(3)

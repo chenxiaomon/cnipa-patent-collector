@@ -17,7 +17,6 @@ class TestFwxxCollectionBoundaries(unittest.TestCase):
         self.assertEqual(collect_fwxx.load_target_applications(), ["A", "B"])
 
         db.fwxx_uncollected_app_nos.assert_called_once_with()
-        db.detail_enrichment_pending_app_nos.assert_not_called()
 
     @patch("collect_fwxx.PatentsDB")
     def test_standalone_resume_uses_fwxx_completion(self, db_class):
@@ -27,7 +26,6 @@ class TestFwxxCollectionBoundaries(unittest.TestCase):
         self.assertEqual(collect_fwxx._load_standalone_collected(), {"A"})
 
         db.fwxx_collected_app_nos.assert_called_once_with()
-        db.detail_enrichment_completed_app_nos.assert_not_called()
 
     @patch("collect_fwxx.time.sleep")
     @patch("collect_fwxx.pyautogui.hotkey")

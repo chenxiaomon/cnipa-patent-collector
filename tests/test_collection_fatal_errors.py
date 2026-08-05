@@ -37,7 +37,7 @@ class TestCollectionFatalErrors(unittest.TestCase):
         "collect_fees.BrowserService.launch_and_login",
         side_effect=RuntimeError("browser failed"),
     )
-    @patch("collect_fees.load_target_applications", return_value=["A"])
+    @patch("collect_fees.load_fee_dataset_targets", return_value=["A"])
     def test_fee_batch_propagates_browser_startup_failure(
         self,
         _load_targets,

@@ -100,7 +100,7 @@ class TestFeeCoordinateFlow(unittest.TestCase):
     @patch("collect_fees.countdown")
     @patch("collect_fees.CoordinateService")
     @patch("collect_fees.BrowserService")
-    @patch("collect_fees.load_target_applications", return_value=["A"])
+    @patch("collect_fees.load_fee_dataset_targets", return_value=["A"])
     def test_search_page_only_loads_search_and_detail_link_coordinates(
         self,
         _load_targets,

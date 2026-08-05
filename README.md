@@ -247,7 +247,15 @@ USE_MITM_PROXY=true python collect_fwxx.py
 USE_MITM_PROXY=true python collect_fees.py
 ```
 
-自动模式下，发文计划只包含 `anjianywzt == '驳回等复审请求'` 且 `fwxx_list IS NULL` 的记录；费用计划只包含同一案件状态下应缴、已缴或收据发文任一必需列表仍为 `NULL` 的记录。两类计划和完成数量互不影响。
+自动模式下，发文计划只包含 `anjianywzt == '驳回等复审请求'` 且 `fwxx_list IS NULL` 的记录；费用计划则来自**用户导入的费用数据集**（与案件状态无关），只包含数据集内应缴、已缴或收据发文任一必需列表仍为 `NULL` 的已建档记录。两类计划和完成数量互不影响。
+
+导入费用数据集（CSV/Excel 含申请号列，导入即整表替换）：
+
+```bash
+uv run python import_fee_targets.py 名单.xlsx        # 或 .csv；--dry 预览不写入
+```
+
+也可在控制台「发文与费用」页直接上传文件。数据集内主库无记录的申请号会被标记为「未建档」，需先跑主采集建档后才会进入费用待采队列。
 
 ### 指定专利列表强制采集发文或费用
 

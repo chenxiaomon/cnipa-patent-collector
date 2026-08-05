@@ -104,10 +104,13 @@ _REQUIRED_FEE_DETAILS_PRESENT_SQL = (
     "payable_fee_records IS NOT NULL AND paid_fee_records IS NOT NULL "
     "AND fee_receipt_dispatch_records IS NOT NULL"
 )
-_CREATE_DETAIL_ENRICHMENT_PENDING_INDEX = (
-    "CREATE INDEX idx_detail_enrichment_pending ON patents(anjianywzt) "
-    f"WHERE fwxx_list IS NULL OR {_REQUIRED_FEE_DETAILS_MISSING_SQL}"
+# 费用采集数据集：由用户导入的申请号名单决定哪些专利需要采费用（与驳回状态解耦）
+_CREATE_FEE_TARGETS_TABLE = """
+CREATE TABLE IF NOT EXISTS fee_targets (
+    application_no TEXT PRIMARY KEY,
+    imported_at    TEXT NOT NULL
 )
+"""
 
 
 def _split_applicant_names(value: str | None) -> list[str]:
@@ -189,6 +192,7 @@ class PatentsDB:
                 "CREATE INDEX IF NOT EXISTS idx_fwxx_pending ON patents(anjianywzt) WHERE fwxx_list IS NULL"
             )
             conn.execute(_CREATE_REQUESTS_TABLE)
+            conn.execute(_CREATE_FEE_TARGETS_TABLE)
             # 对已有数据库做无损迁移：列已存在时 SQLite 抛 "duplicate column name"，忽略即可
             for col in (
                 'daili_jg TEXT',
@@ -204,18 +208,8 @@ class PatentsDB:
                 except sqlite3.OperationalError as e:
                     if 'duplicate column' not in str(e).lower():
                         raise  # 非"列已存在"的错误应当暴露
-            index_row = conn.execute(
-                "SELECT sql FROM sqlite_master WHERE type='index' "
-                "AND name='idx_detail_enrichment_pending'"
-            ).fetchone()
-            current_index_sql = ' '.join(index_row['sql'].split()).lower() if index_row else None
-            expected_index_sql = ' '.join(
-                _CREATE_DETAIL_ENRICHMENT_PENDING_INDEX.split()
-            ).lower()
-            if current_index_sql != expected_index_sql:
-                if index_row:
-                    conn.execute("DROP INDEX idx_detail_enrichment_pending")
-                conn.execute(_CREATE_DETAIL_ENRICHMENT_PENDING_INDEX)
+            # detail_enrichment 综合口径已随费用解耦移除，该索引不再有查询使用
+            conn.execute("DROP INDEX IF EXISTS idx_detail_enrichment_pending")
             migration_timestamp = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
             conn.execute(
                 "UPDATE patents SET updated_at=COALESCE(NULLIF(timestamp, ''), ?) "
@@ -639,46 +633,90 @@ class PatentsDB:
             ).fetchall()
         return {r['application_no'] for r in rows}
 
-    def fee_details_pending_app_nos(
-        self,
-        rejection_status: str = '\u9a73\u56de\u7b49\u590d\u5ba1\u8bf7\u6c42',
-    ) -> list[str]:
-        """Return rejection cases with any required fee payload still NULL."""
+    def replace_fee_targets(self, app_nos: list[str]) -> dict:
+        """\u6574\u8868\u66ff\u6362\u8d39\u7528\u91c7\u96c6\u6570\u636e\u96c6\uff08\u5bfc\u5165\u5373\u66ff\u6362\uff0c\u5355\u4e8b\u52a1\uff09\u3002
+
+        Returns:
+            {'previous_count': \u66ff\u6362\u524d\u6570\u91cf, 'imported_count': \u672c\u6b21\u5bfc\u5165\u6570\u91cf}
+        """
+        imported_at = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        with self._lock, self._connect() as conn:
+            previous_count = conn.execute(
+                "SELECT COUNT(*) AS n FROM fee_targets"
+            ).fetchone()['n']
+            conn.execute("DELETE FROM fee_targets")
+            conn.executemany(
+                "INSERT OR IGNORE INTO fee_targets(application_no, imported_at) VALUES (?, ?)",
+                [(app_no, imported_at) for app_no in app_nos],
+            )
+            imported_count = conn.execute(
+                "SELECT COUNT(*) AS n FROM fee_targets"
+            ).fetchone()['n']
+            conn.commit()
+        return {'previous_count': previous_count, 'imported_count': imported_count}
+
+    def fee_dataset_app_nos(self) -> list[str]:
+        """\u6570\u636e\u96c6\u5168\u90e8\u7533\u8bf7\u53f7\uff08--force \u5168\u91cf\u91cd\u91c7\u7528\uff09\u3002"""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT application_no FROM patents WHERE anjianywzt=? AND "
-                f"({_REQUIRED_FEE_DETAILS_MISSING_SQL})",
-                (rejection_status,),
+                "SELECT application_no FROM fee_targets ORDER BY application_no"
             ).fetchall()
         return [row['application_no'] for row in rows]
+
+    def fee_dataset_pending_app_nos(self) -> list[str]:
+        """\u6570\u636e\u96c6\u5185\u5df2\u5efa\u6863\u4e14\u5fc5\u9700\u8d39\u7528\u680f\u76ee\u7f3a\u5931\u7684\u7533\u8bf7\u53f7\u3002
+
+        \u6545\u610f\u6392\u9664 patents \u65e0\u884c\u7684\u300c\u672a\u5efa\u6863\u300d\u7533\u8bf7\u53f7\uff1apersist_fee_fields \u5bf9\u65e0\u884c\u8bb0\u5f55
+        \u6c38\u8fdc\u5199\u4e0d\u8fdb\u4e3b\u5e93\uff08\u8fdb fee_unmatched \u5907\u4efd\uff09\uff0c\u653e\u8fdb\u961f\u5217\u53ea\u4f1a\u53cd\u590d\u5931\u8d25\u5e76\u89e6\u53d1\u7194\u65ad\u3002
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT t.application_no FROM fee_targets t "
+                "JOIN patents p ON p.application_no = t.application_no "
+                f"WHERE {_REQUIRED_FEE_DETAILS_MISSING_SQL} "
+                "ORDER BY t.application_no"
+            ).fetchall()
+        return [row['application_no'] for row in rows]
+
+    def fee_dataset_unregistered_app_nos(self) -> list[str]:
+        """数据集内主库无记录的申请号（需先主采集建档才会进入费用待采）。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT t.application_no FROM fee_targets t "
+                "LEFT JOIN patents p ON p.application_no = t.application_no "
+                "WHERE p.application_no IS NULL ORDER BY t.application_no"
+            ).fetchall()
+        return [row['application_no'] for row in rows]
+
+    def fee_dataset_progress(self) -> dict:
+        """\u6570\u636e\u96c6\u53e3\u5f84\u7684\u8d39\u7528\u91c7\u96c6\u8fdb\u5ea6\uff0csummary \u4e0e\u91c7\u96c6\u542f\u52a8\u7edf\u8ba1\u5171\u7528\u8fd9\u4e00\u5904\u5b9a\u4e49\u3002
+
+        Returns:
+            {'total': \u6570\u636e\u96c6\u5927\u5c0f, 'collected': \u5df2\u91c7\u9f50, 'pending': \u5f85\u91c7,
+             'unregistered': \u672a\u5efa\u6863\uff08patents \u65e0\u884c\uff0c\u9700\u5148\u8dd1\u4e3b\u91c7\u96c6\uff09}
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total, "
+                "SUM(CASE WHEN p.application_no IS NULL THEN 1 ELSE 0 END) AS unregistered, "
+                f"SUM(CASE WHEN p.application_no IS NOT NULL AND ({_REQUIRED_FEE_DETAILS_PRESENT_SQL}) "
+                "THEN 1 ELSE 0 END) AS collected, "
+                f"SUM(CASE WHEN p.application_no IS NOT NULL AND ({_REQUIRED_FEE_DETAILS_MISSING_SQL}) "
+                "THEN 1 ELSE 0 END) AS pending "
+                "FROM fee_targets t LEFT JOIN patents p ON p.application_no = t.application_no"
+            ).fetchone()
+        return {
+            'total': row['total'] or 0,
+            'collected': row['collected'] or 0,
+            'pending': row['pending'] or 0,
+            'unregistered': row['unregistered'] or 0,
+        }
 
     def fee_details_completed_app_nos(self) -> set[str]:
         """Return cases whose required fee payloads are all non-NULL."""
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT application_no FROM patents WHERE "
-                f"{_REQUIRED_FEE_DETAILS_PRESENT_SQL}"
-            ).fetchall()
-        return {row['application_no'] for row in rows}
-
-    def detail_enrichment_pending_app_nos(
-        self,
-        rejection_status: str = '驳回等复审请求',
-    ) -> list[str]:
-        """返回发文或费用任一项尚未采集的驳回案件申请号。"""
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT application_no FROM patents WHERE anjianywzt=? AND "
-                f"(fwxx_list IS NULL OR {_REQUIRED_FEE_DETAILS_MISSING_SQL})",
-                (rejection_status,),
-            ).fetchall()
-        return [row['application_no'] for row in rows]
-
-    def detail_enrichment_completed_app_nos(self) -> set[str]:
-        """返回发文、应缴、已缴和收据发文均已采集的申请号。"""
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT application_no FROM patents WHERE fwxx_list IS NOT NULL AND "
                 f"{_REQUIRED_FEE_DETAILS_PRESENT_SQL}"
             ).fetchall()
         return {row['application_no'] for row in rows}
@@ -791,25 +829,11 @@ class PatentsDB:
                     SUM(CASE WHEN anjianywzt=? THEN 1 ELSE 0 END) AS rejection,
                     SUM(CASE WHEN fwxx_list IS NOT NULL THEN 1 ELSE 0 END) AS fwxx_collected,
                     SUM(CASE WHEN anjianywzt=? AND fwxx_list IS NOT NULL THEN 1 ELSE 0 END) AS rejection_fwxx_collected,
-                    SUM(CASE WHEN anjianywzt=? AND fwxx_list IS NULL THEN 1 ELSE 0 END) AS fwxx_pending,
-                    SUM(CASE WHEN anjianywzt=? AND fwxx_list IS NOT NULL
-                                  AND ({_REQUIRED_FEE_DETAILS_PRESENT_SQL})
-                             THEN 1 ELSE 0 END) AS detail_enrichment_completed,
-                    SUM(CASE WHEN anjianywzt=? AND (
-                                  fwxx_list IS NULL OR {_REQUIRED_FEE_DETAILS_MISSING_SQL})
-                             THEN 1 ELSE 0 END) AS detail_enrichment_pending,
-                    SUM(CASE WHEN anjianywzt=? AND ({_REQUIRED_FEE_DETAILS_PRESENT_SQL})
-                             THEN 1 ELSE 0 END) AS fee_details_completed,
-                    SUM(CASE WHEN anjianywzt=? AND ({_REQUIRED_FEE_DETAILS_MISSING_SQL})
-                             THEN 1 ELSE 0 END) AS fee_details_pending
+                    SUM(CASE WHEN anjianywzt=? AND fwxx_list IS NULL THEN 1 ELSE 0 END) AS fwxx_pending
                 FROM patents
             """, (
                 PENDING_STATUS_CODE,
                 PENDING_STATUS_CODE,
-                rejection_status,
-                rejection_status,
-                rejection_status,
-                rejection_status,
                 rejection_status,
                 rejection_status,
                 rejection_status,
@@ -845,24 +869,18 @@ class PatentsDB:
                 FROM patents ORDER BY timestamp DESC LIMIT 16
             """).fetchall()
 
-            # 6. 旧发文待补列表与新详情待补列表保持各自兼容语义
+            # 6. 发文待补列表（驳回口径）与费用待补列表（数据集口径）
             fwxx_pending_rows = conn.execute("""
                 SELECT application_no, anjianywzt, timestamp FROM patents
                 WHERE anjianywzt=? AND fwxx_list IS NULL
                 ORDER BY timestamp DESC LIMIT 20
             """, (rejection_status,)).fetchall()
-            detail_pending_rows = conn.execute(f"""
-                SELECT application_no, anjianywzt, timestamp FROM patents
-                WHERE anjianywzt=? AND (
-                    fwxx_list IS NULL OR {_REQUIRED_FEE_DETAILS_MISSING_SQL}
-                )
-                ORDER BY timestamp DESC LIMIT 20
-            """, (rejection_status,)).fetchall()
             fee_pending_rows = conn.execute(f"""
-                SELECT application_no, anjianywzt, timestamp FROM patents
-                WHERE anjianywzt=? AND ({_REQUIRED_FEE_DETAILS_MISSING_SQL})
-                ORDER BY timestamp DESC LIMIT 20
-            """, (rejection_status,)).fetchall()
+                SELECT t.application_no, p.anjianywzt, p.timestamp
+                FROM fee_targets t JOIN patents p ON p.application_no = t.application_no
+                WHERE {_REQUIRED_FEE_DETAILS_MISSING_SQL}
+                ORDER BY p.timestamp DESC LIMIT 20
+            """).fetchall()
 
 
             # 7. 驳回企业发明专利数（按企业聚合，仅发明专利）
@@ -899,10 +917,7 @@ class PatentsDB:
             'fwxx_collected': agg['fwxx_collected'] or 0,
             'rejection_fwxx_collected': agg['rejection_fwxx_collected'] or 0,
             'fwxx_pending': agg['fwxx_pending'] or 0,
-            'detail_enrichment_completed': agg['detail_enrichment_completed'] or 0,
-            'detail_enrichment_pending': agg['detail_enrichment_pending'] or 0,
-            'fee_details_completed': agg['fee_details_completed'] or 0,
-            'fee_details_pending': agg['fee_details_pending'] or 0,
+            **{f'fee_dataset_{key}': value for key, value in self.fee_dataset_progress().items()},
             'status_counts': [[r['anjianywzt'], r['cnt']] for r in status_rows],
             'applicant_counts': [
                 [name, count]
@@ -911,8 +926,7 @@ class PatentsDB:
             'daily_counts': daily_counts,
             'recent': [dict(r) for r in recent_rows],
             'fwxx_pending_list': [dict(r) for r in fwxx_pending_rows],
-            'detail_enrichment_pending_list': [dict(r) for r in detail_pending_rows],
-            'fee_details_pending_list': [dict(r) for r in fee_pending_rows],
+            'fee_dataset_pending_list': [dict(r) for r in fee_pending_rows],
             # 驳回企业列表：[{"name": str, "invention_count": int}, ...]
             'rejection_companies': [
                 {'name': name, 'invention_count': count}

@@ -26,6 +26,28 @@ if sys.platform == "win32":
 # 项目根目录（settings.py 所在的目录）
 BASE_DIR = Path(__file__).parent.absolute()
 
+
+def _load_env_file_into_environment(env_file: Path) -> None:
+    """把 .env 补进 os.environ，让本文件后续的 os.getenv 能读到。
+
+    用 setdefault：进程显式传入的环境变量优先，保证 Dashboard 给子进程注入的
+    USE_MITM_PROXY / CNIPA_LOGIN_WAIT_SECONDS 等不被 .env 覆盖。
+    空值跳过，避免 'KEY=' 占位行把变量污染成空字符串。
+    """
+    if not env_file.exists():
+        return
+    for line in env_file.read_text(encoding='utf-8').splitlines():
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, _, value = line.partition('=')
+        key, value = key.strip(), value.strip()
+        if key and value:
+            os.environ.setdefault(key, value)
+
+
+_load_env_file_into_environment(BASE_DIR / '.env')
+
 # 本地版本标记文件（随代码 git 提交，供网络更新检查对比）
 VERSION_FILE = BASE_DIR / 'VERSION'
 

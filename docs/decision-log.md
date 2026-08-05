@@ -412,13 +412,36 @@ USE_MITM_PROXY = os.getenv('USE_MITM_PROXY', '').lower() in ('true', '1', 'yes')
 
 ---
 
+## D011: 费用采集目标由用户数据集决定
+
+**决策日期**: 2026-08-05
+**决策人**: @minxiaochen
+**状态**: ✓ 已实现
+
+### 背景
+
+费用采集最初作为发文（驳回复审）流程的附属功能实现——因为 CNIPA 页面上费用菜单紧邻发文菜单——目标筛选写死了 `anjianywzt == '驳回等复审请求'`。实际业务中，费用是独立功能：需要采费用的专利由用户自己的一份名单决定，与案件是否驳回无关。
+
+### 决策（用户拍板的三点）
+
+1. **数据集形态**：Excel/CSV 文件导入（含申请号列），落入 `patents.db` 的 `fee_targets` 表；重新导入即整表替换。入口：`import_fee_targets.py` CLI 与 Dashboard 上传（`/api/fee-targets/import`）。
+2. **旧逻辑完全替换**：删除 `fee_details_pending_app_nos`（驳回过滤）与 `detail_enrichment_*`（发文+费用混合口径，生产代码已零调用）；Dashboard 统计、按钮全部改为数据集口径。
+3. **重采语义**：默认只采数据集内费用未采齐的；`collect_fees.py --force`（无 --input/--app）强制重采整个数据集。
+
+### 关键取舍
+
+- **未建档申请号不进待采队列**：数据集里 patents 无记录的申请号，`persist_fee_fields` 无处落库（只会进 fee_unmatched 备份），放进队列会反复失败并触发连续失败熔断。改为单独计数 `unregistered` 并在导入时显著提示「先跑主采集建档」。
+- **fee_targets 不参与 replica 同步、不入 JSONL 备份**：`export_delta` / `export_to_jsonl` 只覆盖 patents 表。数据集是采集机的作业输入，费用结果在 patents 列里正常同步；DB 彻底丢失时用源 Excel 重导即可恢复。replica 的 Dashboard 显示数据集为 0 属真实状态。
+
+---
+
 ## 文档状态
 
 | 项 | 值 |
 |-----|-----|
 | **记录日期** | 2026-05-10 起 |
 | **属性** | 基于当前代码推导的架构备忘，及已实现的决策 |
-| **最后更新** | 2026-07-11 |
-| **已完成决策** | D001-D010 |
+| **最后更新** | 2026-08-05 |
+| **已完成决策** | D001-D011 |
 | **待完成决策** | 无 |
 | **更新方式** | 每次完成新决策后同步更新 |

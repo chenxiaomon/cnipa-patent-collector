@@ -56,10 +56,9 @@ class TestFwxxSummaryMetrics(TemporaryPatentsDBTestCase):
         self.assertEqual(summary["rejection_fwxx_collected"], 2)
         self.assertEqual(summary["fwxx_pending"], 1)
         self.assertEqual(summary["fwxx_collected"], 3)
-        self.assertEqual(summary["detail_enrichment_completed"], 1)
-        self.assertEqual(summary["detail_enrichment_pending"], 2)
-        self.assertEqual(summary["fee_details_completed"], 2)
-        self.assertEqual(summary["fee_details_pending"], 1)
+        # 费用指标改为数据集口径：未导入数据集时全 0，与驳回状态无关
+        self.assertEqual(summary["fee_dataset_total"], 0)
+        self.assertEqual(summary["fee_dataset_pending"], 0)
 
 
 class TestFwxxNoticeFilters(TemporaryPatentsDBTestCase):
@@ -251,23 +250,23 @@ class TestFwxxDashboardPresentation(unittest.TestCase):
             self.dashboard_source,
         )
 
-    def test_fee_detail_completeness_is_displayed_as_secondary_context(self):
+    def test_fee_dataset_progress_is_displayed_as_secondary_context(self):
         self.assertIn(
-            '<span>费用资料完整（辅助）</span><strong id="feeDetailsComplete">—</strong>',
+            '<span>费用数据集</span><strong id="feeDatasetTotal">—</strong>',
             self.compact_html,
         )
         self.assertIn(
-            '<span>费用资料待补</span><strong id="feeDetailsPending">—</strong>',
+            '<span>费用待采集</span><strong id="feeDatasetPending">—</strong>',
             self.compact_html,
         )
-        self.assertIn("费用信息不影响发文采集完整度", self.html)
+        self.assertIn("费用采集范围由导入的数据集决定", self.html)
         self.assertRegex(
             self.dashboard_source,
-            r"set\('#feeDetailsComplete',\s*fmtNumber\(data\.business\.fee_details_completed\)\)",
+            r"set\('#feeDatasetTotal',\s*fmtNumber\(data\.business\.fee_dataset_total\)\)",
         )
         self.assertRegex(
             self.dashboard_source,
-            r"set\('#feeDetailsPending',\s*fmtNumber\(data\.business\.fee_details_pending\)\)",
+            r"set\('#feeDatasetPending',\s*fmtNumber\(data\.business\.fee_dataset_pending\)\)",
         )
 
     def test_overview_pending_fwxx_metric_uses_fwxx_pending(self):

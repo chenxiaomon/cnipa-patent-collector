@@ -117,6 +117,18 @@ def _write_text_atomic(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
+def _append_unique_lines_atomic(file_path: Path, new_entries: list[str]) -> int:
+    """把不在文件中的行追加进去（排序合并、原子替换），返回新增行数。"""
+    existing_set = set()
+    if file_path.exists():
+        existing_set = {ln.strip() for ln in file_path.read_text(encoding='utf-8').splitlines() if ln.strip()}
+    fresh = [e for e in new_entries if e not in existing_set]
+    if fresh:
+        merged = sorted(existing_set) + fresh
+        _write_text_atomic(file_path, '\n'.join(merged) + '\n')
+    return len(fresh)
+
+
 def _parse_env_file(env_path: Path) -> dict[str, str]:
     """解析 .env 文件为 key→value 字典，跳过空行和注释行。"""
     if not env_path.exists():
@@ -471,8 +483,12 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         count = positive_int(params.get("count"), default=None, maximum=10000)
         if count:
             command.extend(["--test", str(count)])
+        title = "采集数据集待采费用"
+        if params.get("force"):
+            command.append("--force")
+            title = "强制重采费用数据集"
         return {
-            "action": action, "title": "补采费用信息", "command": command,
+            "action": action, "title": title, "command": command,
             "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
         }
     if action == "collect_fees_app":
@@ -688,10 +704,10 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
             "fwxx_collected": db_summary["fwxx_collected"],
             "rejection_fwxx_collected": db_summary["rejection_fwxx_collected"],
             "fwxx_pending": db_summary["fwxx_pending"],
-            "detail_enrichment_completed": db_summary["detail_enrichment_completed"],
-            "detail_enrichment_pending": db_summary["detail_enrichment_pending"],
-            "fee_details_completed": db_summary["fee_details_completed"],
-            "fee_details_pending": db_summary["fee_details_pending"],
+            "fee_dataset_total": db_summary["fee_dataset_total"],
+            "fee_dataset_collected": db_summary["fee_dataset_collected"],
+            "fee_dataset_pending": db_summary["fee_dataset_pending"],
+            "fee_dataset_unregistered": db_summary["fee_dataset_unregistered"],
             "tracked_total": sum(group["total"] for group in update_groups),
             "update_due": sum(group["due"] for group in update_groups),
         },
@@ -718,8 +734,7 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
         "warnings": warnings,
         "daily_counts": db_summary["daily_counts"],
         "fwxx_pending_list": db_summary["fwxx_pending_list"],
-        "detail_enrichment_pending_list": db_summary["detail_enrichment_pending_list"],
-        "fee_details_pending_list": db_summary["fee_details_pending_list"],
+        "fee_dataset_pending_list": db_summary["fee_dataset_pending_list"],
         "pending_requests_count": len(_patents_db.list_requests(status='pending')),
         # 驳回企业列表，合并手动补录的真实专利数
         "rejection_companies": _merge_company_meta(db_summary["rejection_companies"]),
@@ -1033,9 +1048,11 @@ HTML = r"""<!doctype html>
             <div class="info-row"><span>发文已采集</span><strong id="fwxxCollected">—</strong></div>
             <div class="info-row"><span>待补发文</span><strong id="fwxxPending">—</strong></div>
             <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:4px">
-              <div class="info-row"><span>费用资料完整（辅助）</span><strong id="feeDetailsComplete">—</strong></div>
-              <div class="info-row"><span>费用资料待补</span><strong id="feeDetailsPending">—</strong></div>
-              <div class="hint" style="margin-top:5px">费用信息不影响发文采集完整度</div>
+              <div class="info-row"><span>费用数据集</span><strong id="feeDatasetTotal">—</strong></div>
+              <div class="info-row"><span>费用已采集</span><strong id="feeDatasetCollected">—</strong></div>
+              <div class="info-row"><span>费用待采集</span><strong id="feeDatasetPending">—</strong></div>
+              <div class="info-row"><span>未建档</span><strong id="feeDatasetUnregistered">—</strong></div>
+              <div class="hint" style="margin-top:5px">费用采集范围由导入的数据集决定，与驳回状态无关</div>
             </div>
           </div>
         </article>
@@ -1065,8 +1082,9 @@ HTML = r"""<!doctype html>
         <article class="panel operator-only">
           <div class="panel-head"><h2>费用信息采集</h2><span class="hint">collect_fees</span></div>
           <div class="button-row" style="margin-bottom:14px">
-            <button class="btn primary" data-action="collect_fees">全量采集</button>
+            <button class="btn primary" data-action="collect_fees">采集数据集未完成</button>
             <button class="btn secondary" id="feeTestBtn">测试 5 条</button>
+            <button class="btn secondary" id="feeForceBtn">强制重采数据集</button>
           </div>
           <div class="check-line" style="margin-bottom:12px">
             <input id="feeAppNo" placeholder="单号采集：输入申请号">
@@ -1079,6 +1097,15 @@ HTML = r"""<!doctype html>
           </label>
           <div class="button-row" style="margin-top:10px">
             <button class="btn primary" id="feeBatchBtn">批量强制采集</button>
+          </div>
+          <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px">
+            <div class="hint" style="margin-bottom:8px">导入费用数据集（CSV/Excel 含申请号列，导入即整表替换）</div>
+            <div class="check-line">
+              <input type="file" id="feeTargetsFileInput" accept=".csv,.xlsx,.xls">
+              <button class="btn primary" id="importFeeTargetsBtn">导入</button>
+              <button class="btn secondary" id="enrollUnregisteredBtn">未建档转入主采集清单</button>
+            </div>
+            <div class="hint" id="feeTargetsImportHint" style="margin-top:6px"></div>
           </div>
         </article>
       </section>
@@ -2213,10 +2240,12 @@ function renderSummary(data) {
   set('#fwxxRejection', fmtNumber(rej));
   set('#fwxxCollected', fmtNumber(fwxxC));
   set('#fwxxPending',   fmtNumber(fwxxP));
-  set('#feeDetailsComplete', fmtNumber(data.business.fee_details_completed));
-  set('#feeDetailsPending', fmtNumber(data.business.fee_details_pending));
+  set('#feeDatasetTotal', fmtNumber(data.business.fee_dataset_total));
+  set('#feeDatasetCollected', fmtNumber(data.business.fee_dataset_collected));
+  set('#feeDatasetPending', fmtNumber(data.business.fee_dataset_pending));
+  set('#feeDatasetUnregistered', fmtNumber(data.business.fee_dataset_unregistered));
   renderFwxxPending(data.fwxx_pending_list || []);
-  renderFeePending(data.fee_details_pending_list || []);
+  renderFeePending(data.fee_dataset_pending_list || []);
 
   // 数据分析 Tab
   renderBarList('#statusCounts',    data.status_counts    || []);
@@ -2575,11 +2604,54 @@ function bindEvents() {
   $('#feeTestBtn').addEventListener('click', () =>
     startJob('collect_fees', { count: 5 }));
 
+  $('#feeForceBtn').addEventListener('click', () => {
+    if (!confirm('强制重采会重新采集数据集内全部专利的费用（含已采过的），确定继续？')) return;
+    startJob('collect_fees', { force: true });
+  });
+
   $('#feeSingleBtn').addEventListener('click', () =>
     startJob('collect_fees_app', { app_no: $('#feeAppNo').value }));
 
   $('#feeBatchBtn').addEventListener('click', () =>
     startJob('collect_fees_batch', { app_nos: $('#feeBatchAppNos').value }));
+
+  $('#importFeeTargetsBtn').addEventListener('click', async () => {
+    const fi = $('#feeTargetsFileInput');
+    const hint = $('#feeTargetsImportHint');
+    if (!fi || !fi.files || !fi.files[0]) { if (hint) hint.textContent = '请先选择文件'; return; }
+    if (hint) hint.textContent = '正在上传...';
+    const formData = new FormData();
+    formData.append('file', fi.files[0]);
+    try {
+      const res = await fetch('/api/fee-targets/import', { method: 'POST', headers: writeHeaders(), body: formData });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || res.statusText);
+      if (hint) hint.textContent =
+        `✓ 导入 ${d.imported} 条（替换原 ${d.previous} 条）` +
+        (d.unregistered > 0 ? `，${d.unregistered} 条未建档需先跑主采集` : '') +
+        (d.invalid      > 0 ? `，${d.invalid} 行无效` : '') +
+        (d.duplicates   > 0 ? `，${d.duplicates} 条文件内重复` : '');
+      showToast('费用数据集导入完成：' + d.imported + ' 条');
+      await refreshSummary();
+    } catch (e) { if (hint) hint.textContent = '导入失败：' + e.message; }
+  });
+
+  $('#enrollUnregisteredBtn').addEventListener('click', async () => {
+    const hint = $('#feeTargetsImportHint');
+    try {
+      const d = await api('/api/fee-targets/enroll-unregistered', { method: 'POST', body: '{}' });
+      if (!d.unregistered) {
+        if (hint) hint.textContent = '当前没有未建档申请号';
+        return;
+      }
+      if (hint) hint.textContent =
+        `✓ 已加入主采集清单 ${d.added} 个` +
+        (d.already_listed > 0 ? `（${d.already_listed} 个已在清单中）` : '') +
+        '，可到「采集控制」页启动主采集建档';
+      showToast('未建档申请号已转入主采集清单：' + d.added + ' 个');
+      await refreshSummary();
+    } catch (e) { if (hint) hint.textContent = '操作失败：' + e.message; }
+  });
 
   $('#stopJob').addEventListener('click', async () => {
     if (!state.selectedJobId) return;
@@ -3432,6 +3504,56 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self.send_json({"error": str(exc)}, status=400)
                 finally:
                     _os.unlink(tmp_path)
+            elif path == "/api/fee-targets/import":
+                if not self.is_operator:
+                    self.send_json({"error": "仅操作员可导入数据"}, status=403)
+                    return
+                # 解析 multipart/form-data 中的文件（与 /api/import/agency 同构）
+                import cgi
+                content_type = self.headers.get("Content-Type", "")
+                length = int(self.headers.get("Content-Length", 0))
+                raw_body = self.rfile.read(length)
+                environ = {
+                    "REQUEST_METHOD": "POST",
+                    "CONTENT_TYPE": content_type,
+                    "CONTENT_LENGTH": str(length),
+                }
+                fs = cgi.FieldStorage(
+                    fp=io.BytesIO(raw_body),
+                    environ=environ,
+                    keep_blank_values=True,
+                )
+                file_item = fs.getvalue("file")
+                if file_item is None:
+                    self.send_json({"error": "未收到文件"}, status=400)
+                    return
+                import tempfile
+                import os as _os
+                filename = fs["file"].filename if hasattr(fs["file"], "filename") else "upload.csv"
+                suffix = Path(filename).suffix.lower() or ".csv"
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp.write(file_item if isinstance(file_item, bytes) else file_item.encode())
+                    tmp_path = tmp.name
+                try:
+                    from import_fee_targets import import_fee_targets
+                    stats = import_fee_targets(Path(tmp_path), dry_run=False)
+                    self.send_json({"ok": True, **stats})
+                except (ValueError, ImportError) as exc:
+                    self.send_json({"error": str(exc)}, status=400)
+                finally:
+                    _os.unlink(tmp_path)
+            elif path == "/api/fee-targets/enroll-unregistered":
+                if not self.is_operator:
+                    self.send_json({"error": "仅操作员可修改采集清单"}, status=403)
+                    return
+                unregistered = _patents_db.fee_dataset_unregistered_app_nos()
+                added = _append_unique_lines_atomic(SEARCH_LIST_FILE, unregistered) if unregistered else 0
+                self.send_json({
+                    "ok": True,
+                    "unregistered": len(unregistered),
+                    "added": added,
+                    "already_listed": len(unregistered) - added,
+                })
             elif path == "/api/requests":
                 payload = self.read_json_body()
                 raw_nos = [str(a).strip() for a in (payload.get("app_nos") or []) if str(a).strip()]
@@ -3470,19 +3592,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
                 already_in_db = len(req['payload']) - len(to_search)
 
-                def _atomic_append(file_path: Path, new_entries: list[str]) -> int:
-                    existing_set = set()
-                    if file_path.exists():
-                        existing_set = {ln.strip() for ln in file_path.read_text(encoding='utf-8').splitlines() if ln.strip()}
-                    fresh = [e for e in new_entries if e not in existing_set]
-                    if fresh:
-                        merged = sorted(existing_set) + fresh
-                        tmp = file_path.with_suffix('.tmp')
-                        tmp.write_text('\n'.join(merged) + '\n', encoding='utf-8')
-                        tmp.replace(file_path)
-                    return len(fresh)
-
-                search_added = _atomic_append(SEARCH_LIST_FILE, to_search) if to_search else 0
+                search_added = _append_unique_lines_atomic(SEARCH_LIST_FILE, to_search) if to_search else 0
 
                 _patents_db.approve_request(req_id, None)
                 _patents_db.sync_request_status(req_id, 'finished', 0)

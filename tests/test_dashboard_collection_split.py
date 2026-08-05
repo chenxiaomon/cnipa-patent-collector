@@ -65,6 +65,15 @@ class TestCollectionJobSpecs(unittest.TestCase):
         self.assertNotIn("发文", full_spec["title"])
         self.assertNotIn("发文", app_spec["title"])
 
+    def test_fee_force_action_recollects_whole_dataset(self):
+        force_spec = web_dashboard.build_job_spec("collect_fees", {"force": True})
+
+        self.assertEqual(
+            force_spec["command"],
+            ["python", "-u", "collect_fees.py", "--force"],
+        )
+        self.assertIn("强制重采", force_spec["title"])
+
     def test_both_batch_actions_use_validated_normalized_request_files(self):
         raw_targets = "CN202411006597.0\nCN202111504942.X"
         request_path = Path("C:/tmp/manual_collection_request.txt")
@@ -183,17 +192,16 @@ class TestCollectionSummary(unittest.TestCase):
             "fwxx_collected": 1,
             "rejection_fwxx_collected": 1,
             "fwxx_pending": 0,
-            "detail_enrichment_completed": 0,
-            "detail_enrichment_pending": 1,
-            "fee_details_completed": 0,
-            "fee_details_pending": 1,
+            "fee_dataset_total": 1,
+            "fee_dataset_collected": 0,
+            "fee_dataset_pending": 1,
+            "fee_dataset_unregistered": 0,
             "status_counts": [],
             "applicant_counts": [],
             "recent": [],
             "daily_counts": [],
             "fwxx_pending_list": [],
-            "detail_enrichment_pending_list": fee_pending,
-            "fee_details_pending_list": fee_pending,
+            "fee_dataset_pending_list": fee_pending,
             "rejection_companies": [],
         }
 
@@ -209,7 +217,24 @@ class TestCollectionSummary(unittest.TestCase):
         ):
             summary = web_dashboard.build_summary(web_dashboard.JobManager())
 
-        self.assertEqual(summary["fee_details_pending_list"], fee_pending)
+        self.assertEqual(summary["fee_dataset_pending_list"], fee_pending)
+        self.assertEqual(summary["business"]["fee_dataset_pending"], 1)
+
+
+class TestAppendUniqueLines(unittest.TestCase):
+    def test_creates_file_and_skips_existing_lines(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            list_path = Path(tmpdir) / "search_list.txt"
+            self.assertEqual(
+                web_dashboard._append_unique_lines_atomic(list_path, ["B", "A"]), 2
+            )
+            # 已存在的行不重复追加，只计新增
+            self.assertEqual(
+                web_dashboard._append_unique_lines_atomic(list_path, ["A", "C"]), 1
+            )
+            lines = list_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(sorted(lines), ["A", "B", "C"])
 
 
 class TestCollectionDashboardPresentation(unittest.TestCase):
@@ -240,6 +265,10 @@ class TestCollectionDashboardPresentation(unittest.TestCase):
             "feeTestBtn",
             "feeSingleBtn",
             "feeBatchBtn",
+            "feeForceBtn",
+            "feeTargetsFileInput",
+            "importFeeTargetsBtn",
+            "enrollUnregisteredBtn",
         ):
             self.assertIn(f'id="{control_id}"', self.html)
         self.assertIn('data-action="collect_fwxx"', self.html)
@@ -254,8 +283,14 @@ class TestCollectionDashboardPresentation(unittest.TestCase):
             self.source,
         )
         self.assertIn(
-            "renderFeePending(data.fee_details_pending_list || []);",
+            "renderFeePending(data.fee_dataset_pending_list || []);",
             self.source,
+        )
+
+    def test_enroll_unregistered_button_posts_to_fee_targets_api(self):
+        self.assertRegex(
+            self.source,
+            r"(?s)#enrollUnregisteredBtn'.*?api\('/api/fee-targets/enroll-unregistered'",
         )
 
     def test_fee_buttons_submit_through_the_existing_job_api(self):

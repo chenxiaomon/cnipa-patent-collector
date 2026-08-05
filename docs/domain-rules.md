@@ -113,14 +113,16 @@ if len(collected_fields) < 14 or timeout:
 
 ### 费用信息（4 类明细 - 由 `collect_fees.py` 负责）
 
-**触发条件**:
-- 自动补采限定 `anjianywzt == '驳回等复审请求'`。
-- `payable_fee_records`、`paid_fee_records`、`fee_receipt_dispatch_records` 任一为 `NULL` 即为待采集。
+**触发条件**（2026-08-05 起改为数据集口径，见 decision-log D011）:
+- 费用采集范围由用户导入的**费用数据集**（`fee_targets` 表）决定，与 `anjianywzt` 案件状态无关。
+- 导入方式：`python import_fee_targets.py 名单.xlsx`（CSV/Excel 含申请号列），或 Dashboard「发文与费用」页上传；导入即整表替换。
+- 数据集内、已建档（patents 有记录）、且 `payable_fee_records`、`paid_fee_records`、`fee_receipt_dispatch_records` 任一为 `NULL` 的申请号进入待采队列。
+- 数据集内但主库无记录的申请号计为「未建档」，不进待采队列（否则费用结果无处落库、只会反复失败），需先跑主采集建档。
 - 三个必需列表均非 `NULL` 即为完成，接口明确返回的空列表 `[]` 也算完成。
 - `late_fee_schedule_records` 是可选栏目；接口不返回时保留 `NULL`，不阻止费用任务完成。
 
 **采集流程** (`collect_fees.py`):
-1. 从 SQLite 筛选必需费用栏目未完整的驳回复审案件
+1. 从费用数据集筛选必需费用栏目未完整的已建档申请号（`--force` 时为整个数据集）
 2. 进入详情页后只点击“费用信息”标签
 3. MITM 拦截并解析 `payable_fee_records`、`late_fee_schedule_records`、`paid_fee_records`、`fee_receipt_dispatch_records`
 4. 只更新费用字段和 `fee_snapshot_at`，不刷新基础案件状态的通用 `timestamp`

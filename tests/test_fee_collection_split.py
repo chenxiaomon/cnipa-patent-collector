@@ -9,15 +9,47 @@ import collect_fees
 
 class TestFeeCollectionBoundaries(unittest.TestCase):
     @patch("collect_fees.PatentsDB")
-    def test_automatic_targets_only_include_missing_fee_details(self, db_class):
+    def test_automatic_targets_come_from_fee_dataset(self, db_class):
         db = db_class.return_value
-        db.get_summary.return_value = {"rejection": 3564}
-        db.fee_details_pending_app_nos.return_value = ["A", "B"]
+        db.fee_dataset_progress.return_value = {
+            "total": 3, "collected": 1, "pending": 2, "unregistered": 0,
+        }
+        db.fee_dataset_pending_app_nos.return_value = ["A", "B"]
 
-        self.assertEqual(collect_fees.load_target_applications(), ["A", "B"])
+        self.assertEqual(collect_fees.load_fee_dataset_targets(), ["A", "B"])
 
-        db.fee_details_pending_app_nos.assert_called_once_with()
-        db.detail_enrichment_pending_app_nos.assert_not_called()
+        db.fee_dataset_pending_app_nos.assert_called_once_with()
+        db.fee_dataset_app_nos.assert_not_called()
+
+    @patch("collect_fees.PatentsDB")
+    def test_force_targets_whole_fee_dataset(self, db_class):
+        db = db_class.return_value
+        db.fee_dataset_progress.return_value = {
+            "total": 3, "collected": 1, "pending": 2, "unregistered": 0,
+        }
+        db.fee_dataset_app_nos.return_value = ["A", "B", "C"]
+
+        self.assertEqual(collect_fees.load_fee_dataset_targets(force=True), ["A", "B", "C"])
+
+        db.fee_dataset_app_nos.assert_called_once_with()
+        db.fee_dataset_pending_app_nos.assert_not_called()
+
+    @patch("collect_fees.PatentsDB")
+    def test_empty_dataset_prints_import_guidance(self, db_class):
+        db = db_class.return_value
+        db.fee_dataset_progress.return_value = {
+            "total": 0, "collected": 0, "pending": 0, "unregistered": 0,
+        }
+
+        import contextlib
+        import io
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            targets = collect_fees.load_fee_dataset_targets()
+
+        self.assertEqual(targets, [])
+        self.assertIn("import_fee_targets.py", captured.getvalue())
+        db.fee_dataset_pending_app_nos.assert_not_called()
 
     @patch("collect_fees.PatentsDB")
     def test_standalone_resume_uses_fee_completion(self, db_class):
@@ -27,7 +59,6 @@ class TestFeeCollectionBoundaries(unittest.TestCase):
         self.assertEqual(collect_fees._load_standalone_collected(), {"A"})
 
         db.fee_details_completed_app_nos.assert_called_once_with()
-        db.detail_enrichment_completed_app_nos.assert_not_called()
 
     @patch("collect_fees.time.sleep")
     @patch("collect_fees.pyautogui.hotkey")
