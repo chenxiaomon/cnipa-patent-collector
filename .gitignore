@@ -48,6 +48,8 @@ data/results/*.xlsx
 # ── 浏览器驱动（二进制，不入库）──────────────────────────
 chromedriver-win64/
 chromedriver-linux64/
+chromedriver-mac-x64/
+chromedriver-mac-arm64/
 
 # ── Python ───────────────────────────────────────────────
 __pycache__/

@@ -189,6 +189,9 @@ AUTOMATION_STATS_PRINT_INTERVAL   = int(os.getenv('AUTOMATION_STATS_PRINT_INTERV
 AUTOMATION_ANTI_CRAWL_WAIT_MIN    = float(os.getenv('AUTOMATION_ANTI_CRAWL_WAIT_MIN', '2'))
 AUTOMATION_ANTI_CRAWL_WAIT_MAX    = float(os.getenv('AUTOMATION_ANTI_CRAWL_WAIT_MAX', '5'))
 
+# 首屏加载上限；不设时 chromedriver 默认 300 秒，代理异常会静默卡到超时
+BROWSER_PAGE_LOAD_TIMEOUT         = float(os.getenv('BROWSER_PAGE_LOAD_TIMEOUT', '60'))
+
 # 发文信息采集流程（collect_fwxx.py）
 FWXX_PAGE_LOAD_WAIT        = float(os.getenv('FWXX_PAGE_LOAD_WAIT', '3'))
 FWXX_STARTUP_COUNTDOWN     = int(os.getenv('FWXX_STARTUP_COUNTDOWN', '8'))

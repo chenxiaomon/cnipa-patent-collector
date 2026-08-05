@@ -7,6 +7,18 @@
 
 ## [Unreleased]
 
+## [2026.08.05]
+
+### 修复
+- 修复 macOS 上浏览器启动不动：Chrome 版本探测新增 macOS 分支（读 `Info.plist`，退回二进制自报版本），此前探测不到版本导致每次下载与本机不匹配的最新版 ChromeDriver 并反复失败。
+- 修复每次启动都重新联网下载 ChromeDriver（约 10MB）：已下载的驱动版本匹配时直接复用（三平台通用），实测二次启动从 10.5 秒降到 1.2 秒；驱动仅在 Chrome 大版本升级后重新下载一次。
+- 修复 example 模板的全 0 占位坐标被当成有效配置：此前会让 pyautogui 点击屏幕左上角且无任何报错，现在自动触发重新录制。
+
+### 变更
+- `USE_MITM_PROXY=true` 但代理未启动时，启动浏览器前秒级报错并提示启动命令，不再打开浏览器后静默卡约 2 分钟。
+- 首屏加载新增 60 秒上限（`BROWSER_PAGE_LOAD_TIMEOUT`，可用环境变量调整），此前沿用 chromedriver 默认 300 秒。
+- 浏览器初始化失败的报错带上本机 Chrome 版本和原始异常，并提示手动放置 ChromeDriver 的目录（`chromedriver-mac-x64/` 等，放入即自动生效）。
+
 ### 工程化
 - 新增 `CHANGELOG.md`，记录版本变更（借鉴 cockpit-tools）
 - 新增 `scripts/sync_version.py`：以 `VERSION` 文件为唯一版本源，同步到 `pyproject.toml`

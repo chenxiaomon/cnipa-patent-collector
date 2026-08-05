@@ -19,11 +19,11 @@
     },
     {
       "path": ".gitignore",
-      "sha256": "9111c74a62b3808fb13af4520d4a13ffc7863111cdd1e9f2d56cf92fd467f1e4"
+      "sha256": "4ddf5dfca1211150b337b23570c3060ee966dab48ce42dd9deb104dcbc9ea3a4"
     },
     {
       "path": "CHANGELOG.md",
-      "sha256": "7b6b5d7507eef1ecefd159c80752ef236ecfb460f84b0605d6c1bbbcefc7d028"
+      "sha256": "c99048a9c7d205eeba3a4dc35c191ae766f216a0da923a14c2532b7358fc42c9"
     },
     {
       "path": "CLAUDE.md",
@@ -39,7 +39,7 @@
     },
     {
       "path": "VERSION",
-      "sha256": "a38ee8ecbb93a8f8c9e8cdecaeb74d6f204326dd480fc73bef8ae722c80c85af"
+      "sha256": "ac0307e8e4a6b99ad33c3eb3ce72ae21331a5a325e679130f41fece919ac72f1"
     },
     {
       "path": "analyze_collection_status.py",
@@ -59,11 +59,11 @@
     },
     {
       "path": "browser_service.py",
-      "sha256": "4a3207cd5e534bf55ca9ede90caa65baebaf29de11d04e57b80e3057848405f4"
+      "sha256": "45a5a0611e18c84850afd269b50440b7c93a051ffd346b2481e0f6ecb20aecd3"
     },
     {
       "path": "browser_utils.py",
-      "sha256": "c83a76057fda524aa49d3f70dd56fe912a148e7e2be6fa33cf273f24f1442fb9"
+      "sha256": "4377feddda8fc32133d49af037e359559a5c364ecb35ef95778471941b9bf505"
     },
     {
       "path": "cache_utils.py",
@@ -95,7 +95,7 @@
     },
     {
       "path": "coordinate_service.py",
-      "sha256": "fc197fd825f098b7425db0852889dc71111f13e00bc3e8bdfd8031c9ea24413b"
+      "sha256": "09d142870bdd79894281f7c849c97ca28349947dcede5013382ef47a7c313b43"
     },
     {
       "path": "db_manager.py",
@@ -287,7 +287,7 @@
     },
     {
       "path": "pyproject.toml",
-      "sha256": "797358fc1d034209716703c2162edf6ff4db8e2e6116591c98b206c688c49bb3"
+      "sha256": "a749cdf8eac01742af16dc89427bc0cace9e9f71d79bda630336ca775fae8d94"
     },
     {
       "path": "quick_retry.sh",
@@ -327,7 +327,7 @@
     },
     {
       "path": "settings.py",
-      "sha256": "76a82c1dcbb4d93fda626d81f2e7131a796c97e08ed161d3f70d82b4bd88d014"
+      "sha256": "fc945d6f4e462870896eaedaaa005b55f87594c5cedec2a5319e227a41f81a06"
     },
     {
       "path": "setup.bat",
@@ -383,7 +383,7 @@
     },
     {
       "path": "tests/test_browser_utils.py",
-      "sha256": "9cd66eaaef1f81c13fcf5c157cccff1d6e2d50cef2a349567f302d75f4790e71"
+      "sha256": "ee0d96905d2a23734663c4dd2439baeac2a42cd18aa2cdb29407fc509b69af68"
     },
     {
       "path": "tests/test_cache_utils.py",
@@ -412,6 +412,10 @@
     {
       "path": "tests/test_collection_split.py",
       "sha256": "94c8400d45f4e30d659f749288a8d6820bd2cf782bb94d4c5203fcf430f26352"
+    },
+    {
+      "path": "tests/test_coordinate_placeholders.py",
+      "sha256": "b3598223b07ebb9e49893a6aff542281762652eedeae112cd522a03b026ef6c8"
     },
     {
       "path": "tests/test_dashboard_collection_split.py",
@@ -531,7 +535,7 @@
     },
     {
       "path": "uv.lock",
-      "sha256": "d200cd93e822195334e16b200e22b135f76a12e5cbf11ba8b83cc4f6b6cc9b72"
+      "sha256": "0fd87eb027d0cc36cfedcd0437205d2baa057fc94b533ab169f5371451e7f743"
     },
     {
       "path": "validate_results.py",

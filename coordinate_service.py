@@ -12,6 +12,21 @@ from settings import CONFIG_FILE, CONFIG_FWXX_FILE
 from atomic_write import write_json_atomic
 
 
+def _recorded_coordinates(coordinate_config: dict, coordinate_keys: tuple) -> tuple | None:
+    """返回配置里已录制的坐标，缺键或仍是 example 模板的全 0 占位值时返回 None。
+
+    example 配置用 0 占位，而 (0, 0) 同时是 PyAutoGUI 的 failsafe 角，任何屏幕上
+    都不可能是有效点击目标 —— 直接拷 example 当配置用时必须重新录制，否则点击全部
+    落在屏幕左上角，且 PYAUTOGUI_FAILSAFE 默认关闭，连异常都不会抛。
+    """
+    if not set(coordinate_keys) <= coordinate_config.keys():
+        return None
+    coordinates = tuple(coordinate_config[key] for key in coordinate_keys)
+    if not any(coordinates):
+        return None
+    return coordinates
+
+
 class CoordinateService:
     """统一管理鼠标坐标的加载和记录"""
 
@@ -27,10 +42,15 @@ class CoordinateService:
             try:
                 with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                     config = json.load(f)
+                recorded = _recorded_coordinates(
+                    config, ('input_x', 'input_y', 'button_x', 'button_y')
+                )
+                if recorded:
                     print("\n✓ 从配置文件加载鼠标位置")
-                    print(f"  输入框: ({config['input_x']}, {config['input_y']})")
-                    print(f"  按钮: ({config['button_x']}, {config['button_y']})")
-                    return config['input_x'], config['input_y'], config['button_x'], config['button_y']
+                    print(f"  输入框: ({recorded[0]}, {recorded[1]})")
+                    print(f"  按钮: ({recorded[2]}, {recorded[3]})")
+                    return recorded
+                print("\n⚠️  搜索页坐标仍是占位值，需要重新录制")
             except Exception as e:
                 print(f"⚠️  配置文件读取失败: {e}")
 
@@ -78,16 +98,12 @@ class CoordinateService:
             try:
                 with open(CONFIG_FWXX_FILE, 'r', encoding='utf-8') as config_stream:
                     coordinate_config = json.load(config_stream)
-                if {'link_x', 'link_y'} <= coordinate_config.keys():
+                recorded = _recorded_coordinates(coordinate_config, ('link_x', 'link_y'))
+                if recorded:
                     print("\n✓ 从配置文件加载详情链接位置")
-                    print(
-                        f"  详情链接: ({coordinate_config['link_x']}, "
-                        f"{coordinate_config['link_y']})"
-                    )
-                    return (
-                        coordinate_config['link_x'],
-                        coordinate_config['link_y'],
-                    )
+                    print(f"  详情链接: ({recorded[0]}, {recorded[1]})")
+                    return recorded
+                print("\n⚠️  详情链接坐标仍是占位值，需要重新录制")
             except Exception as error:
                 print(f"⚠️  配置文件读取失败: {error}")
 
@@ -138,28 +154,15 @@ class CoordinateService:
             try:
                 with open(CONFIG_FWXX_FILE, 'r', encoding='utf-8') as f:
                     coordinate_config = json.load(f)
-                required_coordinates = {
-                    'link_x',
-                    'link_y',
-                    'fwxx_menu_x',
-                    'fwxx_menu_y',
-                }
-                if required_coordinates <= coordinate_config.keys():
+                recorded = _recorded_coordinates(
+                    coordinate_config, ('link_x', 'link_y', 'fwxx_menu_x', 'fwxx_menu_y')
+                )
+                if recorded:
                     print("\n✓ 从配置文件加载发文信息页鼠标位置")
-                    print(
-                        f"  发文链接: ({coordinate_config['link_x']}, "
-                        f"{coordinate_config['link_y']})"
-                    )
-                    print(
-                        f"  菜单: ({coordinate_config['fwxx_menu_x']}, "
-                        f"{coordinate_config['fwxx_menu_y']})"
-                    )
-                    return (
-                        coordinate_config['link_x'],
-                        coordinate_config['link_y'],
-                        coordinate_config['fwxx_menu_x'],
-                        coordinate_config['fwxx_menu_y'],
-                    )
+                    print(f"  发文链接: ({recorded[0]}, {recorded[1]})")
+                    print(f"  菜单: ({recorded[2]}, {recorded[3]})")
+                    return recorded
+                print("\n⚠️  发文信息页坐标仍是占位值，需要重新录制")
             except Exception as e:
                 print(f"⚠️  配置文件读取失败: {e}")
 
@@ -214,10 +217,12 @@ class CoordinateService:
             try:
                 with open(CONFIG_FWXX_FILE, 'r', encoding='utf-8') as f:
                     config = json.load(f)
-                if 'fee_menu_x' in config and 'fee_menu_y' in config:
+                recorded = _recorded_coordinates(config, ('fee_menu_x', 'fee_menu_y'))
+                if recorded:
                     print("\n✓ 从配置文件加载费用信息菜单位置")
-                    print(f"  菜单: ({config['fee_menu_x']}, {config['fee_menu_y']})")
-                    return config['fee_menu_x'], config['fee_menu_y']
+                    print(f"  菜单: ({recorded[0]}, {recorded[1]})")
+                    return recorded
+                print("\n⚠️  费用信息菜单坐标仍是占位值，需要重新录制")
             except Exception as e:
                 print(f"⚠️  配置文件读取失败: {e}")
 

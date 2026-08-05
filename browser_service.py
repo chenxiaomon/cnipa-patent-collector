@@ -15,7 +15,10 @@ from pathlib import Path
 from browser_utils import (
     load_credentials, auto_fill_login, create_driver_with_retry, fill_vue_input,
 )
+from selenium.common.exceptions import TimeoutException
+
 from settings import (
+    BROWSER_PAGE_LOAD_TIMEOUT,
     USE_VIRTUAL_DISPLAY, VIRTUAL_DISPLAY_WIDTH, VIRTUAL_DISPLAY_HEIGHT,
 )
 
@@ -78,7 +81,14 @@ class BrowserService:
             已完成登录的 WebDriver 实例
         """
         driver = create_driver_with_retry()
-        driver.get(url)
+        driver.set_page_load_timeout(BROWSER_PAGE_LOAD_TIMEOUT)
+        try:
+            driver.get(url)
+        except TimeoutException as error:
+            raise RuntimeError(
+                f"{url} 在 {BROWSER_PAGE_LOAD_TIMEOUT:.0f} 秒内未加载完成；"
+                "检查网络，以及 MITM 代理是否正常转发"
+            ) from error
         time.sleep(page_load_wait)
         print("\n✓ 浏览器已打开")
 

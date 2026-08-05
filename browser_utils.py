@@ -17,6 +17,8 @@ import random
 import socket
 import re
 import glob
+import platform
+import plistlib
 import subprocess
 
 import pyautogui
@@ -70,6 +72,47 @@ def _get_windows_chrome_major_version() -> int | None:
     return None
 
 
+_MACOS_CHROME_APP_BUNDLES = [
+    '/Applications/Google Chrome.app',
+    os.path.expanduser('~/Applications/Google Chrome.app'),
+    '/Applications/Google Chrome Beta.app',
+    '/Applications/Chromium.app',
+]
+
+
+def _get_macos_chrome_major_version() -> int | None:
+    # 优先读 Info.plist：纯文件读取，不 spawn 进程；Chrome 自动更新替换 .app 期间
+    # 二进制自报版本可能超时，而 plist 读不到会自然退到下一候选。
+    for app_bundle in _MACOS_CHROME_APP_BUNDLES:
+        info_plist_path = os.path.join(app_bundle, 'Contents', 'Info.plist')
+        if os.path.isfile(info_plist_path):
+            try:
+                with open(info_plist_path, 'rb') as plist_stream:
+                    bundle_version = plistlib.load(plist_stream).get('CFBundleShortVersionString', '')
+                chrome_major_version = _major_version_from_text(bundle_version)
+                if chrome_major_version:
+                    return chrome_major_version
+            except (OSError, plistlib.InvalidFileException):
+                pass
+
+        # .app 包内可执行文件与包名同名：Google Chrome.app/Contents/MacOS/Google Chrome
+        chrome_binary = os.path.join(
+            app_bundle, 'Contents', 'MacOS', os.path.basename(app_bundle).removesuffix('.app')
+        )
+        if not os.path.isfile(chrome_binary):
+            continue
+        try:
+            completed_process = subprocess.run(
+                [chrome_binary, '--version'], capture_output=True, text=True, timeout=5
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        chrome_major_version = _major_version_from_text(completed_process.stdout)
+        if chrome_major_version:
+            return chrome_major_version
+    return None
+
+
 def _get_chrome_major_version() -> int | None:
     """检测系统 Chrome 主版本号，供 undetected_chromedriver 使用"""
     if sys.platform == 'win32':
@@ -92,6 +135,9 @@ def _get_chrome_major_version() -> int | None:
                 except subprocess.TimeoutExpired:
                     pass
         return None
+
+    if sys.platform == 'darwin':
+        return _get_macos_chrome_major_version()
 
     for cmd in ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium']:
         try:
@@ -118,6 +164,15 @@ def _get_chromedriver_major_version(driver_path: str) -> int | None:
     return _major_version_from_text(completed_process.stdout)
 
 
+def _manual_chromedriver_dir_name() -> str:
+    """本平台手工放置 ChromeDriver 的目录名，与 chrome-for-testing 的下载包同名。"""
+    if sys.platform == 'win32':
+        return 'chromedriver-win64'
+    if sys.platform == 'darwin':
+        return 'chromedriver-mac-arm64' if platform.machine() == 'arm64' else 'chromedriver-mac-x64'
+    return 'chromedriver-linux64'
+
+
 def _find_matching_chromedriver(chrome_major_version: int | None) -> str | None:
     if not chrome_major_version:
         return None
@@ -129,11 +184,26 @@ def _find_matching_chromedriver(chrome_major_version: int | None) -> str | None:
                 r'%LOCALAPPDATA%\Temp\chromedriver-win64-*\chromedriver-win64\chromedriver.exe'
             ),
         ]
+    elif sys.platform == 'darwin':
+        # 两种架构都找：Apple Silicon 上 x64 驱动经 Rosetta 也能用，反之不行，
+        # 所以本机架构对应的目录排在前面。
+        mac_driver_dir_names = dict.fromkeys(
+            [_manual_chromedriver_dir_name(), 'chromedriver-mac-x64', 'chromedriver-mac-arm64']
+        )
+        driver_patterns = [
+            os.path.join(os.path.dirname(__file__), dir_name, 'chromedriver')
+            for dir_name in mac_driver_dir_names
+        ]
     else:
         driver_patterns = [
             os.path.join(os.path.dirname(__file__), 'chromedriver-linux64', 'chromedriver'),
             '/tmp/chromedriver-linux64-*/chromedriver-linux64/chromedriver',
         ]
+
+    # uc 自己下载的驱动：只有作为 driver_executable_path 传回去，Patcher 才走
+    # _custom_exe_path 分支；否则 patcher.auto() 会先 unlink 掉它再重新联网下载，
+    # 于是每次启动都要重下 ~10MB。data_path 按平台自适应，* 兼容 Windows 的 .exe。
+    driver_patterns.append(os.path.join(uc.Patcher.data_path, 'undetected_chromedriver*'))
 
     for driver_pattern in driver_patterns:
         for driver_path in glob.glob(driver_pattern):
@@ -268,13 +338,22 @@ def create_driver_with_retry(max_retries: int = 3, use_mitm: bool = None) -> uc.
     if use_mitm is None:
         use_mitm = USE_MITM_PROXY
 
-    # 自动检测本地 ChromeDriver
+    # 代理没起就带 --proxy-server 启动，页面必然 ERR_PROXY_CONNECTION_FAILED，
+    # 后续还要静默等满页面加载和登录超时。在这里挡住，别让三个采集入口各查一遍。
+    if use_mitm and not check_mitm_proxy():
+        raise RuntimeError(
+            f"MITM 代理 {MITM_HOST}:{MITM_PORT} 未响应，带 --proxy-server 启动页面必然打不开。\n"
+            "请先启动代理：uv run python start_mitm_proxy.py（Dashboard 上是【启动主代理】）"
+        )
+
     chrome_ver = _get_chrome_major_version()
-    matching_driver_path = _find_matching_chromedriver(chrome_ver)
 
     for attempt in range(max_retries):
         try:
             print(f"\n[尝试 {attempt+1}/{max_retries}] 启动浏览器...")
+
+            # 每轮重新探测：上一轮可能已把匹配版本下载进 uc 缓存，这轮直接复用
+            matching_driver_path = _find_matching_chromedriver(chrome_ver)
 
             options = uc.ChromeOptions()
             options.add_argument("--no-sandbox")
@@ -313,4 +392,15 @@ def create_driver_with_retry(max_retries: int = 3, use_mitm: bool = None) -> uc.
                 print(f"  {wait_time} 秒后重试...\n")
                 time.sleep(wait_time)
             else:
-                raise RuntimeError("浏览器初始化失败")
+                # 带上根因和人工出口：Chrome 大版本超出 chrome-for-testing 已发布的
+                # milestone 时无法自动下到匹配驱动，只能手工放进这个目录（已在
+                # _find_matching_chromedriver 的搜索路径里，放进去即自动生效）。
+                manual_driver_dir = os.path.join(
+                    os.path.dirname(__file__), _manual_chromedriver_dir_name()
+                )
+                raise RuntimeError(
+                    f"浏览器初始化失败（本机 Chrome 主版本 {chrome_ver}）：{e}\n"
+                    f"若为 ChromeDriver 版本不匹配，可从 "
+                    f"https://googlechromelabs.github.io/chrome-for-testing/ "
+                    f"下载对应版本，解压到 {manual_driver_dir}{os.sep}"
+                ) from e
