@@ -19,11 +19,11 @@
     },
     {
       "path": ".gitignore",
-      "sha256": "4ddf5dfca1211150b337b23570c3060ee966dab48ce42dd9deb104dcbc9ea3a4"
+      "sha256": "adc80757245efcddd435176318993e493c1a649212c832ae7e16a6f43dfabadc"
     },
     {
       "path": "CHANGELOG.md",
-      "sha256": "4b9fa213a840bd7ed1c390408c2dbd170736cedd4d90d41c3f634b033b2b69bb"
+      "sha256": "a3e8affe8cc560a447d76e1492ad3909f93d6850a9f88bc690a4c8ab8b0c4be9"
     },
     {
       "path": "CLAUDE.md",
@@ -99,7 +99,7 @@
     },
     {
       "path": "db_manager.py",
-      "sha256": "d5c0f70ff1b52ef9ad2ef61e63d6e7b07cf782342e54ef66d8c70534fde50e06"
+      "sha256": "99a4c248795e7e2709a1449471e3f084ea2e11c1448bcd915d71495b50d32b28"
     },
     {
       "path": "desktop_collection_lock.py",
@@ -131,7 +131,7 @@
     },
     {
       "path": "docs/decision-log.md",
-      "sha256": "48e99c597214b9a7c8f55f5a35465db299e734f56d174141646a3eabe24baa22"
+      "sha256": "482db49c04e397dff2e5047294e9c6eeb830ce0fc4c630b6727b7c54086fa086"
     },
     {
       "path": "docs/domain-rules.md",
@@ -279,11 +279,11 @@
     },
     {
       "path": "patent_mitm_scraper.py",
-      "sha256": "b4941a1eb637040617be6e624d68059a1b05c1500fde6408538336223bc2569e"
+      "sha256": "0464341edfa1beb45ae98bb8bc2af842b2095d9401d9379b346f113c54492ef5"
     },
     {
       "path": "payment_obligations.py",
-      "sha256": "1046797cb86c3cb87d0f350a806bf99ec9913d01cd5f3d745a17928876244230"
+      "sha256": "5e71692554fff85fa8a8c39a8f1d1d4b71c5b3c5fa04d8a8d9a5e2a2492c1a5b"
     },
     {
       "path": "poll_master_alerts.py",
@@ -331,7 +331,7 @@
     },
     {
       "path": "settings.py",
-      "sha256": "b418c8bad68e70fce0bc1b5f4cbc56815f6398a20cbfb74c015b361e597699f9"
+      "sha256": "f76338e6174856e60cf8d6bf0b34f0bf94756f7aeb498feca8428538a3fdce6c"
     },
     {
       "path": "setup.bat",
@@ -431,7 +431,7 @@
     },
     {
       "path": "tests/test_db_manager.py",
-      "sha256": "c22126a18a47a8ebaa2c5d079aad9a00a23bfc6125f587bc722d0b333ac36817"
+      "sha256": "2ba5995b97f7780320f20d41beee126b7185398d3ff1349a559e634ceac210b4"
     },
     {
       "path": "tests/test_desktop_collection_lock.py",
@@ -491,7 +491,7 @@
     },
     {
       "path": "tests/test_mitm_scraper.py",
-      "sha256": "3b54403d42d544ea509ba951fbd15c14616aac836dd45ffefa87b2feaf7186c0"
+      "sha256": "885837de0c83686d4c55ed99d784ba66099955e9c35f07f2d0d4978730ef0d70"
     },
     {
       "path": "tests/test_operator_api_token.py",
@@ -499,7 +499,7 @@
     },
     {
       "path": "tests/test_payment_obligations.py",
-      "sha256": "efa565e394ac6129384711696b4d4485ffe0ff207369cc6b52bb0d23aec94987"
+      "sha256": "010c1167e658c1be56df1316be15bc233cc54a8cff60f5c73efd06d6ae6239ab"
     },
     {
       "path": "tests/test_poll_master_alerts.py",
@@ -555,7 +555,7 @@
     },
     {
       "path": "web_dashboard.py",
-      "sha256": "21ed42470cf54deefac1a5e4590dc9bde8ed02abaa55bab4cfa2d03bba7fc96b"
+      "sha256": "46bc5f9285651e3564ff5f17a70f6682f48974232d444d404a8f0c5456800cf4"
     }
   ]
 }

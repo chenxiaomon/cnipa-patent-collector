@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from detection_logger import DetectionLogger
 from cache_utils import normalize_app_no, read_json_cache, write_json_cache
 from settings import (
+    AGENCY_UNMATCHED_FILE,
     FORCE_UPDATE_FLAG,
     MARKER_FILE,
     PATENT_CACHE_FILE,
@@ -47,7 +48,7 @@ class PatentMITMScraper:
     def __init__(self):
         self.logger = DetectionLogger()
         self.processed_count = 0
-        # mitmproxy 在线程池中并发回调 response()，缓存读-改-写必须加锁
+        # mitmproxy 在线程池中并发回调 response()，缓存与备份文件的读-改-写必须加锁
         self._cache_lock = threading.Lock()
 
     def request(self, flow: http.HTTPFlow) -> None:
@@ -202,7 +203,11 @@ class PatentMITMScraper:
           data.dailijg.dailijgList[0].diyidlrxm  → 第一代理人姓名
           data.zhuluxmxx.zhuluxmxx.zhuanlisqh    → 申请号（用于关联记录）
 
-        写入策略：仅在当前记录 daili_jg 为空时更新，避免覆盖已有数据。
+        写入策略：
+          - daili_jg 直接覆盖：官方接口是权威来源，代理所会变更（转所），
+            覆盖优先于保留 import_agency_csv.py 导入的旧值。
+          - daili_r 仅在本次响应带回 diyidlrxm 时写入，避免把已知代理人抹成 NULL。
+          - 未建档申请号转存备份文件，不凭空创建 patents 行（建档只由主采集流程负责）。
         """
         try:
             response_text = flow.response.content.decode('utf-8', errors='replace')
@@ -239,17 +244,50 @@ class PatentMITMScraper:
             if not daili_jg:
                 return
 
-            # 写入 DB：只更新代理字段，不触碰其他列
-            self.logger._db.update_fields(app_no, {
-                'daili_jg': daili_jg,
-                'daili_r':  daili_r,
-            })
-            print(f'[✓] 代理机构已更新: {app_no} → {daili_jg} / {daili_r}')
+            agency_fields = {'daili_jg': daili_jg}
+            if daili_r:
+                agency_fields['daili_r'] = daili_r
+            self._persist_agency_fields(app_no, agency_fields)
 
         except json.JSONDecodeError as e:
             print(f'[!] sqxx JSON 解析失败: {e}')
         except Exception as e:
             print(f'[!] 处理 sqxx 响应失败: {e}')
+
+    def _persist_agency_fields(self, app_no: str, agency_fields: dict) -> None:
+        """写入代理字段；申请号未建档时转存备份，不新建 patents 行。
+
+        patents 行只由主采集流程建档（见 db_manager.fee_dataset_pending_app_nos 的说明），
+        半截记录会污染各处统计口径，故此处宁可转存也不 upsert。
+        """
+        if self.logger._db.update_fields(app_no, agency_fields):
+            daili_r = agency_fields.get('daili_r')
+            print(
+                f"[✓] 代理机构已更新: {app_no} → {agency_fields['daili_jg']}"
+                + (f' / {daili_r}' if daili_r else '')
+            )
+            return
+
+        self._append_unmatched_agency(app_no, agency_fields)
+        print(f'[!] {app_no} 未建档，代理机构转存 {AGENCY_UNMATCHED_FILE}')
+
+    def _append_unmatched_agency(self, app_no: str, agency_fields: dict) -> None:
+        """将无法匹配到主库的代理字段追加到独立备份（形状同 fee_unmatched.json）。"""
+        try:
+            backup_file = str(AGENCY_UNMATCHED_FILE)
+            unmatched_record = {
+                'application_no': app_no,
+                'reason': 'not_found_in_db',
+                'captured_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                **agency_fields,
+            }
+            with self._cache_lock:
+                unmatched_payload = read_json_cache(backup_file)
+                unmatched_payload.setdefault('records', []).append(unmatched_record)
+                write_json_cache(backup_file, unmatched_payload)
+        except Exception as e:
+            # 备份失败不能打断 mitm 响应链路
+            print(f'[!] 写入代理机构 unmatched 失败: {e}')
 
     def _process_fwxx_response(self, flow: http.HTTPFlow) -> None:
         """

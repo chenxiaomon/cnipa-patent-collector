@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+### 新增
+- Dashboard「发文与费用」页新增「代理机构欠费排行」面板（`/api/agency-arrears`）：未缴费用按代理机构汇总涉及专利数、未缴笔数、未缴金额、已逾期笔数，支持机构名过滤。
+
+### 修复
+- 修复未建档申请号的代理机构被静默丢弃且日志谎报成功：`update_fields` 改为返回受影响行数，MITM 采到代理机构但 patents 无该行时转存 `data/agency_unmatched.json` 并如实打印「未建档」（此前无条件打印 `[✓] 代理机构已更新`）。可触发路径为 `collect_fees.py --force` / `--app` / `--input`。
+- 修复 sqxx 响应不含 `diyidlrxm` 时把已知代理人抹成 NULL：代理人字段仅在本次响应带回时才写入。
+
 ## [2026.08.05]
 
 ### 新增

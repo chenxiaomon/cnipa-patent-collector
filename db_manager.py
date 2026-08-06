@@ -275,20 +275,23 @@ class PatentsDB:
             conn.execute(sql, [row[c] for c in cols])
             conn.commit()
 
-    def update_fields(self, app_no: str, fields: dict) -> None:
+    def update_fields(self, app_no: str, fields: dict) -> int:
         """
         对已有记录做部分字段更新（只更新传入的字段，不影响其他列）。
-        记录不存在时静默跳过。
+
+        返回受影响行数：0 表示 patents 无该申请号，调用方据此决定兜底；本方法
+        绝不新建行（patents 行只由主采集流程建档）。因 updated_at 每次都刷新，
+        行数即等价于"记录是否存在"，无需调用方另做一次存在性查询。
 
         注意：不经过 _encode()，避免把未传入的列填为 NULL。
         JSON 字段会在此处按需序列化。
         """
         if not fields:
-            return
+            return 0
         # 只取合法列名，过滤掉不在 schema 中的键，并附加 updated_at
         valid = {k: v for k, v in fields.items() if k in _COLUMNS and k != 'updated_at'}
         if not valid:
-            return
+            return 0
         for field in _JSON_FIELDS:
             if field in valid and valid[field] is not None and not isinstance(valid[field], str):
                 valid[field] = json.dumps(valid[field], ensure_ascii=False)
@@ -296,8 +299,9 @@ class PatentsDB:
         set_clause = ', '.join(f'{col}=?' for col in valid)
         sql = f"UPDATE patents SET {set_clause} WHERE application_no=?"
         with self._lock, self._connect() as conn:
-            conn.execute(sql, [*valid.values(), app_no])
+            cursor = conn.execute(sql, [*valid.values(), app_no])
             conn.commit()
+            return cursor.rowcount
 
     def snapshot_previous_status(self) -> int:
         """
@@ -419,6 +423,19 @@ class PatentsDB:
             ).fetchall()
         counts = _count_split_applicants(rows)
         return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
+    def records_with_payable_fees(self) -> list[dict]:
+        """返回已采到应缴费用快照的记录（含代理机构），供代理机构欠费排行使用。
+
+        只取排行所需列，避免 get_all_records() 全表全字段解码。
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT application_no, zhuanlimc, anjianywzt, daili_jg, "
+                "payable_fee_records, fee_snapshot_at FROM patents "
+                "WHERE payable_fee_records IS NOT NULL"
+            ).fetchall()
+        return [self._decode(r) for r in rows]
 
     def query_filtered(
         self,

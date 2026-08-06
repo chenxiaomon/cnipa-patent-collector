@@ -25,7 +25,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -51,6 +51,7 @@ from settings import (
 )
 from db_manager import PatentsDB
 from cache_utils import normalize_app_no, parse_app_no_list, parse_timestamp
+from payment_obligations import build_agency_arrears_ranking
 from machine_identity import MASTER_ROLE, read_machine_role
 from collection_health import read_alert_status
 from operator_api_token import api_token_matches, ensure_api_token
@@ -1130,6 +1131,33 @@ HTML = r"""<!doctype html>
           </div>
         </article>
       </section>
+      <article class="panel">
+        <div class="panel-head">
+          <h2>代理机构欠费排行</h2>
+          <span class="hint" id="agencyArrearsHint">未缴费用按代理机构汇总</span>
+          <div style="margin-left:auto">
+            <button class="btn secondary" style="font-size:12px;padding:3px 10px" id="agencyArrearsRefreshBtn">刷新</button>
+          </div>
+        </div>
+        <div style="margin-bottom:8px">
+          <input id="agencyArrearsSearch" type="text" placeholder="过滤代理机构…"
+                 style="width:100%;box-sizing:border-box;padding:5px 8px;border:1px solid var(--line);border-radius:4px;font-size:13px">
+        </div>
+        <div class="table-wrap">
+          <table id="agencyArrearsTable">
+            <thead>
+              <tr>
+                <th>代理机构</th>
+                <th style="width:90px;text-align:right">涉及专利</th>
+                <th style="width:90px;text-align:right">未缴笔数</th>
+                <th style="width:110px;text-align:right">未缴金额</th>
+                <th style="width:90px;text-align:right">已逾期</th>
+              </tr>
+            </thead>
+            <tbody id="agencyArrearsRows"></tbody>
+          </table>
+        </div>
+      </article>
     </div>
 
     <!-- ═══ Tab 5：公开查询 ═══ -->
@@ -2462,7 +2490,44 @@ async function saveCompanyMeta(btn) {
 document.addEventListener('DOMContentLoaded', function() {
   const search = $('#rejCompanySearch');
   if (search) search.addEventListener('input', _applyRejCompanyFilter);
+  const agencySearch = $('#agencyArrearsSearch');
+  if (agencySearch) agencySearch.addEventListener('input', _applyAgencyArrearsFilter);
 });
+
+// ── 代理机构欠费排行 ──────────────────────────────────────────────────────
+let _agencyArrears = [];  // 全量缓存，用于过滤
+
+async function loadAgencyArrears() {
+  const d = await api('/api/agency-arrears');
+  _agencyArrears = d.agencies || [];
+  const hint = $('#agencyArrearsHint');
+  if (hint) hint.textContent = '未缴费用按代理机构汇总 · 截至 ' + (d.analysis_date || '—');
+  _applyAgencyArrearsFilter();
+}
+
+function _applyAgencyArrearsFilter() {
+  const keyword = ($('#agencyArrearsSearch') || {}).value || '';
+  const kw = keyword.trim().toLowerCase();
+  const rows = kw
+    ? _agencyArrears.filter(a => (a.agency || '').toLowerCase().includes(kw))
+    : _agencyArrears;
+  const tbody = $('#agencyArrearsRows');
+  if (!tbody) return;
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="hint" style="padding:8px">暂无未缴费用记录</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(a => {
+    const name = a.agency || '（未知代理机构）';
+    return '<tr>' +
+      '<td style="max-width:280px"><div class="clip" title="' + escHtml(name) + '">' + escHtml(name) + '</div></td>' +
+      '<td style="text-align:right">' + fmtNumber(a.patent_count) + '</td>' +
+      '<td style="text-align:right">' + fmtNumber(a.unpaid_count) + '</td>' +
+      '<td style="text-align:right">' + fmtNumber(a.unpaid_amount) + '</td>' +
+      '<td style="text-align:right">' + fmtNumber(a.overdue_count) + '</td>' +
+      '</tr>';
+  }).join('');
+}
 
 function downloadCompanyTemplate() {
   window.location.href = '/api/company-meta/template';
@@ -2614,6 +2679,8 @@ function bindEvents() {
 
   $('#feeBatchBtn').addEventListener('click', () =>
     startJob('collect_fees_batch', { app_nos: $('#feeBatchAppNos').value }));
+
+  $('#agencyArrearsRefreshBtn').addEventListener('click', loadAgencyArrears);
 
   $('#importFeeTargetsBtn').addEventListener('click', async () => {
     const fi = $('#feeTargetsFileInput');
@@ -3035,6 +3102,7 @@ async function boot() {
   checkUpdate();                              // 启动时检查一次
   setInterval(checkUpdate, 3600000);          // 每小时检查一次
   loadApplicants();                           // 加载筛选导出的申请人列表
+  loadAgencyArrears();                        // 加载代理机构欠费排行
 }
 
 boot().catch(e => showToast(e.message));
@@ -3107,6 +3175,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     for name, count in _patents_db.list_applicants()
                 ]
                 self.send_json({"applicants": applicants})
+            elif path == "/api/agency-arrears":
+                # 按需触发，不并入 build_summary 的 TTL 缓存（前端每 5 秒轮询那条）
+                analysis_date = date.today()
+                self.send_json({
+                    "analysis_date": analysis_date.isoformat(),
+                    "agencies": build_agency_arrears_ranking(
+                        _patents_db.records_with_payable_fees(), analysis_date
+                    ),
+                })
             elif path == "/api/requests":
                 if not self.is_operator:
                     self.send_json({"error": "仅操作员可查看需求列表"}, status=403)

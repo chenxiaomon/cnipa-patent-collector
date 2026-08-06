@@ -12,8 +12,11 @@ patent_mitm_scraper.py 的 Mock flow 单元测试
    — CNIPA 改字段名时，只有这层会报红；需人工替换 fixture 并更新断言。
 """
 
+import io
 import json
+import tempfile
 import unittest
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -315,6 +318,88 @@ class TestProcessSqxx(unittest.TestCase):
         )
         self.scraper._process_sqxx_response(flow)
         self.mock_db.update_fields.assert_not_called()
+
+    def test_omits_daili_r_when_response_lacks_it(self):
+        """响应缺 diyidlrxm 时不得把已知代理人抹成 NULL。"""
+        resp = {**SQXX_RESPONSE, "data": {
+            **SQXX_RESPONSE["data"],
+            "dailijg": {"dailijgList": [{"dailijgdm": "浙江侨悦专利代理有限公司"}]},
+        }}
+        flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/sqxx?token=abc',
+            body=_json_body(resp),
+        )
+        self.scraper._process_sqxx_response(flow)
+
+        self.mock_db.update_fields.assert_called_once_with(
+            '2026104796018',
+            {'daili_jg': '浙江侨悦专利代理有限公司'},
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Test 3b: 未建档申请号的代理机构转存备份
+# ══════════════════════════════════════════════════════════════════════
+
+class TestUnmatchedAgencyBackup(unittest.TestCase):
+    """update_fields 返回 0（patents 无该行）时必须转存备份，且不谎报成功。"""
+
+    def setUp(self):
+        patcher_logger = patch('patent_mitm_scraper.DetectionLogger')
+        self.mock_logger_cls = patcher_logger.start()
+        self.addCleanup(patcher_logger.stop)
+        self.mock_db = self.mock_logger_cls.return_value._db
+
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.backup_file = Path(self.tmpdir.name) / 'agency_unmatched.json'
+        patcher_file = patch(
+            'patent_mitm_scraper.AGENCY_UNMATCHED_FILE', self.backup_file
+        )
+        patcher_file.start()
+        self.addCleanup(patcher_file.stop)
+
+        from patent_mitm_scraper import PatentMITMScraper
+        self.scraper = PatentMITMScraper()
+
+    def _feed_sqxx(self):
+        flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/sqxx?token=abc',
+            body=_json_body(SQXX_RESPONSE),
+        )
+        printed = io.StringIO()
+        with redirect_stdout(printed):
+            self.scraper._process_sqxx_response(flow)
+        return printed.getvalue()
+
+    def test_unregistered_app_no_is_backed_up_without_success_log(self):
+        self.mock_db.update_fields.return_value = 0
+        output = self._feed_sqxx()
+
+        self.assertNotIn('代理机构已更新', output)
+        self.assertIn('未建档', output)
+
+        records = json.loads(self.backup_file.read_text(encoding='utf-8'))['records']
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]['application_no'], '2026104796018')
+        self.assertEqual(records[0]['daili_jg'], '浙江侨悦专利代理有限公司')
+        self.assertEqual(records[0]['daili_r'], '陈泽元')
+        self.assertTrue(records[0]['captured_at'])
+
+    def test_registered_app_no_writes_no_backup(self):
+        self.mock_db.update_fields.return_value = 1
+        output = self._feed_sqxx()
+
+        self.assertIn('代理机构已更新', output)
+        self.assertFalse(self.backup_file.exists())
+
+    def test_repeated_misses_accumulate(self):
+        self.mock_db.update_fields.return_value = 0
+        self._feed_sqxx()
+        self._feed_sqxx()
+
+        records = json.loads(self.backup_file.read_text(encoding='utf-8'))['records']
+        self.assertEqual(len(records), 2)
 
 
 # ══════════════════════════════════════════════════════════════════════

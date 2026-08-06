@@ -10,6 +10,7 @@ from payment_obligations import (
     LATE_FEE_NOT_COLLECTED,
     LATE_FEE_NO_APPLICABLE_BRACKET,
     LATE_FEE_NO_SCHEDULE,
+    build_agency_arrears_ranking,
     build_current_late_fee_analysis,
     build_payable_fee_analysis,
 )
@@ -35,6 +36,10 @@ def payable_fee(deadline, status="未缴", amount="1200", fee_name="第6年年�
         "jiaofeijzr": deadline,
         "yingjiaoffyzt": status,
     }
+
+
+def agency_record(application_no, agency, payable_fees):
+    return {**patent_record(application_no, payable_fees), "daili_jg": agency}
 
 
 def late_fee_schedule(period, annual_fee="1200", late_fee="60", total="1260"):
@@ -199,6 +204,56 @@ class TestCurrentLateFeeAnalysis(unittest.TestCase):
         self.assertEqual(row["late_fee_analysis_status"], LATE_FEE_APPLICABLE)
         self.assertEqual(row["invalid_interval_count"], 1)
         self.assertEqual(row["zhinajyjznje"], "120")
+
+
+class TestAgencyArrearsRanking(unittest.TestCase):
+    def test_groups_by_agency_and_sums_unpaid_amount(self):
+        records = [
+            agency_record("A", "甲所", [payable_fee("2027-01-04", amount="1200")]),
+            agency_record("B", "甲所", [
+                payable_fee("2027-01-04", amount="800"),
+                payable_fee("2026-01-04", amount="300"),
+            ]),
+            agency_record("C", "乙所", [payable_fee("2027-01-04", amount="500")]),
+        ]
+
+        ranking = build_agency_arrears_ranking(records, date(2026, 8, 10))
+
+        self.assertEqual([row["agency"] for row in ranking], ["甲所", "乙所"])
+        self.assertEqual(ranking[0]["patent_count"], 2)
+        self.assertEqual(ranking[0]["unpaid_count"], 3)
+        self.assertEqual(ranking[0]["unpaid_amount"], 2300.0)
+        self.assertEqual(ranking[0]["overdue_count"], 1)
+
+    def test_records_without_agency_form_their_own_bucket(self):
+        records = [
+            agency_record("A", "甲所", [payable_fee("2027-01-04", amount="100")]),
+            agency_record("B", None, [payable_fee("2027-01-04", amount="900")]),
+        ]
+
+        ranking = build_agency_arrears_ranking(records, date(2026, 8, 10))
+
+        self.assertEqual([row["agency"] for row in ranking], [None, "甲所"])
+        self.assertEqual(ranking[0]["unpaid_amount"], 900.0)
+
+    def test_unparseable_amount_is_counted_not_summed(self):
+        records = [agency_record("A", "甲所", [
+            payable_fee("2027-01-04", amount="1200"),
+            payable_fee("2027-01-04", amount="待核定"),
+        ])]
+
+        ranking = build_agency_arrears_ranking(records, date(2026, 8, 10))
+
+        self.assertEqual(ranking[0]["unpaid_amount"], 1200.0)
+        self.assertEqual(ranking[0]["unpaid_count"], 2)
+        self.assertEqual(ranking[0]["unparsed_amount_count"], 1)
+
+    def test_paid_fees_are_excluded(self):
+        records = [agency_record("A", "甲所", [
+            payable_fee("2027-01-04", status="已缴", amount="1200"),
+        ])]
+
+        self.assertEqual(build_agency_arrears_ranking(records, date(2026, 8, 10)), [])
 
 
 if __name__ == "__main__":

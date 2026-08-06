@@ -29,6 +29,7 @@ PATENT_IDENTITY_FIELDS = (
     "shouquanggh",
     "falvzt",
     "anjianywzt",
+    "daili_jg",
 )
 
 LATE_FEE_APPLICABLE = "applicable"
@@ -82,6 +83,57 @@ def build_payable_fee_analysis(records: Iterable[dict], as_of: date) -> list[dic
 
     obligations.sort(key=lambda indexed_obligation: indexed_obligation[0])
     return [obligation for _, obligation in obligations]
+
+
+def build_agency_arrears_ranking(records: Iterable[dict], as_of: date) -> list[dict]:
+    """Return one arrears summary per 代理机构, heaviest unpaid amount first.
+
+    Delegates the 未缴 filter and deadline math to build_payable_fee_analysis so those
+    rules stay defined once. Records without 代理机构 form their own bucket rather than
+    being dropped — discarding them would under-report the total arrears.
+    """
+    rankings: dict[str | None, dict] = {}
+    patents_seen: dict[str | None, set] = {}
+
+    for obligation in build_payable_fee_analysis(records, as_of):
+        agency = obligation.get("daili_jg") or None
+        ranking = rankings.get(agency)
+        if ranking is None:
+            ranking = rankings[agency] = {
+                "agency": agency,
+                "patent_count": 0,
+                "unpaid_count": 0,
+                "unpaid_amount": 0.0,
+                "overdue_count": 0,
+                "unparsed_amount_count": 0,
+            }
+            patents_seen[agency] = set()
+
+        patents_seen[agency].add(obligation.get("application_no"))
+        ranking["unpaid_count"] += 1
+
+        amount = _parse_amount(obligation.get("yingjiaoje"))
+        if amount is None:
+            ranking["unparsed_amount_count"] += 1
+        else:
+            ranking["unpaid_amount"] += amount
+
+        days_to_deadline = obligation.get("days_to_deadline")
+        if days_to_deadline is not None and days_to_deadline < 0:
+            ranking["overdue_count"] += 1
+
+    for agency, ranking in rankings.items():
+        ranking["patent_count"] = len(patents_seen[agency])
+        ranking["unpaid_amount"] = round(ranking["unpaid_amount"], 2)
+
+    return sorted(
+        rankings.values(),
+        key=lambda ranking: (
+            -ranking["unpaid_amount"],
+            -ranking["unpaid_count"],
+            ranking["agency"] or "",
+        ),
+    )
 
 
 def build_current_late_fee_analysis(records: Iterable[dict], as_of: date) -> list[dict]:
@@ -184,6 +236,19 @@ def _parse_deadline(raw_deadline: object) -> date | None:
         return None
 
 
+def _parse_amount(raw_amount: object) -> float | None:
+    if isinstance(raw_amount, bool):
+        return None
+    if isinstance(raw_amount, (int, float)):
+        return float(raw_amount)
+    if not isinstance(raw_amount, str):
+        return None
+    try:
+        return float(raw_amount.replace(",", "").replace("，", "").strip())
+    except ValueError:
+        return None
+
+
 def _deadline_bucket(days_to_deadline: int | None) -> str:
     if days_to_deadline is None:
         return "日期未知"
@@ -227,6 +292,7 @@ __all__ = [
     "LATE_FEE_NOT_COLLECTED",
     "LATE_FEE_NO_APPLICABLE_BRACKET",
     "LATE_FEE_NO_SCHEDULE",
+    "build_agency_arrears_ranking",
     "build_current_late_fee_analysis",
     "build_payable_fee_analysis",
 ]

@@ -73,6 +73,28 @@ class TestPatentsDBUpdateFields(unittest.TestCase):
             self.assertEqual(record["fee_receipt_dispatch_records"], receipts)
             self.assertEqual(record["fee_snapshot_at"], "2026-07-18T09:00:00Z")
 
+    def test_update_fields_reports_affected_rows(self):
+        """返回行数是调用方判断"申请号是否已建档"的唯一信号。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = PatentsDB(Path(tmpdir) / "patents.db")
+            db.upsert({"application_no": "202310411762X", "status_code": 200})
+
+            self.assertEqual(db.update_fields("202310411762X", {"daili_jg": "某所"}), 1)
+            self.assertEqual(db.update_fields("202310411762X", {}), 0)
+            self.assertEqual(db.update_fields("202310411762X", {"不存在的列": "x"}), 0)
+
+    def test_update_fields_on_missing_app_no_creates_no_row(self):
+        """未建档时返回 0 且绝不新建行——patents 建档只由主采集流程负责。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = PatentsDB(Path(tmpdir) / "patents.db")
+            db.upsert({"application_no": "202310411762X", "status_code": 200})
+
+            affected = db.update_fields("9999999999999", {"daili_jg": "某所"})
+
+            self.assertEqual(affected, 0)
+            self.assertIsNone(db.get_record("9999999999999"))
+            self.assertEqual(len(db.get_all_records()), 1)
+
     def test_summarize_record_import_reports_new_updated_and_time_range(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db = PatentsDB(Path(tmpdir) / "patents.db")

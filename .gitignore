@@ -20,6 +20,7 @@ data/patent_fwxx_cache.json
 data/patent_fee_cache.json
 data/fwxx_unmatched.json
 data/fee_unmatched.json
+data/agency_unmatched.json
 data/current_fwxx_target.json
 data/detail_collection.lock
 data/fwxx_list.txt
