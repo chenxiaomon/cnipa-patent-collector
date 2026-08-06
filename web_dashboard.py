@@ -33,6 +33,8 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from settings import (
+    AGENCY_VERIFICATION_REPORT_CSV_FILE,
+    AGENCY_VERIFICATION_REPORT_JSON_FILE,
     BASE_DIR,
     COMPANY_META_FILE,
     CONFIG_FILE,
@@ -76,6 +78,8 @@ DESKTOP_BROWSER_ACTIONS = {
     "collect_fwxx",
     "collect_fwxx_app",
     "collect_fwxx_batch",
+    "recheck_agency_app",
+    "recheck_agency_batch",
     "collect_fees",
     "collect_fees_app",
     "collect_fees_batch",
@@ -97,6 +101,8 @@ DOWNLOADS = {
     "json": DETECTION_LOG_FILE,
     "dynamic": DATA_DIR / "update_list_dynamic.txt",
     "retry": DATA_DIR / "retry_dynamic.txt",
+    "agency_verification_csv": AGENCY_VERIFICATION_REPORT_CSV_FILE,
+    "agency_verification_json": AGENCY_VERIFICATION_REPORT_JSON_FILE,
 }
 
 
@@ -476,6 +482,34 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
                 "--input",
                 str(request_path),
                 "--force",
+            ],
+            "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
+        }
+    if action == "recheck_agency_app":
+        app_no = normalize_app_no(params.get("app_no"))
+        if not app_no:
+            raise ValueError("请输入申请号")
+        return {
+            "action": action,
+            "title": f"官方复核代理机构 {app_no}",
+            "command": [py, "-u", "collect_agency.py", "--app", app_no],
+            "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
+        }
+    if action == "recheck_agency_batch":
+        request_path, targets = create_manual_fwxx_request(
+            str(params.get("app_nos") or ""),
+            request_dir=FWXX_MANUAL_LIST_DIR,
+            max_app_nos=MAX_REQUEST_APP_NOS,
+        )
+        return {
+            "action": action,
+            "title": f"批量官方复核代理机构 {len(targets)} 件",
+            "command": [
+                py,
+                "-u",
+                "collect_agency.py",
+                "--input",
+                str(request_path),
             ],
             "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
         }
@@ -1055,6 +1089,29 @@ HTML = r"""<!doctype html>
               <div class="info-row"><span>未建档</span><strong id="feeDatasetUnregistered">—</strong></div>
               <div class="hint" style="margin-top:5px">费用采集范围由导入的数据集决定，与驳回状态无关</div>
             </div>
+          </div>
+        </article>
+      </section>
+
+      <section style="margin-bottom:14px">
+        <article class="panel operator-only">
+          <div class="panel-head"><h2>代理机构官方复核</h2><span class="hint">collect_agency</span></div>
+          <div class="hint" style="margin-bottom:12px">
+            仅进入案件详情页读取国知局当前代理机构；不会点击或采集发文、费用信息。
+          </div>
+          <div class="check-line" style="margin-bottom:12px">
+            <input id="agencyRecheckAppNo" placeholder="单号核验：输入申请号">
+            <button class="btn primary" id="agencyRecheckSingleBtn">核验</button>
+          </div>
+          <label class="field">
+            <span>批量申请号</span>
+            <textarea id="agencyRecheckBatchAppNos" class="codebox" rows="5"
+              placeholder="每行一个申请号，也支持逗号分隔"></textarea>
+          </label>
+          <div class="button-row" style="margin-top:10px">
+            <button class="btn primary" id="agencyRecheckBatchBtn">批量核验</button>
+            <a class="btn secondary" href="/download/agency_verification_csv" download>下载 CSV 报告</a>
+            <a class="btn secondary" href="/download/agency_verification_json" download>下载 JSON 报告</a>
           </div>
         </article>
       </section>
@@ -2656,6 +2713,12 @@ function bindEvents() {
     await api('/api/signal-query-ready', { method: 'POST', body: '{}' });
     showToast('已通知自动翻页脚本开始翻页');
   });
+
+  $('#agencyRecheckSingleBtn').addEventListener('click', () =>
+    startJob('recheck_agency_app', { app_no: $('#agencyRecheckAppNo').value }));
+
+  $('#agencyRecheckBatchBtn').addEventListener('click', () =>
+    startJob('recheck_agency_batch', { app_nos: $('#agencyRecheckBatchAppNos').value }));
 
   $('#fwxxTestBtn').addEventListener('click', () =>
     startJob('collect_fwxx', { count: 5 }));

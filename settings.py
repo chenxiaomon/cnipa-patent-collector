@@ -93,6 +93,8 @@ API_TOKEN_FILE = DATA_DIR / 'api_token.txt'
 # 检测日志（主要输出）
 DETECTION_LOG_FILE = RESULTS_DIR / 'detection_log.json'
 DETECTION_LOG_JSONL_FILE = RESULTS_DIR / 'detection_log.jsonl'
+AGENCY_VERIFICATION_REPORT_JSON_FILE = RESULTS_DIR / 'agency_verification_report.json'
+AGENCY_VERIFICATION_REPORT_CSV_FILE = RESULTS_DIR / 'agency_verification_report.csv'
 
 # SQLite 数据库（主存储，替代 JSONL 查询）
 PATENTS_DB_FILE = DATA_DIR / 'patents.db'
@@ -109,11 +111,13 @@ PATENTS_EXCEL_FILE = RESULTS_DIR / 'patents_data.xlsx'
 
 # 专利数据缓存（MITM 代理写入）
 PATENT_CACHE_FILE = DATA_DIR / 'patent_cache.json'
+PATENT_AGENCY_CACHE_FILE = DATA_DIR / 'patent_agency_cache.json'
 PATENT_FWXX_CACHE_FILE = DATA_DIR / 'patent_fwxx_cache.json'
 PATENT_FEE_CACHE_FILE = DATA_DIR / 'patent_fee_cache.json'
 
 # 断点续传和状态标记
 MARKER_FILE = DATA_DIR / 'current_fwxx_target.json'
+AGENCY_ATTEMPT_MARKER_FILE = DATA_DIR / 'current_agency_attempt.json'
 FWXX_UNMATCHED_FILE = DATA_DIR / 'fwxx_unmatched.json'
 FEE_UNMATCHED_FILE = DATA_DIR / 'fee_unmatched.json'
 AGENCY_UNMATCHED_FILE = DATA_DIR / 'agency_unmatched.json'

@@ -122,6 +122,43 @@ class TestCollectionJobSpecs(unittest.TestCase):
 
         create_request.assert_called_once()
 
+    def test_agency_recheck_actions_only_invoke_agency_collector(self):
+        request_path = Path("C:/tmp/manual_agency_request.txt")
+        raw_targets = "CN202411006597.0\nCN202111504942.X"
+        with mock.patch.object(
+            web_dashboard,
+            "create_manual_fwxx_request",
+            return_value=(request_path, ["2024110065970", "202111504942X"]),
+        ) as create_request:
+            app_spec = web_dashboard.build_job_spec(
+                "recheck_agency_app",
+                {"app_no": "CN202411006597.0"},
+            )
+            batch_spec = web_dashboard.build_job_spec(
+                "recheck_agency_batch",
+                {"app_nos": raw_targets},
+            )
+
+        self.assertEqual(
+            app_spec["command"],
+            ["python", "-u", "collect_agency.py", "--app", "2024110065970"],
+        )
+        self.assertEqual(
+            batch_spec["command"],
+            ["python", "-u", "collect_agency.py", "--input", str(request_path)],
+        )
+        self.assertNotIn("--force", app_spec["command"])
+        self.assertNotIn("--force", batch_spec["command"])
+        self.assertNotIn("collect_fwxx.py", app_spec["command"])
+        self.assertNotIn("collect_fwxx.py", batch_spec["command"])
+        self.assertNotIn("collect_fees.py", app_spec["command"])
+        self.assertNotIn("collect_fees.py", batch_spec["command"])
+        create_request.assert_called_once_with(
+            raw_targets,
+            request_dir=web_dashboard.FWXX_MANUAL_LIST_DIR,
+            max_app_nos=web_dashboard.MAX_REQUEST_APP_NOS,
+        )
+
 
 class TestDesktopCollectionExclusion(unittest.TestCase):
     def test_fee_actions_are_declared_as_desktop_browser_actions(self):
@@ -130,6 +167,14 @@ class TestDesktopCollectionExclusion(unittest.TestCase):
                 "collect_fees",
                 "collect_fees_app",
                 "collect_fees_batch",
+            }.issubset(web_dashboard.DESKTOP_BROWSER_ACTIONS)
+        )
+
+    def test_agency_recheck_actions_are_declared_as_desktop_browser_actions(self):
+        self.assertTrue(
+            {
+                "recheck_agency_app",
+                "recheck_agency_batch",
             }.issubset(web_dashboard.DESKTOP_BROWSER_ACTIONS)
         )
 
@@ -305,6 +350,29 @@ class TestCollectionDashboardPresentation(unittest.TestCase):
         self.assertRegex(
             self.source,
             r"(?s)#feeBatchBtn'.*?startJob\('collect_fees_batch'",
+        )
+
+    def test_page_has_independent_agency_verification_controls(self):
+        self.assertIn("<h2>代理机构官方复核</h2>", self.compact_html)
+        self.assertIn("不会点击或采集发文、费用信息", self.html)
+        for control_id in (
+            "agencyRecheckAppNo",
+            "agencyRecheckSingleBtn",
+            "agencyRecheckBatchAppNos",
+            "agencyRecheckBatchBtn",
+        ):
+            self.assertIn(f'id="{control_id}"', self.html)
+        self.assertIn('href="/download/agency_verification_csv"', self.html)
+        self.assertIn('href="/download/agency_verification_json"', self.html)
+
+    def test_agency_verification_buttons_submit_independent_jobs(self):
+        self.assertRegex(
+            self.source,
+            r"(?s)#agencyRecheckSingleBtn'.*?startJob\('recheck_agency_app'",
+        )
+        self.assertRegex(
+            self.source,
+            r"(?s)#agencyRecheckBatchBtn'.*?startJob\('recheck_agency_batch'",
         )
 
 

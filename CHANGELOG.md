@@ -7,8 +7,11 @@
 
 ## [Unreleased]
 
+## [2026.08.06]
+
 ### 新增
 - Dashboard「发文与费用」页新增「代理机构欠费排行」面板（`/api/agency-arrears`）：未缴费用按代理机构汇总涉及专利数、未缴笔数、未缴金额、已逾期笔数，支持机构名过滤。
+- 新增独立「代理机构官方复核」入口：单号或批量任务只进入国知局案件详情页并等待 `sqxx` 回执，不点击或采集发文、费用；官方机构为空时仅在报告中标记 `official_empty`，不清空数据库旧值。核验结果固定输出为 `data/results/agency_verification_report.json` 和 `.csv`，可从 Dashboard 下载。
 
 ### 修复
 - 修复未建档申请号的代理机构被静默丢弃且日志谎报成功：`update_fields` 改为返回受影响行数，MITM 采到代理机构但 patents 无该行时转存 `data/agency_unmatched.json` 并如实打印「未建档」（此前无条件打印 `[✓] 代理机构已更新`）。可触发路径为 `collect_fees.py --force` / `--app` / `--input`。

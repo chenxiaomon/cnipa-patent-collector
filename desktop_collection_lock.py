@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""发文与费用采集共用桌面的跨进程互斥约束。"""
+"""详情页采集任务共用桌面的跨进程互斥约束。"""
 
 import errno
 import os
@@ -12,7 +12,7 @@ from settings import DETAIL_COLLECTION_LOCK_FILE
 
 
 class DetailCollectionDesktopBusyError(RuntimeError):
-    """另一个发文或费用采集进程正在占用桌面。"""
+    """另一个详情页采集进程正在占用桌面。"""
 
 
 def _lock_first_byte(lock_stream: BinaryIO) -> None:
@@ -54,7 +54,7 @@ def _is_lock_contention(error: OSError) -> bool:
 
 @contextmanager
 def reserve_detail_collection_desktop(operation_name: str) -> Iterator[None]:
-    """在整个发文或费用采集周期内独占共享桌面。"""
+    """在整个详情页采集周期内独占共享桌面。"""
     lock_path = Path(DETAIL_COLLECTION_LOCK_FILE)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_stream = lock_path.open("a+b")
@@ -67,7 +67,7 @@ def reserve_detail_collection_desktop(operation_name: str) -> Iterator[None]:
             if not _is_lock_contention(error):
                 raise
             raise DetailCollectionDesktopBusyError(
-                f"无法启动{operation_name}：另一个发文或费用采集任务"
+                f"无法启动{operation_name}：另一个详情页采集任务"
                 "正在占用桌面浏览器"
             ) from error
         yield

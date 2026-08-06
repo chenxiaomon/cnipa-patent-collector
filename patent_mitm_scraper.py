@@ -11,17 +11,20 @@ import json
 import os
 import threading
 from datetime import datetime, timezone, timedelta
+from typing import Optional
 from mitmproxy import http
 
 # 导入日志模块
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
+from agency_attempt import read_agency_attempt_marker
 from detection_logger import DetectionLogger
 from cache_utils import normalize_app_no, read_json_cache, write_json_cache
 from settings import (
     AGENCY_UNMATCHED_FILE,
     FORCE_UPDATE_FLAG,
     MARKER_FILE,
+    PATENT_AGENCY_CACHE_FILE,
     PATENT_CACHE_FILE,
     PATENT_FEE_CACHE_FILE,
     PATENT_FWXX_CACHE_FILE,
@@ -32,6 +35,8 @@ FORCE_UPDATE_FLAG = str(FORCE_UPDATE_FLAG)
 
 _DETAIL_API_PATTERNS = ('/api/view/gn/fwxx', '/api/view/gn/fyxx')
 _DETAIL_TARGET_METADATA_KEY = 'cnipa_detail_target_application_no'
+_AGENCY_ATTEMPT_METADATA_KEY = 'cnipa_agency_attempt'
+_SQXX_API_PATTERN = '/api/view/gn/sqxx'
 
 
 class PatentMITMScraper:
@@ -54,12 +59,21 @@ class PatentMITMScraper:
     def request(self, flow: http.HTTPFlow) -> None:
         """在详情 API 请求发出时绑定申请号，避免迟到响应串到下一件。"""
         url = flow.request.pretty_url
-        if (
-            'cponline.cnipa.gov.cn' not in url
-            or not any(pattern in url for pattern in _DETAIL_API_PATTERNS)
-        ):
+        if 'cponline.cnipa.gov.cn' not in url:
             return
 
+        if _SQXX_API_PATTERN in url:
+            agency_attempt = read_agency_attempt_marker()
+            if agency_attempt is not None:
+                flow.metadata[_AGENCY_ATTEMPT_METADATA_KEY] = agency_attempt
+                print(
+                    "[✓] sqxx 请求已绑定代理机构复核尝试: "
+                    f"{agency_attempt['application_no']} / {agency_attempt['attempt_id']}"
+                )
+            return
+
+        if not any(pattern in url for pattern in _DETAIL_API_PATTERNS):
+            return
         application_no = self._read_recent_target_app_no()
         if application_no:
             flow.metadata[_DETAIL_TARGET_METADATA_KEY] = application_no
@@ -207,6 +221,7 @@ class PatentMITMScraper:
           - daili_jg 直接覆盖：官方接口是权威来源，代理所会变更（转所），
             覆盖优先于保留 import_agency_csv.py 导入的旧值。
           - daili_r 仅在本次响应带回 diyidlrxm 时写入，避免把已知代理人抹成 NULL。
+          - 官方机构为空时只写确认回执，不清空数据库中的历史代理字段。
           - 未建档申请号转存备份文件，不凭空创建 patents 行（建档只由主采集流程负责）。
         """
         try:
@@ -216,13 +231,19 @@ class PatentMITMScraper:
             if data.get('code') != 200:
                 return
 
-            body = data.get('data', {})
+            body = data.get('data')
+            if not isinstance(body, dict):
+                return
 
             # 提取申请号
+            bibliographic_section = body.get('zhuluxmxx')
+            if not isinstance(bibliographic_section, dict):
+                return
+            bibliographic_fields = bibliographic_section.get('zhuluxmxx')
+            if not isinstance(bibliographic_fields, dict):
+                return
             app_no_raw = (
-                body.get('zhuluxmxx', {})
-                    .get('zhuluxmxx', {})
-                    .get('zhuanlisqh', '')
+                bibliographic_fields.get('zhuanlisqh', '')
             )
             app_no = normalize_app_no(app_no_raw)
             if not app_no:
@@ -230,31 +251,55 @@ class PatentMITMScraper:
                 return
 
             # 提取代理机构信息
-            dailijg_list = body.get('dailijg', {}).get('dailijgList', [])
-            if not dailijg_list:
+            agency_section = body.get('dailijg')
+            if not isinstance(agency_section, dict) or 'dailijgList' not in agency_section:
+                return
+            dailijg_list = agency_section['dailijgList']
+            if not isinstance(dailijg_list, list):
                 return
 
-            first = dailijg_list[0]
+            first = dailijg_list[0] if dailijg_list else {}
             if not isinstance(first, dict):
                 return
 
-            daili_jg = first.get('dailijgdm') or None
-            daili_r  = first.get('diyidlrxm') or None
-
-            if not daili_jg:
+            if dailijg_list and 'dailijgdm' not in first:
                 return
+            agency_name = first.get('dailijgdm')
+            if agency_name is not None and not isinstance(agency_name, str):
+                return
+            agent_name = first.get('diyidlrxm')
+            daili_jg = agency_name.strip() or None if isinstance(agency_name, str) else None
+            daili_r = agent_name.strip() or None if isinstance(agent_name, str) else None
 
-            agency_fields = {'daili_jg': daili_jg}
-            if daili_r:
-                agency_fields['daili_r'] = daili_r
-            self._persist_agency_fields(app_no, agency_fields)
+            if daili_jg:
+                agency_fields = {'daili_jg': daili_jg}
+                if daili_r:
+                    agency_fields['daili_r'] = daili_r
+                try:
+                    persistence_status = self._persist_agency_fields(app_no, agency_fields)
+                except Exception as e:
+                    persistence_status = 'persistence_error'
+                    print(f'[!] 写入代理机构失败: {e}')
+            else:
+                persistence_status = 'official_empty'
+                print(f'[!] {app_no} 官方代理机构为空，保留数据库历史代理字段')
+
+            attempt_id = self._matching_agency_attempt_id(flow, app_no)
+            if attempt_id is not None:
+                self._cache_agency_acknowledgement(
+                    app_no,
+                    attempt_id,
+                    daili_jg,
+                    daili_r,
+                    persistence_status,
+                )
 
         except json.JSONDecodeError as e:
             print(f'[!] sqxx JSON 解析失败: {e}')
         except Exception as e:
             print(f'[!] 处理 sqxx 响应失败: {e}')
 
-    def _persist_agency_fields(self, app_no: str, agency_fields: dict) -> None:
+    def _persist_agency_fields(self, app_no: str, agency_fields: dict) -> str:
         """写入代理字段；申请号未建档时转存备份，不新建 patents 行。
 
         patents 行只由主采集流程建档（见 db_manager.fee_dataset_pending_app_nos 的说明），
@@ -266,10 +311,62 @@ class PatentMITMScraper:
                 f"[✓] 代理机构已更新: {app_no} → {agency_fields['daili_jg']}"
                 + (f' / {daili_r}' if daili_r else '')
             )
-            return
+            return 'updated'
 
         self._append_unmatched_agency(app_no, agency_fields)
         print(f'[!] {app_no} 未建档，代理机构转存 {AGENCY_UNMATCHED_FILE}')
+        return 'unmatched'
+
+    def _cache_agency_acknowledgement(
+        self,
+        app_no: str,
+        attempt_id: str,
+        daili_jg: Optional[str],
+        daili_r: Optional[str],
+        persistence_status: str,
+    ) -> None:
+        """按申请号保存最近一次有效官方代理机构回执。"""
+        try:
+            cache_file = str(PATENT_AGENCY_CACHE_FILE)
+            acknowledgement = {
+                'attempt_id': attempt_id,
+                'captured_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                'daili_jg': daili_jg,
+                'daili_r': daili_r,
+                'persistence_status': persistence_status,
+            }
+            with self._cache_lock:
+                agency_cache = read_json_cache(cache_file)
+                agency_cache[app_no] = acknowledgement
+                write_json_cache(cache_file, agency_cache)
+        except Exception as e:
+            print(f'[!] 写入代理机构确认回执失败: {e}')
+
+    @staticmethod
+    def _matching_agency_attempt_id(flow: http.HTTPFlow, app_no: str) -> Optional[str]:
+        """Return the bound attempt only while it is still current for this response."""
+        bound_attempt = flow.metadata.get(_AGENCY_ATTEMPT_METADATA_KEY)
+        if not isinstance(bound_attempt, dict):
+            return None
+
+        bound_app_no = normalize_app_no(bound_attempt.get('application_no'))
+        attempt_id = str(bound_attempt.get('attempt_id') or '').strip()
+        if bound_app_no != app_no or not attempt_id:
+            print(
+                '[!] sqxx 响应与代理机构复核尝试不匹配，跳过确认回执: '
+                f'响应={app_no}, 绑定={bound_app_no}'
+            )
+            return None
+
+        current_attempt = read_agency_attempt_marker()
+        if (
+            current_attempt is None
+            or current_attempt['application_no'] != app_no
+            or current_attempt['attempt_id'] != attempt_id
+        ):
+            print(f'[!] sqxx 代理机构复核尝试已过期，跳过确认回执: {app_no}')
+            return None
+        return attempt_id
 
     def _append_unmatched_agency(self, app_no: str, agency_fields: dict) -> None:
         """将无法匹配到主库的代理字段追加到独立备份（形状同 fee_unmatched.json）。"""

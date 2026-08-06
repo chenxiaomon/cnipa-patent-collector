@@ -19,11 +19,11 @@
     },
     {
       "path": ".gitignore",
-      "sha256": "adc80757245efcddd435176318993e493c1a649212c832ae7e16a6f43dfabadc"
+      "sha256": "61bbf5ee87f00d6746b6c3345a201cf76c344ed5f9a951132565f3d0df8fa5b3"
     },
     {
       "path": "CHANGELOG.md",
-      "sha256": "a3e8affe8cc560a447d76e1492ad3909f93d6850a9f88bc690a4c8ab8b0c4be9"
+      "sha256": "adffb6dbed9ea8d8e64add4dc9383183859eba3f9fa995eeb08aa0f33a0aad85"
     },
     {
       "path": "CLAUDE.md",
@@ -39,7 +39,11 @@
     },
     {
       "path": "VERSION",
-      "sha256": "ac0307e8e4a6b99ad33c3eb3ce72ae21331a5a325e679130f41fece919ac72f1"
+      "sha256": "746e444f1a718096593b949c1fffe020ed904fc4f437bf6d13ee3539447fd72b"
+    },
+    {
+      "path": "agency_attempt.py",
+      "sha256": "3c5c4671426838359bcf6d279a6a53b24e3affe585bbecec41151a9c1ce05046"
     },
     {
       "path": "analyze_collection_status.py",
@@ -78,6 +82,10 @@
       "sha256": "0a8d67d78ca668b5b380ef29af70d1181c525be71ac4c059df71056e86b9d957"
     },
     {
+      "path": "collect_agency.py",
+      "sha256": "602110854039db7eb1e3c969e5b73d417bd49781de271f0476ccd5f5ca7dec5d"
+    },
+    {
       "path": "collect_fees.py",
       "sha256": "75a4a592e887c1e83f258f8cde4fa30d5d7da06dc120fffc4ecb920c90fc8fc5"
     },
@@ -103,7 +111,7 @@
     },
     {
       "path": "desktop_collection_lock.py",
-      "sha256": "42f140077cbc5d493e14580fac0ed49764827fd0cf0ab0bf85094784276d2d53"
+      "sha256": "07ae4c9f5e59eb399a0ae2d8a0c8d6f55697757f2511491c077b873f65244a63"
     },
     {
       "path": "detection_logger.py",
@@ -199,7 +207,7 @@
     },
     {
       "path": "docs/guides/VISUAL_UI_GUIDE.md",
-      "sha256": "65e70bba50b367866bb2c783a7d5a01821a0e03fd1b6e2dfe751d93cbeb86d4a"
+      "sha256": "b09f3be72058b9bb371b5989c40cf023f264f607ef7eec29f18db0e4acbe6ea8"
     },
     {
       "path": "docs/project-brief.md",
@@ -279,7 +287,7 @@
     },
     {
       "path": "patent_mitm_scraper.py",
-      "sha256": "0464341edfa1beb45ae98bb8bc2af842b2095d9401d9379b346f113c54492ef5"
+      "sha256": "1d113aec85aac5b549a168d6c21d4f5846418d56ea09b56235008be30c02b5bc"
     },
     {
       "path": "payment_obligations.py",
@@ -291,7 +299,7 @@
     },
     {
       "path": "pyproject.toml",
-      "sha256": "a749cdf8eac01742af16dc89427bc0cace9e9f71d79bda630336ca775fae8d94"
+      "sha256": "ced50416cb9b77e598954d2bf8ca3ffea44beba345586c14bf8f6e1be1e1a5ae"
     },
     {
       "path": "quick_retry.sh",
@@ -331,7 +339,7 @@
     },
     {
       "path": "settings.py",
-      "sha256": "f76338e6174856e60cf8d6bf0b34f0bf94756f7aeb498feca8428538a3fdce6c"
+      "sha256": "aec6c1b2a91f3e30c718e5dd7ff53b8d52309a7eec1ccbdf334a4df2b8c488d1"
     },
     {
       "path": "setup.bat",
@@ -378,6 +386,10 @@
       "sha256": "990c2a0683cb7a8ab822d26cb6aea487e51e5b722991cce02d9a2cf982eec497"
     },
     {
+      "path": "tests/test_agency_attempt_binding.py",
+      "sha256": "c5d2504dfc83a7b1a83a20664e749690df7b5e35e5eae01e0624987702ba2368"
+    },
+    {
       "path": "tests/test_analyze_failures.py",
       "sha256": "030fc93d66e31c1b045e4a8a90803290230ece9e2fbde5f38ad4ccc50e62ab83"
     },
@@ -402,6 +414,10 @@
       "sha256": "bbff53c9677042919eb9f2e986fd4c706649690d43489bcdc6e7fae0a99abb0a"
     },
     {
+      "path": "tests/test_collect_agency.py",
+      "sha256": "df7692bf388b684053b75f8d555a80053cc026ceb4c6c1934ef8f5f8895b7e7d"
+    },
+    {
       "path": "tests/test_collection_fatal_errors.py",
       "sha256": "c7870e99784cb81b162373896fc7cbedbd2dbbd807964edfb289bb9a6bca2095"
     },
@@ -423,7 +439,7 @@
     },
     {
       "path": "tests/test_dashboard_collection_split.py",
-      "sha256": "e6bc95b4be9de8a41ebbb577d2f38b44d1c92dc48603db0f7c0a674065b2bb0c"
+      "sha256": "ef163c546d69d84e727d67090c3a95c8f3c2300d035487b8f6a89c33e30061f9"
     },
     {
       "path": "tests/test_dashboard_public_browser_compat.py",
@@ -491,7 +507,7 @@
     },
     {
       "path": "tests/test_mitm_scraper.py",
-      "sha256": "885837de0c83686d4c55ed99d784ba66099955e9c35f07f2d0d4978730ef0d70"
+      "sha256": "5fe8ee57ae902c167bf8cefa14f0235c971018aaf9dc0355fe026e9d0271fa1c"
     },
     {
       "path": "tests/test_operator_api_token.py",
@@ -547,7 +563,7 @@
     },
     {
       "path": "uv.lock",
-      "sha256": "0fd87eb027d0cc36cfedcd0437205d2baa057fc94b533ab169f5371451e7f743"
+      "sha256": "c5aef4dd0127df8d3508b86cc022e50071de5ec066dd6d2c418f48c0649a2520"
     },
     {
       "path": "validate_results.py",
@@ -555,7 +571,7 @@
     },
     {
       "path": "web_dashboard.py",
-      "sha256": "46bc5f9285651e3564ff5f17a70f6682f48974232d444d404a8f0c5456800cf4"
+      "sha256": "569282248bd6e4ab601ea0632d70dc3ce96851545fdadd53e6cb43ae30d64d57"
     }
   ]
 }

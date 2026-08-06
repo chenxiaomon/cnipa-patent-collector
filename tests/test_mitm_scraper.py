@@ -259,8 +259,29 @@ class TestProcessSqxx(unittest.TestCase):
         self.addCleanup(patcher_logger.stop)
         self.mock_db = self.mock_logger_cls.return_value._db
 
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.agency_cache_file = Path(self.tmpdir.name) / 'patent_agency_cache.json'
+        patcher_cache = patch(
+            'patent_mitm_scraper.PATENT_AGENCY_CACHE_FILE',
+            self.agency_cache_file,
+        )
+        patcher_cache.start()
+        self.addCleanup(patcher_cache.stop)
+
         from patent_mitm_scraper import PatentMITMScraper
         self.scraper = PatentMITMScraper()
+        patcher_attempt = patch.object(
+            self.scraper,
+            '_matching_agency_attempt_id',
+            return_value='attempt-current',
+        )
+        patcher_attempt.start()
+        self.addCleanup(patcher_attempt.stop)
+
+    def _read_agency_acknowledgement(self):
+        cache = json.loads(self.agency_cache_file.read_text(encoding='utf-8'))
+        return cache['2026104796018']
 
     def test_normal_agency_extraction(self):
         flow = _make_flow(
@@ -273,6 +294,15 @@ class TestProcessSqxx(unittest.TestCase):
             '2026104796018',
             {'daili_jg': '浙江侨悦专利代理有限公司', 'daili_r': '陈泽元'},
         )
+        acknowledgement = self._read_agency_acknowledgement()
+        self.assertEqual(acknowledgement['attempt_id'], 'attempt-current')
+        self.assertEqual(acknowledgement['daili_jg'], '浙江侨悦专利代理有限公司')
+        self.assertEqual(acknowledgement['daili_r'], '陈泽元')
+        self.assertEqual(acknowledgement['persistence_status'], 'updated')
+        captured_at = datetime.fromisoformat(
+            acknowledgement['captured_at'].replace('Z', '+00:00')
+        )
+        self.assertEqual(captured_at.utcoffset().total_seconds(), 0)
 
     def test_skips_empty_dailijg_list(self):
         resp = {**SQXX_RESPONSE, "data": {
@@ -285,6 +315,10 @@ class TestProcessSqxx(unittest.TestCase):
         )
         self.scraper._process_sqxx_response(flow)
         self.mock_db.update_fields.assert_not_called()
+        acknowledgement = self._read_agency_acknowledgement()
+        self.assertIsNone(acknowledgement['daili_jg'])
+        self.assertIsNone(acknowledgement['daili_r'])
+        self.assertEqual(acknowledgement['persistence_status'], 'official_empty')
 
     def test_skips_non_dict_first_item(self):
         resp = {**SQXX_RESPONSE, "data": {
@@ -297,6 +331,7 @@ class TestProcessSqxx(unittest.TestCase):
         )
         self.scraper._process_sqxx_response(flow)
         self.mock_db.update_fields.assert_not_called()
+        self.assertFalse(self.agency_cache_file.exists())
 
     def test_skips_missing_app_no(self):
         resp = {"code": 200, "data": {
@@ -309,6 +344,7 @@ class TestProcessSqxx(unittest.TestCase):
         )
         self.scraper._process_sqxx_response(flow)
         self.mock_db.update_fields.assert_not_called()
+        self.assertFalse(self.agency_cache_file.exists())
 
     def test_skips_api_error_code(self):
         resp = {"code": 500, "msg": "服务器错误"}
@@ -318,6 +354,7 @@ class TestProcessSqxx(unittest.TestCase):
         )
         self.scraper._process_sqxx_response(flow)
         self.mock_db.update_fields.assert_not_called()
+        self.assertFalse(self.agency_cache_file.exists())
 
     def test_omits_daili_r_when_response_lacks_it(self):
         """响应缺 diyidlrxm 时不得把已知代理人抹成 NULL。"""
@@ -335,6 +372,63 @@ class TestProcessSqxx(unittest.TestCase):
             '2026104796018',
             {'daili_jg': '浙江侨悦专利代理有限公司'},
         )
+        acknowledgement = self._read_agency_acknowledgement()
+        self.assertIsNone(acknowledgement['daili_r'])
+        self.assertEqual(acknowledgement['persistence_status'], 'updated')
+
+    def test_blank_agency_name_is_acknowledged_without_clearing_db(self):
+        resp = {**SQXX_RESPONSE, "data": {
+            **SQXX_RESPONSE["data"],
+            "dailijg": {
+                "dailijgList": [{"dailijgdm": "   ", "diyidlrxm": "张三"}],
+                "isShow": True,
+            },
+        }}
+        flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/sqxx?token=abc',
+            body=_json_body(resp),
+        )
+
+        self.scraper._process_sqxx_response(flow)
+
+        self.mock_db.update_fields.assert_not_called()
+        acknowledgement = self._read_agency_acknowledgement()
+        self.assertIsNone(acknowledgement['daili_jg'])
+        self.assertEqual(acknowledgement['daili_r'], '张三')
+        self.assertEqual(acknowledgement['persistence_status'], 'official_empty')
+
+    def test_repeated_response_overwrites_keyed_acknowledgement(self):
+        first_flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/sqxx?token=abc',
+            body=_json_body(SQXX_RESPONSE),
+        )
+        empty_response = {**SQXX_RESPONSE, "data": {
+            **SQXX_RESPONSE["data"],
+            "dailijg": {"dailijgList": [], "isShow": False},
+        }}
+        empty_flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/sqxx?token=abc',
+            body=_json_body(empty_response),
+        )
+
+        self.scraper._process_sqxx_response(first_flow)
+        self.scraper._process_sqxx_response(empty_flow)
+
+        cache = json.loads(self.agency_cache_file.read_text(encoding='utf-8'))
+        self.assertEqual(list(cache), ['2026104796018'])
+        self.assertEqual(cache['2026104796018']['persistence_status'], 'official_empty')
+
+    def test_database_error_is_acknowledged(self):
+        self.mock_db.update_fields.side_effect = RuntimeError('database unavailable')
+        flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/sqxx?token=abc',
+            body=_json_body(SQXX_RESPONSE),
+        )
+
+        self.scraper._process_sqxx_response(flow)
+
+        acknowledgement = self._read_agency_acknowledgement()
+        self.assertEqual(acknowledgement['persistence_status'], 'persistence_error')
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -358,9 +452,23 @@ class TestUnmatchedAgencyBackup(unittest.TestCase):
         )
         patcher_file.start()
         self.addCleanup(patcher_file.stop)
+        self.agency_cache_file = Path(self.tmpdir.name) / 'patent_agency_cache.json'
+        patcher_cache = patch(
+            'patent_mitm_scraper.PATENT_AGENCY_CACHE_FILE',
+            self.agency_cache_file,
+        )
+        patcher_cache.start()
+        self.addCleanup(patcher_cache.stop)
 
         from patent_mitm_scraper import PatentMITMScraper
         self.scraper = PatentMITMScraper()
+        patcher_attempt = patch.object(
+            self.scraper,
+            '_matching_agency_attempt_id',
+            return_value='attempt-current',
+        )
+        patcher_attempt.start()
+        self.addCleanup(patcher_attempt.stop)
 
     def _feed_sqxx(self):
         flow = _make_flow(
@@ -385,6 +493,10 @@ class TestUnmatchedAgencyBackup(unittest.TestCase):
         self.assertEqual(records[0]['daili_jg'], '浙江侨悦专利代理有限公司')
         self.assertEqual(records[0]['daili_r'], '陈泽元')
         self.assertTrue(records[0]['captured_at'])
+        acknowledgement = json.loads(
+            self.agency_cache_file.read_text(encoding='utf-8')
+        )['2026104796018']
+        self.assertEqual(acknowledgement['persistence_status'], 'unmatched')
 
     def test_registered_app_no_writes_no_backup(self):
         self.mock_db.update_fields.return_value = 1
@@ -392,6 +504,10 @@ class TestUnmatchedAgencyBackup(unittest.TestCase):
 
         self.assertIn('代理机构已更新', output)
         self.assertFalse(self.backup_file.exists())
+        acknowledgement = json.loads(
+            self.agency_cache_file.read_text(encoding='utf-8')
+        )['2026104796018']
+        self.assertEqual(acknowledgement['persistence_status'], 'updated')
 
     def test_repeated_misses_accumulate(self):
         self.mock_db.update_fields.return_value = 0
@@ -400,6 +516,8 @@ class TestUnmatchedAgencyBackup(unittest.TestCase):
 
         records = json.loads(self.backup_file.read_text(encoding='utf-8'))['records']
         self.assertEqual(len(records), 2)
+        agency_cache = json.loads(self.agency_cache_file.read_text(encoding='utf-8'))
+        self.assertEqual(list(agency_cache), ['2026104796018'])
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -764,21 +882,36 @@ class TestGoldenMasterSqxx(unittest.TestCase):
         mock_logger_cls = patcher.start()
         mock_db = mock_logger_cls.return_value._db
         try:
-            from patent_mitm_scraper import PatentMITMScraper
-            scraper = PatentMITMScraper()
+            with tempfile.TemporaryDirectory() as tmpdir:
+                agency_cache_file = Path(tmpdir) / 'patent_agency_cache.json'
+                with patch(
+                    'patent_mitm_scraper.PATENT_AGENCY_CACHE_FILE',
+                    agency_cache_file,
+                ):
+                    from patent_mitm_scraper import PatentMITMScraper
+                    scraper = PatentMITMScraper()
 
-            flow = _make_flow(
-                'https://cponline.cnipa.gov.cn/api/view/gn/sqxx?token=abc',
-                body=json.dumps(self.fixture, ensure_ascii=False).encode('utf-8'),
-            )
-            scraper._process_sqxx_response(flow)
+                    flow = _make_flow(
+                        'https://cponline.cnipa.gov.cn/api/view/gn/sqxx?token=abc',
+                        body=json.dumps(self.fixture, ensure_ascii=False).encode('utf-8'),
+                    )
+                    with patch.object(
+                        scraper,
+                        '_matching_agency_attempt_id',
+                        return_value='attempt-current',
+                    ):
+                        scraper._process_sqxx_response(flow)
 
-            mock_db.update_fields.assert_called_once()
-            app_no, fields = mock_db.update_fields.call_args[0]
-            self.assertEqual(app_no, '2026104796018')
-            self.assertIn('daili_jg', fields)
-            self.assertIn('daili_r', fields)
-            self.assertEqual(fields['daili_jg'], '浙江侨悦专利代理有限公司')
+                mock_db.update_fields.assert_called_once()
+                app_no, fields = mock_db.update_fields.call_args[0]
+                self.assertEqual(app_no, '2026104796018')
+                self.assertIn('daili_jg', fields)
+                self.assertIn('daili_r', fields)
+                self.assertEqual(fields['daili_jg'], '浙江侨悦专利代理有限公司')
+                acknowledgement = json.loads(
+                    agency_cache_file.read_text(encoding='utf-8')
+                )['2026104796018']
+                self.assertEqual(acknowledgement['persistence_status'], 'updated')
         finally:
             patcher.stop()
 
@@ -797,8 +930,25 @@ class TestDefensiveSqxx(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.mock_db = self.mock_logger_cls.return_value._db
 
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.agency_cache_file = Path(self.tmpdir.name) / 'patent_agency_cache.json'
+        patcher_cache = patch(
+            'patent_mitm_scraper.PATENT_AGENCY_CACHE_FILE',
+            self.agency_cache_file,
+        )
+        patcher_cache.start()
+        self.addCleanup(patcher_cache.stop)
+
         from patent_mitm_scraper import PatentMITMScraper
         self.scraper = PatentMITMScraper()
+        patcher_attempt = patch.object(
+            self.scraper,
+            '_matching_agency_attempt_id',
+            return_value='attempt-current',
+        )
+        patcher_attempt.start()
+        self.addCleanup(patcher_attempt.stop)
 
     def test_http_200_but_business_error_code(self):
         """HTTP 200 但 body.code != 200（最常见的 API 坑）：不写 DB。"""
@@ -843,7 +993,7 @@ class TestDefensiveSqxx(unittest.TestCase):
         self.mock_db.update_fields.assert_not_called()
 
     def test_dailijgdm_value_is_null(self):
-        """字段存在但值为 null（代理机构未填写时）：不写 DB。"""
+        """字段存在但值为 null：确认官方空值，但不清空 DB。"""
         resp = {
             "code": 200,
             "data": {
@@ -859,12 +1009,16 @@ class TestDefensiveSqxx(unittest.TestCase):
             body=_json_body(resp),
         )
         self.scraper._process_sqxx_response(flow)
-        # dailijgdm 为 None，_process_sqxx_response 中 `or None` 会保留 None，
-        # 然后 `if not daili_jg: return` 跳过写入
         self.mock_db.update_fields.assert_not_called()
+        acknowledgement = json.loads(
+            self.agency_cache_file.read_text(encoding='utf-8')
+        )['2026104796018']
+        self.assertIsNone(acknowledgement['daili_jg'])
+        self.assertEqual(acknowledgement['daili_r'], '张三')
+        self.assertEqual(acknowledgement['persistence_status'], 'official_empty')
 
     def test_dailijg_key_missing_entirely(self):
-        """dailijg 字段整体缺失（API 新增字段前的旧格式）：不写 DB，不抛异常。"""
+        """dailijg 缺失是畸形响应：不写 DB，也不写确认回执。"""
         resp = {
             "code": 200,
             "data": {
@@ -878,6 +1032,43 @@ class TestDefensiveSqxx(unittest.TestCase):
         )
         self.scraper._process_sqxx_response(flow)
         self.mock_db.update_fields.assert_not_called()
+        self.assertFalse(self.agency_cache_file.exists())
+
+    def test_dailijg_list_key_missing_does_not_acknowledge(self):
+        resp = {
+            "code": 200,
+            "data": {
+                "zhuluxmxx": {"zhuluxmxx": {"zhuanlisqh": "2026104796018"}},
+                "dailijg": {"isShow": False},
+            },
+        }
+        flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/sqxx?token=abc',
+            body=_json_body(resp),
+        )
+
+        self.scraper._process_sqxx_response(flow)
+
+        self.mock_db.update_fields.assert_not_called()
+        self.assertFalse(self.agency_cache_file.exists())
+
+    def test_agency_name_key_missing_does_not_acknowledge(self):
+        resp = {
+            "code": 200,
+            "data": {
+                "zhuluxmxx": {"zhuluxmxx": {"zhuanlisqh": "2026104796018"}},
+                "dailijg": {"dailijgList": [{"diyidlrxm": "张三"}]},
+            },
+        }
+        flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/sqxx?token=abc',
+            body=_json_body(resp),
+        )
+
+        self.scraper._process_sqxx_response(flow)
+
+        self.mock_db.update_fields.assert_not_called()
+        self.assertFalse(self.agency_cache_file.exists())
 
 
 if __name__ == '__main__':

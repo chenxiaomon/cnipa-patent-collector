@@ -18,10 +18,12 @@ backups/
 data/patent_cache.json
 data/patent_fwxx_cache.json
 data/patent_fee_cache.json
+data/patent_agency_cache.json
 data/fwxx_unmatched.json
 data/fee_unmatched.json
 data/agency_unmatched.json
 data/current_fwxx_target.json
+data/current_agency_attempt.json
 data/detail_collection.lock
 data/fwxx_list.txt
 data/manual_fwxx_lists/
@@ -45,6 +47,8 @@ data/config_backup_*.json
 
 # Excel 导出（衍生产物，可从 detection_log.jsonl 重新生成）
 data/results/*.xlsx
+data/results/agency_verification_report.csv
+data/results/agency_verification_report.json
 
 # ── 浏览器驱动（二进制，不入库）──────────────────────────
 chromedriver-win64/
