@@ -42,7 +42,7 @@ class TestAgencyTargetLoading(unittest.TestCase):
 
         self.assertEqual(targets, ["2024110065970", "202111504942X"])
 
-    def test_cli_has_no_force_or_automatic_dataset_mode(self):
+    def test_cli_has_no_force_and_supports_failure_retry_mode(self):
         parser = collect_agency._build_argument_parser()
         destinations = {action.dest for action in parser._actions}
 
@@ -50,6 +50,10 @@ class TestAgencyTargetLoading(unittest.TestCase):
         parsed = parser.parse_args(["--app", "2024110065970", "--test", "1"])
         self.assertEqual(parsed.app, "2024110065970")
         self.assertEqual(parsed.test, 1)
+        retry_arguments = parser.parse_args(["--retry-failed"])
+        self.assertTrue(retry_arguments.retry_failed)
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["--app", "2024110065970", "--retry-failed"])
 
 
 class TestAgencyDetailFlow(unittest.TestCase):
@@ -324,7 +328,10 @@ class TestAgencyClassificationAndReports(unittest.TestCase):
                     csv_path,
                 ),
             ):
-                collect_agency.write_verification_reports(records, target_count=1)
+                collect_agency.write_verification_reports(
+                    records,
+                    targets=["2024110065970"],
+                )
 
             json_report = json.loads(json_path.read_text(encoding="utf-8"))
             with csv_path.open(encoding="utf-8-sig", newline="") as csv_stream:
@@ -332,6 +339,7 @@ class TestAgencyClassificationAndReports(unittest.TestCase):
 
             self.assertEqual(json_report["target_count"], 1)
             self.assertEqual(json_report["completed_count"], 1)
+            self.assertEqual(json_report["targets"], ["2024110065970"])
             self.assertEqual(json_report["counts"]["changed"], 1)
             self.assertEqual(json_report["records"], records)
             self.assertEqual(csv_records[0]["old_daili_jg"], "旧机构")
@@ -340,8 +348,112 @@ class TestAgencyClassificationAndReports(unittest.TestCase):
             self.assertFalse(Path(f"{csv_path}.tmp").exists())
 
 
+class TestAgencyBatchResume(unittest.TestCase):
+    @staticmethod
+    def _report_record(application_no, classification):
+        return {
+            "application_no": application_no,
+            "classification": classification,
+            "old_daili_jg": "旧机构",
+            "official_daili_jg": "官方机构",
+            "official_daili_r": "代理人",
+            "persistence_status": "updated",
+            "captured_at": "2026-08-06T01:02:03Z",
+        }
+
+    def _write_report(self, report_path, targets, records, completed_count=None):
+        report_path.write_text(
+            json.dumps(
+                {
+                    "target_count": len(targets),
+                    "completed_count": (
+                        len(records) if completed_count is None else completed_count
+                    ),
+                    "targets": targets,
+                    "records": records,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+    def test_matching_partial_report_retains_only_non_failure_classifications(self):
+        targets = [
+            "2024110065970",
+            "202111504942X",
+            "202310411762X",
+            "2020100000001",
+            "2020100000002",
+            "2020100000003",
+            "2020100000004",
+            "2020100000005",
+        ]
+        records = [
+            self._report_record(targets[0], "first_collected"),
+            self._report_record(targets[1], "unchanged"),
+            self._report_record(targets[2], "changed"),
+            self._report_record(targets[3], "official_empty"),
+            self._report_record(targets[4], "timeout"),
+            self._report_record(targets[5], "unmatched"),
+            self._report_record(targets[6], "persistence_error"),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            report_path = Path(temporary_directory) / "agency.json"
+            self._write_report(report_path, list(reversed(targets)), records)
+            with patch.object(
+                collect_agency,
+                "AGENCY_VERIFICATION_REPORT_JSON_FILE",
+                report_path,
+            ):
+                retained = collect_agency.load_resumable_verification_records(targets)
+
+        self.assertEqual(
+            [record["application_no"] for record in retained],
+            targets[:4],
+        )
+
+    def test_different_target_set_never_resumes(self):
+        current_targets = ["2024110065970", "202111504942X"]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            report_path = Path(temporary_directory) / "agency.json"
+            self._write_report(
+                report_path,
+                ["2024110065970", "202310411762X"],
+                [self._report_record("2024110065970", "changed")],
+            )
+            with patch.object(
+                collect_agency,
+                "AGENCY_VERIFICATION_REPORT_JSON_FILE",
+                report_path,
+            ):
+                retained = collect_agency.load_resumable_verification_records(
+                    current_targets
+                )
+
+        self.assertEqual(retained, [])
+
+    def test_complete_report_never_skips_the_next_batch(self):
+        targets = ["2024110065970", "202111504942X"]
+        records = [
+            self._report_record(targets[0], "changed"),
+            self._report_record(targets[1], "unchanged"),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            report_path = Path(temporary_directory) / "agency.json"
+            self._write_report(report_path, targets, records)
+            with patch.object(
+                collect_agency,
+                "AGENCY_VERIFICATION_REPORT_JSON_FILE",
+                report_path,
+            ):
+                retained = collect_agency.load_resumable_verification_records(targets)
+
+        self.assertEqual(retained, [])
+
+
 class TestAgencyCollectionLoop(unittest.TestCase):
     @patch.object(collect_agency, "FWXX_ANTI_CRAWL_BATCH_SIZE", 99)
+    @patch("collect_agency.load_resumable_verification_records", return_value=[])
     @patch("collect_agency.write_verification_reports")
     @patch("collect_agency.countdown")
     @patch("collect_agency.collect_one_agency")
@@ -356,6 +468,7 @@ class TestAgencyCollectionLoop(unittest.TestCase):
         collect_one_agency,
         _countdown,
         write_reports,
+        _load_resume,
     ):
         events = []
         driver = browser_service.launch_and_login.return_value
@@ -413,6 +526,213 @@ class TestAgencyCollectionLoop(unittest.TestCase):
         db.update_fields.assert_not_called()
         self.assertEqual(write_reports.call_count, 3)
         driver.quit.assert_called_once_with()
+
+    @patch.object(collect_agency, "FWXX_ANTI_CRAWL_BATCH_SIZE", 99)
+    @patch("collect_agency.load_resumable_verification_records")
+    @patch("collect_agency.write_verification_reports")
+    @patch("collect_agency.countdown")
+    @patch("collect_agency.collect_one_agency")
+    @patch("collect_agency.PatentsDB")
+    @patch("collect_agency.CoordinateService")
+    @patch("collect_agency.BrowserService")
+    def test_partial_batch_preserves_successes_retries_failures_and_tracks_outcomes(
+        self,
+        browser_service,
+        coordinate_service,
+        db_class,
+        collect_one_agency,
+        _countdown,
+        write_reports,
+        load_resume,
+    ):
+        targets = ["2024110065970", "202111504942X", "202310411762X"]
+        retained_record = TestAgencyBatchResume._report_record(
+            targets[0],
+            "changed",
+        )
+        load_resume.return_value = [retained_record]
+        coordinate_service.load_or_record_search_coordinates.return_value = (
+            1,
+            2,
+            3,
+            4,
+        )
+        coordinate_service.load_or_record_detail_link_coordinates.return_value = (5, 6)
+        db = db_class.return_value
+        db.get_record.return_value = None
+        collect_one_agency.side_effect = [
+            agency_ack("官方机构", "unmatched"),
+            agency_ack("新机构", "updated"),
+        ]
+        arguments = Namespace(
+            input=None,
+            app=",".join(targets),
+            retry_failed=False,
+            test=None,
+            url="https://example.invalid",
+        )
+
+        records = collect_agency._run_agency_collection(arguments)
+
+        self.assertEqual(
+            [
+                call_args.kwargs["application_no"]
+                for call_args in collect_one_agency.call_args_list
+            ],
+            targets[1:],
+        )
+        self.assertEqual(
+            [record["application_no"] for record in records],
+            targets,
+        )
+        db.record_collection_failure.assert_called_once_with(
+            "agency",
+            targets[1],
+            "unmatched",
+        )
+        db.clear_collection_failure.assert_called_once_with("agency", targets[2])
+        self.assertEqual(
+            write_reports.call_args_list[0],
+            call([retained_record], targets),
+        )
+        self.assertEqual(write_reports.call_args_list[-1], call(records, targets))
+
+    @patch.object(collect_agency, "FWXX_ANTI_CRAWL_BATCH_SIZE", 99)
+    @patch("collect_agency.load_resumable_verification_records")
+    @patch("collect_agency.write_verification_reports")
+    @patch("collect_agency.countdown")
+    @patch("collect_agency.collect_one_agency")
+    @patch("collect_agency.PatentsDB")
+    @patch("collect_agency.CoordinateService")
+    @patch("collect_agency.BrowserService")
+    def test_retry_failed_mode_processes_every_failure_without_report_resume(
+        self,
+        browser_service,
+        coordinate_service,
+        db_class,
+        collect_one_agency,
+        _countdown,
+        write_reports,
+        load_resume,
+    ):
+        targets = ["2024110065970", "202111504942X"]
+        db = db_class.return_value
+        db.failed_collection_targets.return_value = [
+            {"application_no": application_no, "reason": "timeout"}
+            for application_no in targets
+        ]
+        db.get_record.return_value = None
+        coordinate_service.load_or_record_search_coordinates.return_value = (
+            1,
+            2,
+            3,
+            4,
+        )
+        coordinate_service.load_or_record_detail_link_coordinates.return_value = (5, 6)
+        collect_one_agency.side_effect = [agency_ack(), agency_ack()]
+        arguments = Namespace(
+            input=None,
+            app=None,
+            retry_failed=True,
+            test=None,
+            url="https://example.invalid",
+        )
+
+        records = collect_agency._run_agency_collection(arguments)
+
+        db.failed_collection_targets.assert_called_once_with("agency")
+        load_resume.assert_not_called()
+        self.assertEqual(
+            [
+                item.kwargs["application_no"]
+                for item in collect_one_agency.call_args_list
+            ],
+            targets,
+        )
+        self.assertEqual(
+            [record["application_no"] for record in records],
+            targets,
+        )
+        self.assertEqual(write_reports.call_args_list[0], call([], targets))
+
+    @patch("collect_agency.load_resumable_verification_records")
+    @patch("collect_agency.write_verification_reports")
+    @patch("collect_agency.PatentsDB")
+    @patch("collect_agency.CoordinateService")
+    @patch("collect_agency.BrowserService")
+    def test_retry_failed_mode_with_no_failures_returns_without_browser(
+        self,
+        browser_service,
+        coordinate_service,
+        db_class,
+        write_reports,
+        load_resume,
+    ):
+        db_class.return_value.failed_collection_targets.return_value = []
+        arguments = Namespace(
+            input=None,
+            app=None,
+            retry_failed=True,
+            test=None,
+            url="https://example.invalid",
+        )
+
+        records = collect_agency._run_agency_collection(arguments)
+
+        self.assertEqual(records, [])
+        load_resume.assert_not_called()
+        write_reports.assert_not_called()
+        coordinate_service.load_or_record_search_coordinates.assert_not_called()
+        browser_service.launch_and_login.assert_not_called()
+
+    @patch.object(collect_agency, "FWXX_ANTI_CRAWL_BATCH_SIZE", 99)
+    @patch("collect_agency.is_browser_alive", side_effect=[True, False])
+    @patch("collect_agency.load_resumable_verification_records", return_value=[])
+    @patch("collect_agency.write_verification_reports")
+    @patch("collect_agency.countdown")
+    @patch("collect_agency.collect_one_agency", return_value=agency_ack())
+    @patch("collect_agency.PatentsDB")
+    @patch("collect_agency.CoordinateService")
+    @patch("collect_agency.BrowserService")
+    def test_browser_closure_stops_before_unattempted_targets_are_failed(
+        self,
+        browser_service,
+        coordinate_service,
+        db_class,
+        collect_one_agency,
+        _countdown,
+        write_reports,
+        _load_resume,
+        browser_alive,
+    ):
+        targets = ["2024110065970", "202111504942X"]
+        coordinate_service.load_or_record_search_coordinates.return_value = (
+            1,
+            2,
+            3,
+            4,
+        )
+        coordinate_service.load_or_record_detail_link_coordinates.return_value = (5, 6)
+        db = db_class.return_value
+        db.get_record.return_value = None
+        arguments = Namespace(
+            input=None,
+            app=",".join(targets),
+            retry_failed=False,
+            test=None,
+            url="https://example.invalid",
+        )
+
+        records = collect_agency._run_agency_collection(arguments)
+
+        self.assertEqual([record["application_no"] for record in records], targets[:1])
+        self.assertEqual(collect_one_agency.call_count, 1)
+        db.get_record.assert_called_once_with(targets[0])
+        db.record_collection_failure.assert_not_called()
+        db.clear_collection_failure.assert_called_once_with("agency", targets[0])
+        self.assertEqual(write_reports.call_args_list[-1], call(records, targets))
+        self.assertEqual(browser_alive.call_count, 2)
+        browser_service.launch_and_login.return_value.quit.assert_called_once_with()
 
     @patch("collect_agency._run_agency_collection")
     @patch("collect_agency.reserve_detail_collection_desktop")

@@ -80,9 +80,11 @@ DESKTOP_BROWSER_ACTIONS = {
     "collect_fwxx_batch",
     "recheck_agency_app",
     "recheck_agency_batch",
+    "recheck_agency_failed",
     "collect_fees",
     "collect_fees_app",
     "collect_fees_batch",
+    "collect_fees_failed",
     "phase0_browser",
     "public_browser",
     "public_auto_paginate",
@@ -504,13 +506,14 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         return {
             "action": action,
             "title": f"批量官方复核代理机构 {len(targets)} 件",
-            "command": [
-                py,
-                "-u",
-                "collect_agency.py",
-                "--input",
-                str(request_path),
-            ],
+            "command": [py, "-u", "collect_agency.py", "--input", str(request_path)],
+            "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
+        }
+    if action == "recheck_agency_failed":
+        return {
+            "action": action,
+            "title": "重试代理机构复核失败项",
+            "command": [py, "-u", "collect_agency.py", "--retry-failed"],
             "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
         }
     if action == "collect_fees":
@@ -552,6 +555,13 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
                 str(request_path),
                 "--force",
             ],
+            "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
+        }
+    if action == "collect_fees_failed":
+        return {
+            "action": action,
+            "title": "重试费用采集失败项",
+            "command": [py, "-u", "collect_fees.py", "--retry-failed"],
             "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
         }
     if action == "strategy_generate":
@@ -723,6 +733,7 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
         warnings.append("动态更新清单为空")
 
     unique = db_summary["unique_count"]
+    collection_failure_counts = db_summary.get("collection_failure_counts", {})
     return {
         "now": iso_now(),
         "records": {
@@ -743,6 +754,8 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
             "fee_dataset_collected": db_summary["fee_dataset_collected"],
             "fee_dataset_pending": db_summary["fee_dataset_pending"],
             "fee_dataset_unregistered": db_summary["fee_dataset_unregistered"],
+            "agency_collection_failures": collection_failure_counts.get("agency", 0),
+            "fee_collection_failures": collection_failure_counts.get("fees", 0),
             "tracked_total": sum(group["total"] for group in update_groups),
             "update_due": sum(group["due"] for group in update_groups),
         },
@@ -770,6 +783,7 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
         "daily_counts": db_summary["daily_counts"],
         "fwxx_pending_list": db_summary["fwxx_pending_list"],
         "fee_dataset_pending_list": db_summary["fee_dataset_pending_list"],
+        "collection_failures": db_summary.get("collection_failures", []),
         "pending_requests_count": len(_patents_db.list_requests(status='pending')),
         # 驳回企业列表，合并手动补录的真实专利数
         "rejection_companies": _merge_company_meta(db_summary["rejection_companies"]),
@@ -1110,6 +1124,7 @@ HTML = r"""<!doctype html>
           </label>
           <div class="button-row" style="margin-top:10px">
             <button class="btn primary" id="agencyRecheckBatchBtn">批量核验</button>
+            <button class="btn secondary" id="retryAgencyFailuresBtn">仅重试失败项</button>
             <a class="btn secondary" href="/download/agency_verification_csv" download>下载 CSV 报告</a>
             <a class="btn secondary" href="/download/agency_verification_json" download>下载 JSON 报告</a>
           </div>
@@ -1143,6 +1158,7 @@ HTML = r"""<!doctype html>
             <button class="btn primary" data-action="collect_fees">采集数据集未完成</button>
             <button class="btn secondary" id="feeTestBtn">测试 5 条</button>
             <button class="btn secondary" id="feeForceBtn">强制重采数据集</button>
+            <button class="btn secondary" id="retryFeeFailuresBtn">仅重试失败项</button>
           </div>
           <div class="check-line" style="margin-bottom:12px">
             <input id="feeAppNo" placeholder="单号采集：输入申请号">
@@ -1159,7 +1175,7 @@ HTML = r"""<!doctype html>
           <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px">
             <div class="hint" style="margin-bottom:8px">导入费用数据集（CSV/Excel 含申请号列，导入即整表替换）</div>
             <div class="check-line">
-              <input type="file" id="feeTargetsFileInput" accept=".csv,.xlsx,.xls">
+              <input type="file" id="feeTargetsFileInput" accept=".csv,.xlsx">
               <button class="btn primary" id="importFeeTargetsBtn">导入</button>
               <button class="btn secondary" id="enrollUnregisteredBtn">未建档转入主采集清单</button>
             </div>
@@ -1188,6 +1204,18 @@ HTML = r"""<!doctype html>
           </div>
         </article>
       </section>
+      <article class="panel" style="margin-bottom:14px">
+        <div class="panel-head">
+          <h2>专项采集失败记录</h2>
+          <span class="hint">代理机构 <strong id="agencyFailureCount">0</strong> · 费用 <strong id="feeFailureCount">0</strong></span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>类型</th><th>申请号</th><th>失败原因</th><th>重试次数</th><th>最后失败</th></tr></thead>
+            <tbody id="collectionFailureRows"></tbody>
+          </table>
+        </div>
+      </article>
       <article class="panel">
         <div class="panel-head">
           <h2>代理机构欠费排行</h2>
@@ -1414,7 +1442,7 @@ HTML = r"""<!doctype html>
         <div class="control-grid">
           <label class="field">
             <span>选择名单文件</span>
-            <input id="agencyFileInput" type="file" accept=".csv,.xlsx,.xls">
+            <input id="agencyFileInput" type="file" accept=".csv,.xlsx">
           </label>
           <button class="btn primary" id="importAgencyBtn">导入代理机构</button>
         </div>
@@ -2331,6 +2359,9 @@ function renderSummary(data) {
   set('#feeDatasetUnregistered', fmtNumber(data.business.fee_dataset_unregistered));
   renderFwxxPending(data.fwxx_pending_list || []);
   renderFeePending(data.fee_dataset_pending_list || []);
+  set('#agencyFailureCount', fmtNumber(data.business.agency_collection_failures || 0));
+  set('#feeFailureCount', fmtNumber(data.business.fee_collection_failures || 0));
+  renderCollectionFailures(data.collection_failures || []);
 
   // 数据分析 Tab
   renderBarList('#statusCounts',    data.status_counts    || []);
@@ -2465,6 +2496,23 @@ function renderFwxxPending(items) {
     '<td>' + shortTime(item.timestamp) + '</td></tr>'
   ).join('');
   set('#fwxxPendingHint', '待补 ' + items.length + ' 条（最新）');
+}
+
+function renderCollectionFailures(items) {
+  const tbody = $('#collectionFailureRows');
+  if (!tbody) return;
+  if (!items.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">暂无专项采集失败记录</td></tr>';
+    return;
+  }
+  const labels = {agency: '代理机构', fees: '费用'};
+  tbody.innerHTML = items.map(item =>
+    '<tr><td>' + escHtml(labels[item.collection_kind] || item.collection_kind || '—') + '</td>' +
+    '<td>' + escHtml(item.application_no || '—') + '</td>' +
+    '<td>' + escHtml(item.reason || '—') + '</td>' +
+    '<td>' + fmtNumber(item.attempt_count || 0) + '</td>' +
+    '<td>' + shortTime(item.last_failed_at) + '</td></tr>'
+  ).join('');
 }
 
 function renderFeePending(items) {
@@ -2720,6 +2768,9 @@ function bindEvents() {
   $('#agencyRecheckBatchBtn').addEventListener('click', () =>
     startJob('recheck_agency_batch', { app_nos: $('#agencyRecheckBatchAppNos').value }));
 
+  $('#retryAgencyFailuresBtn').addEventListener('click', () =>
+    startJob('recheck_agency_failed'));
+
   $('#fwxxTestBtn').addEventListener('click', () =>
     startJob('collect_fwxx', { count: 5 }));
 
@@ -2742,6 +2793,9 @@ function bindEvents() {
 
   $('#feeBatchBtn').addEventListener('click', () =>
     startJob('collect_fees_batch', { app_nos: $('#feeBatchAppNos').value }));
+
+  $('#retryFeeFailuresBtn').addEventListener('click', () =>
+    startJob('collect_fees_failed'));
 
   $('#agencyArrearsRefreshBtn').addEventListener('click', loadAgencyArrears);
 
@@ -2873,8 +2927,9 @@ function bindEvents() {
       if (hint) hint.textContent =
         `✓ 更新 ${d.updated} 条` +
         (d.skipped_missing > 0 ? `，${d.skipped_missing} 条申请号不在库中` : '') +
-        (d.skipped_no_app  > 0 ? `，${d.skipped_no_app} 条字段为空` : '') +
-        (d.bad_rows        > 0 ? `，${d.bad_rows} 行格式错误` : '');
+        (d.skipped_invalid > 0 ? `，${d.skipped_invalid} 条申请号格式无效` : '') +
+        (d.skipped_no_agency > 0 ? `，${d.skipped_no_agency} 条代理机构为空` : '') +
+        (d.bad_rows > 0 ? `，${d.bad_rows} 行申请号为空` : '');
       showToast('代理机构导入完成：' + d.updated + ' 条');
     } catch (e) { if (hint) hint.textContent = '导入失败：' + e.message; }
   });

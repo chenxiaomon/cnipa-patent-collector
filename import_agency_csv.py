@@ -11,7 +11,7 @@
   由用户提供包含申请号和代理机构的名单文件，通过本脚本批量导入。
 
 文件格式要求：
-  - 支持 .csv / .xlsx / .xls
+  - 支持 .csv / .xlsx（旧式 .xls 请先另存为 .xlsx）
   - 必须包含申请号列（列名：申请号 / application_no / app_no / zhuanlisqh）
   - 必须包含代理机构列（列名：代理机构 / daili_jg / agency）
   - 可选代理人列（列名：代理人 / daili_r / agent）
@@ -29,7 +29,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from cache_utils import normalize_app_no
+from cache_utils import is_supported_cn_application_no, normalize_app_no
 from db_manager import PatentsDB
 from settings import PATENTS_DB_FILE
 
@@ -65,7 +65,7 @@ def _read_csv(path: Path) -> tuple[list[str], list[dict]]:
 
 
 def _read_excel(path: Path) -> tuple[list[str], list[dict]]:
-    """读取 Excel 文件（需要 openpyxl 或 xlrd）。"""
+    """读取 XLSX 文件（需要 openpyxl）。"""
     try:
         import openpyxl
         wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
@@ -86,10 +86,12 @@ def parse_file(path: Path) -> tuple[list[str], list[dict]]:
     suffix = path.suffix.lower()
     if suffix == '.csv':
         return _read_csv(path)
-    elif suffix in ('.xlsx', '.xls'):
+    elif suffix == '.xlsx':
         return _read_excel(path)
+    elif suffix == '.xls':
+        raise ValueError("旧式 .xls 不支持导入；请先另存为 .xlsx 或 .csv")
     else:
-        raise ValueError(f"不支持的文件格式：{suffix}（仅支持 .csv / .xlsx / .xls）")
+        raise ValueError(f"不支持的文件格式：{suffix}（仅支持 .csv / .xlsx）")
 
 
 def import_agency(source: Path, dry_run: bool = False) -> dict:
@@ -97,7 +99,13 @@ def import_agency(source: Path, dry_run: bool = False) -> dict:
     读取文件并将代理机构信息 upsert 进 patents.db。
 
     Returns:
-        {"updated": int, "skipped_no_app": int, "skipped_missing": int, "bad_rows": int}
+        {
+            "updated": int,
+            "skipped_invalid": int,
+            "skipped_no_agency": int,
+            "skipped_missing": int,
+            "bad_rows": int,
+        }
     """
     headers, rows = parse_file(source)
 
@@ -130,11 +138,11 @@ def import_agency(source: Path, dry_run: bool = False) -> dict:
             bad_rows += 1
             continue
 
-        app_no = normalize_app_no(raw_app)
-        if not app_no:
+        if not is_supported_cn_application_no(raw_app):
             print(f"  [{i}] 申请号格式无效，跳过：{raw_app!r}")
             skipped_invalid += 1
             continue
+        app_no = normalize_app_no(raw_app)
 
         if not agency:
             skipped_no_agency += 1
@@ -197,9 +205,10 @@ def main() -> None:
     print("📊 导入统计")
     print("=" * 70)
     print(f"  {'[预览] ' if dry_run else ''}更新：{stats['updated']} 条")
+    print(f"  跳过（申请号格式无效）：{stats['skipped_invalid']} 条")
+    print(f"  跳过（代理机构为空）：{stats['skipped_no_agency']} 条")
     print(f"  跳过（DB 中无此申请号）：{stats['skipped_missing']} 条")
-    print(f"  跳过（申请号/代理机构为空）：{stats['skipped_no_app']} 条")
-    print(f"  格式错误行：{stats['bad_rows']} 行")
+    print(f"  申请号为空：{stats['bad_rows']} 行")
     print("=" * 70)
 
     if stats['updated'] == 0 and not dry_run:

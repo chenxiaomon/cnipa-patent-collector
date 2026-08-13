@@ -73,6 +73,7 @@ class TestFeeFieldPersistence(unittest.TestCase):
     def test_partial_fee_success_does_not_clear_missing_fwxx_fields(self, mock_db_class):
         mock_db = mock_db_class.return_value
         mock_db.get_record.return_value = {"application_no": "2026102909420"}
+        mock_db.update_fields.return_value = 1
 
         self.assertTrue(persist_fee_fields(
             "2026102909420",

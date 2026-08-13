@@ -19,6 +19,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from cache_utils import is_supported_cn_application_no, normalize_app_no
+
 _JSON_FIELDS = {
     'fwxx_list',
     'bhsjtzs_data',
@@ -112,6 +114,18 @@ CREATE TABLE IF NOT EXISTS fee_targets (
 )
 """
 
+_COLLECTION_KINDS = ('fees', 'agency')
+_CREATE_COLLECTION_FAILURES_TABLE = """
+CREATE TABLE IF NOT EXISTS collection_failures (
+    collection_kind TEXT NOT NULL CHECK(collection_kind IN ('fees', 'agency')),
+    application_no  TEXT NOT NULL,
+    reason          TEXT NOT NULL,
+    attempt_count   INTEGER NOT NULL CHECK(attempt_count > 0),
+    last_failed_at  TEXT NOT NULL,
+    PRIMARY KEY (collection_kind, application_no)
+)
+"""
+
 
 def _split_applicant_names(value: str | None) -> list[str]:
     if not value:
@@ -148,6 +162,20 @@ def _normalize_notice_date(value) -> str | None:
     except ValueError:
         return None
     return date_key
+
+
+def _require_supported_application_no(value: object) -> str:
+    normalized_app_no = normalize_app_no(value)
+    if not normalized_app_no or not is_supported_cn_application_no(value):
+        raise ValueError(f"不支持的申请号格式: {value!r}")
+    return normalized_app_no
+
+
+def _require_collection_kind(value: object) -> str:
+    collection_kind = str(value or '').strip()
+    if collection_kind not in _COLLECTION_KINDS:
+        raise ValueError(f"不支持的采集类型: {value!r}")
+    return collection_kind
 
 
 class PatentsDB:
@@ -193,6 +221,7 @@ class PatentsDB:
             )
             conn.execute(_CREATE_REQUESTS_TABLE)
             conn.execute(_CREATE_FEE_TARGETS_TABLE)
+            conn.execute(_CREATE_COLLECTION_FAILURES_TABLE)
             # 对已有数据库做无损迁移：列已存在时 SQLite 抛 "duplicate column name"，忽略即可
             for col in (
                 'daili_jg TEXT',
@@ -738,6 +767,65 @@ class PatentsDB:
             ).fetchall()
         return {row['application_no'] for row in rows}
 
+    # ── 独立采集失败记录 ──────────────────────────────────────────────────
+
+    def record_collection_failure(
+        self,
+        collection_kind: str,
+        app_no: str,
+        reason: str,
+    ) -> dict:
+        """记录可重试失败；同一采集类型和申请号重复失败时递增尝试次数。"""
+        validated_kind = _require_collection_kind(collection_kind)
+        normalized_app_no = _require_supported_application_no(app_no)
+        failure_reason = str(reason or '').strip()
+        if not failure_reason:
+            raise ValueError("采集失败原因不能为空")
+        failed_at = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO collection_failures("
+                "collection_kind, application_no, reason, attempt_count, last_failed_at"
+                ") VALUES (?, ?, ?, 1, ?) "
+                "ON CONFLICT(collection_kind, application_no) DO UPDATE SET "
+                "reason=excluded.reason, "
+                "attempt_count=collection_failures.attempt_count + 1, "
+                "last_failed_at=excluded.last_failed_at",
+                (validated_kind, normalized_app_no, failure_reason, failed_at),
+            )
+            row = conn.execute(
+                "SELECT collection_kind, application_no, reason, attempt_count, last_failed_at "
+                "FROM collection_failures WHERE collection_kind=? AND application_no=?",
+                (validated_kind, normalized_app_no),
+            ).fetchone()
+            conn.commit()
+        return dict(row)
+
+    def clear_collection_failure(self, collection_kind: str, app_no: str) -> bool:
+        """采集成功后清除该类型、该申请号的失败状态。"""
+        validated_kind = _require_collection_kind(collection_kind)
+        normalized_app_no = _require_supported_application_no(app_no)
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM collection_failures "
+                "WHERE collection_kind=? AND application_no=?",
+                (validated_kind, normalized_app_no),
+            )
+            conn.commit()
+        return cursor.rowcount > 0
+
+    def failed_collection_targets(self, collection_kind: str) -> list[dict]:
+        """返回指定采集类型的失败目标，最近失败的目标排在前面。"""
+        validated_kind = _require_collection_kind(collection_kind)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT collection_kind, application_no, reason, attempt_count, last_failed_at "
+                "FROM collection_failures WHERE collection_kind=? "
+                "ORDER BY last_failed_at DESC, application_no",
+                (validated_kind,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     # ── 需求队列 ──────────────────────────────────────────────────────────
 
     def submit_request(self, app_nos: list[str], requester_ip: str, note: str = '') -> str:
@@ -899,6 +987,19 @@ class PatentsDB:
                 ORDER BY p.timestamp DESC LIMIT 20
             """).fetchall()
 
+            collection_failure_rows = conn.execute("""
+                SELECT collection_kind, application_no, reason,
+                       attempt_count, last_failed_at
+                FROM collection_failures
+                ORDER BY last_failed_at DESC, collection_kind, application_no
+            """).fetchall()
+            collection_failure_count_row = conn.execute("""
+                SELECT
+                    SUM(CASE WHEN collection_kind='fees' THEN 1 ELSE 0 END) AS fees,
+                    SUM(CASE WHEN collection_kind='agency' THEN 1 ELSE 0 END) AS agency
+                FROM collection_failures
+            """).fetchone()
+
 
             # 7. 驳回企业发明专利数（按企业聚合，仅发明专利）
             rejection_company_rows = conn.execute("""
@@ -944,6 +1045,11 @@ class PatentsDB:
             'recent': [dict(r) for r in recent_rows],
             'fwxx_pending_list': [dict(r) for r in fwxx_pending_rows],
             'fee_dataset_pending_list': [dict(r) for r in fee_pending_rows],
+            'collection_failures': [dict(row) for row in collection_failure_rows],
+            'collection_failure_counts': {
+                collection_kind: collection_failure_count_row[collection_kind] or 0
+                for collection_kind in _COLLECTION_KINDS
+            },
             # 驳回企业列表：[{"name": str, "invention_count": int}, ...]
             'rejection_companies': [
                 {'name': name, 'invention_count': count}

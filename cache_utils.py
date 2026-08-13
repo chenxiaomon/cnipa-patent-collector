@@ -17,6 +17,10 @@ from atomic_write import write_json_atomic
 
 
 _APP_NO_SPLIT_RE = re.compile(r'[\s,;；，]+')
+_SUPPORTED_CN_APPLICATION_NO_RE = re.compile(r'^[0-9]{7,15}[0-9X]$')
+_SUPPORTED_CN_APPLICATION_NO_INPUT_RE = re.compile(
+    r'^(?:CN)?[0-9]{7,15}(?:\.?[0-9X])$'
+)
 
 
 def normalize_app_no(app_no: str) -> Optional[str]:
@@ -31,15 +35,41 @@ def normalize_app_no(app_no: str) -> Optional[str]:
     return normalized if normalized else None
 
 
+def is_supported_cn_application_no(app_no: str) -> bool:
+    """Return whether an application number belongs to the supported CN format."""
+    if not app_no:
+        return False
+    raw_app_no = str(app_no).strip().upper()
+    if not _SUPPORTED_CN_APPLICATION_NO_INPUT_RE.fullmatch(raw_app_no):
+        return False
+    normalized_app_no = normalize_app_no(app_no)
+    return bool(
+        normalized_app_no
+        and _SUPPORTED_CN_APPLICATION_NO_RE.fullmatch(normalized_app_no)
+    )
+
+
+def split_app_no_tokens(text: str) -> list[str]:
+    """Split pasted application-number text using the supported delimiters."""
+    return [
+        token.strip()
+        for token in _APP_NO_SPLIT_RE.split(str(text))
+        if token.strip()
+    ]
+
+
 def parse_app_no_list(text: str) -> list[str]:
     normalized_app_nos: list[str] = []
     seen_app_nos: set[str] = set()
-    for token in _APP_NO_SPLIT_RE.split(str(text)):
-        raw_app_no = token.strip()
+    for raw_app_no in split_app_no_tokens(text):
         if not raw_app_no or not any(ch.isdigit() for ch in raw_app_no):
             continue
         normalized_app_no = normalize_app_no(raw_app_no)
-        if normalized_app_no and normalized_app_no not in seen_app_nos:
+        if (
+            normalized_app_no
+            and is_supported_cn_application_no(raw_app_no)
+            and normalized_app_no not in seen_app_nos
+        ):
             seen_app_nos.add(normalized_app_no)
             normalized_app_nos.append(normalized_app_no)
     return normalized_app_nos

@@ -50,6 +50,17 @@ class TestImportFeeTargets(unittest.TestCase):
         self.assertEqual(stats['duplicates'], 1)
         self.assertEqual(stats['invalid'], 1)
 
+    def test_pct_application_number_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = _write_csv(
+                tmpdir,
+                'application_no\nPCT/2025/134239\n2024110065970\n',
+            )
+            stats, db = self._import_with_db(source)
+        self.assertEqual(stats['imported'], 1)
+        self.assertEqual(stats['invalid'], 1)
+        db.replace_fee_targets.assert_called_once_with(['2024110065970'])
+
     def test_gbk_encoded_csv_is_readable(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             source = _write_csv(tmpdir, '专利申请号\n2024110065970\n', encoding='gbk')

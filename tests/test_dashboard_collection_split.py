@@ -74,6 +74,19 @@ class TestCollectionJobSpecs(unittest.TestCase):
         )
         self.assertIn("强制重采", force_spec["title"])
 
+    def test_failed_collection_actions_retry_only_the_matching_collector(self):
+        fee_spec = web_dashboard.build_job_spec("collect_fees_failed", {})
+        agency_spec = web_dashboard.build_job_spec("recheck_agency_failed", {})
+
+        self.assertEqual(
+            fee_spec["command"],
+            ["python", "-u", "collect_fees.py", "--retry-failed"],
+        )
+        self.assertEqual(
+            agency_spec["command"],
+            ["python", "-u", "collect_agency.py", "--retry-failed"],
+        )
+
     def test_both_batch_actions_use_validated_normalized_request_files(self):
         raw_targets = "CN202411006597.0\nCN202111504942.X"
         request_path = Path("C:/tmp/manual_collection_request.txt")
@@ -175,8 +188,12 @@ class TestDesktopCollectionExclusion(unittest.TestCase):
             {
                 "recheck_agency_app",
                 "recheck_agency_batch",
+                "recheck_agency_failed",
             }.issubset(web_dashboard.DESKTOP_BROWSER_ACTIONS)
         )
+
+    def test_fee_failed_retry_is_declared_as_desktop_browser_action(self):
+        self.assertIn("collect_fees_failed", web_dashboard.DESKTOP_BROWSER_ACTIONS)
 
     def test_active_desktop_job_blocks_a_different_collection_action(self):
         job_manager = web_dashboard.JobManager()
@@ -338,6 +355,24 @@ class TestCollectionDashboardPresentation(unittest.TestCase):
             r"(?s)#enrollUnregisteredBtn'.*?api\('/api/fee-targets/enroll-unregistered'",
         )
 
+    def test_import_inputs_only_offer_supported_file_extensions(self):
+        self.assertIn(
+            'id="feeTargetsFileInput" accept=".csv,.xlsx"',
+            self.html,
+        )
+        self.assertIn(
+            'id="agencyFileInput" type="file" accept=".csv,.xlsx"',
+            self.html,
+        )
+        self.assertNotIn('accept=".csv,.xlsx,.xls"', self.html)
+
+    def test_agency_import_feedback_uses_current_skip_statistics(self):
+        self.assertIn("d.skipped_invalid", self.source)
+        self.assertIn("d.skipped_no_agency", self.source)
+        self.assertIn("d.skipped_missing", self.source)
+        self.assertIn("d.bad_rows", self.source)
+        self.assertNotIn("d.skipped_no_app", self.source)
+
     def test_fee_buttons_submit_through_the_existing_job_api(self):
         self.assertRegex(
             self.source,
@@ -373,6 +408,31 @@ class TestCollectionDashboardPresentation(unittest.TestCase):
         self.assertRegex(
             self.source,
             r"(?s)#agencyRecheckBatchBtn'.*?startJob\('recheck_agency_batch'",
+        )
+
+    def test_page_shows_collection_failures_and_retry_controls(self):
+        for control_id in (
+            "agencyFailureCount",
+            "feeFailureCount",
+            "collectionFailureRows",
+            "retryAgencyFailuresBtn",
+            "retryFeeFailuresBtn",
+        ):
+            self.assertIn(f'id="{control_id}"', self.html)
+        self.assertIn("失败原因", self.html)
+        self.assertIn("重试次数", self.html)
+        self.assertIn("最后失败", self.html)
+        self.assertIn(
+            "renderCollectionFailures(data.collection_failures || [])",
+            self.source,
+        )
+        self.assertRegex(
+            self.source,
+            r"(?s)#retryAgencyFailuresBtn'.*?startJob\('recheck_agency_failed'",
+        )
+        self.assertRegex(
+            self.source,
+            r"(?s)#retryFeeFailuresBtn'.*?startJob\('collect_fees_failed'",
         )
 
 

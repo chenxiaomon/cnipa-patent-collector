@@ -9,7 +9,12 @@
 import unittest
 from unittest.mock import Mock, call, patch
 
-from cache_utils import normalize_app_no, parse_app_no_list, poll_cache_with_retry
+from cache_utils import (
+    is_supported_cn_application_no,
+    normalize_app_no,
+    parse_app_no_list,
+    poll_cache_with_retry,
+)
 
 
 class TestNormalizeAppNo(unittest.TestCase):
@@ -68,6 +73,25 @@ class TestApplicationNoValidation(unittest.TestCase):
             with self.subTest(app=app):
                 result = normalize_app_no(app)
                 self.assertEqual(result, expected)
+
+    def test_supported_cn_application_numbers_are_accepted(self):
+        for app_no in (
+            '100010220',
+            '2023108921437',
+            '202311437336X',
+            'CN202411006597.0',
+        ):
+            with self.subTest(app_no=app_no):
+                self.assertTrue(is_supported_cn_application_no(app_no))
+
+    def test_pct_and_malformed_application_numbers_are_rejected(self):
+        for app_no in (
+            'PCT/2025/134239',
+            '2023CN108921437',
+            '123.45.67.8',
+        ):
+            with self.subTest(app_no=app_no):
+                self.assertFalse(is_supported_cn_application_no(app_no))
 
     def test_special_characters(self):
         """包含特殊字符的申请号"""
@@ -133,6 +157,17 @@ CN202111504942.X
     def test_deduplicates_and_accepts_common_separators(self):
         text = 'CN202411006597.0, 2024110065970；cn202111504942.x'
         self.assertEqual(parse_app_no_list(text), ['2024110065970', '202111504942X'])
+
+    def test_filters_pct_from_mixed_application_numbers(self):
+        text = (
+            'CN202411006597.0\n'
+            'PCT/2025/134239\n'
+            '100010220, 202311437336X'
+        )
+        self.assertEqual(
+            parse_app_no_list(text),
+            ['2024110065970', '100010220', '202311437336X'],
+        )
 
 
 class TestPollCacheWithRetry(unittest.TestCase):

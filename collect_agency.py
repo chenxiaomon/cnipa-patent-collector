@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import random
 import sys
@@ -72,6 +73,10 @@ _CLASSIFICATIONS = (
     "persistence_error",
     "timeout",
 )
+_RETRYABLE_CLASSIFICATIONS = frozenset(
+    {"timeout", "unmatched", "persistence_error"}
+)
+_RESUMABLE_CLASSIFICATIONS = frozenset(_CLASSIFICATIONS) - _RETRYABLE_CLASSIFICATIONS
 _REPORT_COLUMNS = (
     "application_no",
     "classification",
@@ -307,7 +312,58 @@ def classify_agency_ack(
     }
 
 
-def write_verification_reports(records: list[dict], target_count: int) -> None:
+def load_resumable_verification_records(targets: list[str]) -> list[dict]:
+    """Return successful rows from an interrupted report for this exact batch."""
+    report_path = Path(AGENCY_VERIFICATION_REPORT_JSON_FILE)
+    try:
+        report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return []
+
+    if not isinstance(report_payload, dict):
+        return []
+    report_targets = report_payload.get("targets")
+    records = report_payload.get("records")
+    target_count = report_payload.get("target_count")
+    completed_count = report_payload.get("completed_count")
+    if (
+        not isinstance(report_targets, list)
+        or not all(isinstance(app_no, str) for app_no in report_targets)
+        or len(report_targets) != len(targets)
+        or set(report_targets) != set(targets)
+        or target_count != len(targets)
+        or not isinstance(completed_count, int)
+        or isinstance(completed_count, bool)
+        or completed_count < 0
+        or completed_count >= target_count
+        or not isinstance(records, list)
+        or completed_count != len(records)
+    ):
+        return []
+
+    retained_by_application: dict[str, dict] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            return []
+        application_no = record.get("application_no")
+        classification = record.get("classification")
+        if (
+            application_no not in targets
+            or classification not in _CLASSIFICATIONS
+            or application_no in retained_by_application
+        ):
+            return []
+        if classification in _RESUMABLE_CLASSIFICATIONS:
+            retained_by_application[application_no] = record
+
+    return [
+        retained_by_application[application_no]
+        for application_no in targets
+        if application_no in retained_by_application
+    ]
+
+
+def write_verification_reports(records: list[dict], targets: list[str]) -> None:
     """Atomically replace the fixed JSON and CSV agency verification reports."""
     classification_counts = {name: 0 for name in _CLASSIFICATIONS}
     for record in records:
@@ -315,8 +371,9 @@ def write_verification_reports(records: list[dict], target_count: int) -> None:
 
     report_payload = {
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "target_count": target_count,
+        "target_count": len(targets),
         "completed_count": len(records),
+        "targets": list(targets),
         "counts": classification_counts,
         "records": records,
     }
@@ -338,18 +395,49 @@ def run_agency_collection(arguments) -> list[dict]:
 
 
 def _run_agency_collection(arguments) -> list[dict]:
-    targets = load_requested_targets(
-        input_file=getattr(arguments, "input", None),
-        app_nos=getattr(arguments, "app", None),
-    )
+    retry_failed = getattr(arguments, "retry_failed", False)
+    patents_db: PatentsDB | None = None
+    if retry_failed:
+        patents_db = PatentsDB(PATENTS_DB_FILE)
+        targets = [
+            failure["application_no"]
+            for failure in patents_db.failed_collection_targets("agency")
+        ]
+    else:
+        targets = load_requested_targets(
+            input_file=getattr(arguments, "input", None),
+            app_nos=getattr(arguments, "app", None),
+        )
     test_count = getattr(arguments, "test", None)
     if test_count:
         targets = targets[:test_count]
         print(f"[*] 测试模式：仅复核前 {len(targets)} 个申请号")
 
-    print(f"[*] 本次将逐件复核 {len(targets)} 个申请号，不跳过已有机构信息")
-    verification_records: list[dict] = []
-    write_verification_reports(verification_records, len(targets))
+    if not targets:
+        print("[*] 当前没有代理机构复核失败项")
+        return []
+
+    if retry_failed:
+        verification_records = []
+    else:
+        verification_records = load_resumable_verification_records(targets)
+
+    retained_app_nos = {
+        record["application_no"] for record in verification_records
+    }
+    pending_targets = [
+        application_no
+        for application_no in targets
+        if application_no not in retained_app_nos
+    ]
+    if verification_records:
+        print(
+            f"[*] 恢复未完成批次：保留 {len(verification_records)} 条成功记录，"
+            f"重试 {len(pending_targets)} 条"
+        )
+    else:
+        print(f"[*] 本次将逐件复核 {len(targets)} 个申请号")
+    write_verification_reports(list(verification_records), targets)
 
     driver = None
     try:
@@ -363,9 +451,13 @@ def _run_agency_collection(arguments) -> list[dict]:
         link_x, link_y = CoordinateService.load_or_record_detail_link_coordinates()
         countdown(FWXX_STARTUP_COUNTDOWN)
 
-        patents_db = PatentsDB(PATENTS_DB_FILE)
-        for index, application_no in enumerate(targets, 1):
-            print(f"\n[{index}/{len(targets)}] 申请号: {application_no}")
+        if patents_db is None:
+            patents_db = PatentsDB(PATENTS_DB_FILE)
+        for index, application_no in enumerate(pending_targets, 1):
+            if not is_browser_alive(driver):
+                print("\n[!] 浏览器已关闭，停止代理机构复核")
+                break
+            print(f"\n[{index}/{len(pending_targets)}] 申请号: {application_no}")
 
             # sqxx may update the database immediately after the click, so snapshot first.
             old_record = patents_db.get_record(application_no)
@@ -385,13 +477,30 @@ def _run_agency_collection(arguments) -> list[dict]:
                 old_daili_jg,
                 agency_ack,
             )
+            classification = report_record["classification"]
+            if classification in _RETRYABLE_CLASSIFICATIONS:
+                patents_db.record_collection_failure(
+                    "agency",
+                    application_no,
+                    classification,
+                )
+            else:
+                patents_db.clear_collection_failure("agency", application_no)
             verification_records.append(report_record)
-            write_verification_reports(verification_records, len(targets))
-            print(f"    [✓] 分类: {report_record['classification']}")
+            records_by_application = {
+                record["application_no"]: record for record in verification_records
+            }
+            verification_records = [
+                records_by_application[target]
+                for target in targets
+                if target in records_by_application
+            ]
+            write_verification_reports(list(verification_records), targets)
+            print(f"    [✓] 分类: {classification}")
 
             if (
                 index % FWXX_ANTI_CRAWL_BATCH_SIZE == 0
-                and index < len(targets)
+                and index < len(pending_targets)
             ):
                 wait_time = random.uniform(
                     FWXX_ANTI_CRAWL_WAIT_MIN,
@@ -428,6 +537,11 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     target_source = parser.add_mutually_exclusive_group(required=True)
     target_source.add_argument("--input", help="从文件读取申请号列表")
     target_source.add_argument("--app", help="直接指定申请号，多个用逗号分隔")
+    target_source.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="重试失败账本中的代理机构复核目标",
+    )
     parser.add_argument("--test", type=_positive_count, help="仅复核前 N 个申请号")
     parser.add_argument(
         "--url",

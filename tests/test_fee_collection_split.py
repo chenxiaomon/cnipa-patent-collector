@@ -155,6 +155,7 @@ class TestFeeCollectionBoundaries(unittest.TestCase):
     def test_fee_persistence_ignores_fwxx_fields_and_status_timestamp(self, db_class):
         db = db_class.return_value
         db.get_record.return_value = {"application_no": "A"}
+        db.update_fields.return_value = 1
 
         persisted = collect_fees.persist_fee_fields(
             "A",
@@ -183,6 +184,23 @@ class TestFeeCollectionBoundaries(unittest.TestCase):
         )
         self.assertNotIn("fwxx_list", written_fields)
         self.assertNotIn("timestamp", written_fields)
+
+    @patch("collect_fees.PatentsDB")
+    def test_fee_persistence_requires_an_updated_database_row(self, db_class):
+        db = db_class.return_value
+        db.get_record.return_value = {"application_no": "A"}
+        db.update_fields.return_value = 0
+
+        persisted = collect_fees.persist_fee_fields(
+            "A",
+            {
+                "payable_fee_records": [],
+                "paid_fee_records": [],
+                "fee_receipt_dispatch_records": [],
+            },
+        )
+
+        self.assertFalse(persisted)
 
 
 if __name__ == "__main__":

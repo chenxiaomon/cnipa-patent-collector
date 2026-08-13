@@ -8,7 +8,7 @@
      重新导入即替换整个数据集。
 
 文件格式要求：
-  - 支持 .csv / .xlsx / .xls
+  - 支持 .csv / .xlsx（旧式 .xls 请先另存为 .xlsx）
   - 必须包含申请号列（列名：申请号 / application_no / app_no / zhuanlisqh / 专利申请号）
   - 编码自动识别（UTF-8 / GBK）
 
@@ -22,10 +22,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from cache_utils import normalize_app_no
+from cache_utils import is_supported_cn_application_no, normalize_app_no
 from db_manager import PatentsDB
 from import_agency_csv import _APP_NO_COLS, _find_col, parse_file
-from manual_fwxx_requests import _NORMALIZED_TARGET_RE
 from settings import PATENTS_DB_FILE
 
 
@@ -43,8 +42,8 @@ def import_fee_targets(source: Path, dry_run: bool = False) -> dict:
         # 无表头名单：用户常给纯申请号列表，首行本身就是申请号。
         # 识别出哪一列的"表头"是合法申请号，把它当数据列，首行值也计入。
         for header in headers:
-            normalized_header = normalize_app_no(str(header or '').strip())
-            if normalized_header and _NORMALIZED_TARGET_RE.fullmatch(normalized_header):
+            raw_header = str(header or '').strip()
+            if is_supported_cn_application_no(raw_header):
                 col_app = header
                 rows = [{col_app: header}] + rows
                 break
@@ -59,9 +58,10 @@ def import_fee_targets(source: Path, dry_run: bool = False) -> dict:
     invalid_count = 0
     duplicate_count = 0
     for row in rows:
-        normalized = normalize_app_no(str(row.get(col_app) or '').strip())
+        raw_app_no = str(row.get(col_app) or '').strip()
+        normalized = normalize_app_no(raw_app_no)
         # normalize_app_no 对非申请号文本原样返回，需再按申请号格式校验
-        if not normalized or not _NORMALIZED_TARGET_RE.fullmatch(normalized):
+        if not is_supported_cn_application_no(raw_app_no):
             invalid_count += 1
             continue
         if normalized in seen:
@@ -92,7 +92,7 @@ def import_fee_targets(source: Path, dry_run: bool = False) -> dict:
 def main() -> int:
     import argparse
     parser = argparse.ArgumentParser(description="费用采集数据集导入（整表替换）")
-    parser.add_argument('file', type=str, help='申请号名单文件（.csv / .xlsx / .xls）')
+    parser.add_argument('file', type=str, help='申请号名单文件（.csv / .xlsx）')
     parser.add_argument('--dry', action='store_true', help='预览模式，不写入数据库')
     args = parser.parse_args()
 

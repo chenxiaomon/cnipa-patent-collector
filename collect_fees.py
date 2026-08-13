@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """CNIPA 费用信息独立采集程序。
 
-自动模式仅处理驳回案件中必需费用栏目尚未采集的申请号。
-`--input` 和 `--app` 可用于指定申请号，`--force` 可强制重采。
+自动模式处理费用数据集中必需费用栏目尚未采集的申请号。
+`--input` 和 `--app` 可指定申请号，`--retry-failed` 可重试历史失败目标。
 """
 
 import argparse
@@ -94,6 +94,12 @@ _FEE_PAYLOAD_FIELDS = (
     'fee_receipt_dispatch_records',
     'fee_snapshot_at',
 )
+_REQUIRED_FEE_PAYLOAD_FIELDS = (
+    'payable_fee_records',
+    'paid_fee_records',
+    'fee_receipt_dispatch_records',
+)
+FEE_COLLECTION_KIND = 'fees'
 
 
 def countdown(seconds: int, message: str = "请手动记录坐标，倒计时") -> None:
@@ -146,6 +152,19 @@ def load_fee_dataset_targets(force: bool = False) -> list[str]:
             print(f"  ... 及其他 {len(targets) - 10} 个")
         print()
 
+    return targets
+
+
+def load_failed_fee_targets() -> list[str]:
+    """返回费用采集失败记录中的全部申请号。"""
+    failures = PatentsDB(PATENTS_DB_FILE).failed_collection_targets(
+        FEE_COLLECTION_KIND
+    )
+    targets = [failure['application_no'] for failure in failures]
+    if targets:
+        print(f"\n[*] 从费用失败记录读取 {len(targets)} 个待重试申请号")
+    else:
+        print("\n✓ 当前没有费用采集失败目标")
     return targets
 
 
@@ -342,7 +361,15 @@ def persist_fee_fields(application_no: str, fee_fields: dict) -> bool:
             for field in _FEE_PAYLOAD_FIELDS
             if field in fee_fields
         }
-        db.update_fields(application_no, persisted_fields)
+        updated_rows = db.update_fields(application_no, persisted_fields)
+        if updated_rows != 1:
+            print(f"    [!] {application_no} 的费用字段未更新到主库")
+            _append_unmatched_fee(
+                application_no,
+                fee_fields,
+                reason=f'unexpected_updated_rows: {updated_rows}',
+            )
+            return False
         return True
     except Exception as error:
         print(f"    [!] 费用字段更新失败: {error}")
@@ -389,15 +416,20 @@ def _run_fee_collection(args) -> None:
     """执行已取得桌面独占权的费用采集主循环。"""
     test_count = args.test
     standalone_mode = bool(getattr(args, 'input', None) or getattr(args, 'app', None))
+    retry_failed_mode = bool(getattr(args, 'retry_failed', False))
 
     print("\n" + "=" * 70)
-    if standalone_mode:
+    if retry_failed_mode:
+        print("🚀 费用信息采集程序启动（失败重试）")
+    elif standalone_mode:
         print("🚀 费用信息采集程序启动（独立模式）")
     else:
         print("🚀 费用信息采集程序启动")
     print("=" * 70)
 
-    if standalone_mode:
+    if retry_failed_mode:
+        targets = load_failed_fee_targets()
+    elif standalone_mode:
         targets = load_standalone_targets(
             input_file=getattr(args, 'input', None),
             app_nos=getattr(args, 'app', None),
@@ -407,7 +439,9 @@ def _run_fee_collection(args) -> None:
         targets = load_fee_dataset_targets(force=bool(getattr(args, 'force', False)))
 
     if not targets:
-        if standalone_mode:
+        if retry_failed_mode:
+            print("✓ 无费用采集失败目标")
+        elif standalone_mode:
             print("✓ 无待采集的申请号（可能已全部采集完毕）")
         else:
             print("✓ 本次无采集目标（数据集为空或已全部采集，见上方统计）")
@@ -424,7 +458,6 @@ def _run_fee_collection(args) -> None:
             args.url,
             page_load_wait=FWXX_PAGE_LOAD_WAIT,
         )
-
         print("\n[*] 正在加载坐标配置...")
         input_x, input_y, button_x, button_y = (
             CoordinateService.load_or_record_search_coordinates()
@@ -432,7 +465,6 @@ def _run_fee_collection(args) -> None:
         link_x, link_y = (
             CoordinateService.load_or_record_detail_link_coordinates()
         )
-
         countdown(FWXX_STARTUP_COUNTDOWN, "搜索页坐标已就绪，即将开始费用采集")
 
         print("\n" + "=" * 70)
@@ -441,6 +473,7 @@ def _run_fee_collection(args) -> None:
         success_count = 0
         failed_count = 0
         failure_streak = CollectionFailureStreak('费用信息采集')
+        failure_db = PatentsDB(PATENTS_DB_FILE)
 
         for index, application_no in enumerate(targets, 1):
             if not is_browser_alive(driver):
@@ -465,16 +498,41 @@ def _run_fee_collection(args) -> None:
             )
 
             if fee_fields:
-                if persist_fee_fields(application_no, fee_fields):
-                    print("  ✅ 已成功采集并更新费用字段")
-                    success_count += 1
-                    failure_streak.record_success()
-                else:
+                if not persist_fee_fields(application_no, fee_fields):
                     print(f"  ⚠️  主库未更新，费用信息已备份到 {FEE_UNMATCHED_FILE}")
+                    failure_db.record_collection_failure(
+                        FEE_COLLECTION_KIND,
+                        application_no,
+                        'fee_persistence_failed',
+                    )
                     failed_count += 1
                     failure_streak.record_failure()
+                elif not all(
+                    field in fee_fields for field in _REQUIRED_FEE_PAYLOAD_FIELDS
+                ):
+                    print("  ⚠️  已保存部分费用栏目，完整数据仍需重试")
+                    failure_db.record_collection_failure(
+                        FEE_COLLECTION_KIND,
+                        application_no,
+                        'incomplete_fee_payload',
+                    )
+                    failed_count += 1
+                    failure_streak.record_failure()
+                else:
+                    print("  ✅ 已成功采集并更新费用字段")
+                    failure_db.clear_collection_failure(
+                        FEE_COLLECTION_KIND,
+                        application_no,
+                    )
+                    success_count += 1
+                    failure_streak.record_success()
             else:
                 print("  ❌ 未采集到费用数据")
+                failure_db.record_collection_failure(
+                    FEE_COLLECTION_KIND,
+                    application_no,
+                    'no_fee_payload',
+                )
                 failed_count += 1
                 failure_streak.record_failure()
 
@@ -501,7 +559,7 @@ def _run_fee_collection(args) -> None:
         print(f"[✓] JSONL 备份已刷新：{exported} 条（含费用信息）")
 
     except CollectionFailureStreakExceeded:
-        # 熔断信息已由 CollectionFailureStreak 打点并写入报警，无需 traceback
+        # The streak tracker already records the actionable alert details.
         raise
     except Exception as error:
         print(f"\n[!] 费用采集过程出错: {error}")
@@ -526,8 +584,14 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         default=SEARCH_PAGE_URL,
         help=f'搜索页 URL（默认：{SEARCH_PAGE_URL}）',
     )
-    parser.add_argument('--input', type=str, help='独立模式：从文件读取申请号列表')
-    parser.add_argument('--app', type=str, help='独立模式：直接指定申请号，多个用逗号分隔')
+    target_source = parser.add_mutually_exclusive_group()
+    target_source.add_argument('--input', type=str, help='独立模式：从文件读取申请号列表')
+    target_source.add_argument('--app', type=str, help='独立模式：直接指定申请号，多个用逗号分隔')
+    target_source.add_argument(
+        '--retry-failed',
+        action='store_true',
+        help='重试费用采集失败记录中的全部申请号',
+    )
     parser.add_argument(
         '--force',
         action='store_true',
@@ -538,7 +602,10 @@ def _build_argument_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     """运行费用采集 CLI，并将桌面占用转换为明确的退出状态。"""
-    arguments = _build_argument_parser().parse_args(argv)
+    parser = _build_argument_parser()
+    arguments = parser.parse_args(argv)
+    if arguments.retry_failed and arguments.force:
+        parser.error("--retry-failed 不能与 --force 同时使用")
     if not USE_MITM_PROXY:
         print(
             "\n[!] MITM 代理未启用，费用采集依赖代理拦截，无法继续",
