@@ -37,7 +37,7 @@ import pyautogui
 sys.path.insert(0, os.path.dirname(__file__))
 from atomic_write import write_json_atomic
 from browser_service import BrowserService
-from browser_utils import is_browser_alive
+from browser_utils import is_browser_alive, raise_system_exit_on_sigterm
 from collection_health import CollectionFailureStreak, CollectionFailureStreakExceeded
 from cache_utils import (
     clear_cache_key,
@@ -602,6 +602,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     """运行费用采集 CLI，并将桌面占用转换为明确的退出状态。"""
+    raise_system_exit_on_sigterm()
     parser = _build_argument_parser()
     arguments = parser.parse_args(argv)
     if arguments.retry_failed and arguments.force:

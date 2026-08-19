@@ -67,7 +67,7 @@ import pyautogui
 sys.path.insert(0, os.path.dirname(__file__))
 from atomic_write import write_json_atomic
 from detection_logger import DetectionLogger
-from browser_utils import is_browser_alive
+from browser_utils import is_browser_alive, raise_system_exit_on_sigterm
 from collection_health import CollectionFailureStreak, CollectionFailureStreakExceeded
 from coordinate_service import CoordinateService
 from browser_service import BrowserService
@@ -655,6 +655,7 @@ def _run_fwxx_collection(args) -> None:
 # ============================================================================
 
 if __name__ == "__main__":
+    raise_system_exit_on_sigterm()
     parser = argparse.ArgumentParser(
         description="发文信息采集模块"
     )

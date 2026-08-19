@@ -25,11 +25,12 @@ import sys
 import time
 
 from browser_service import BrowserService
-from browser_utils import check_mitm_proxy
+from browser_utils import check_mitm_proxy, raise_system_exit_on_sigterm
 from settings import MITM_HOST, MITM_PORT, CNIPA_URL
 
 
 def main():
+    raise_system_exit_on_sigterm()
     print("\n" + "=" * 70)
     print("🌐 Phase 0 浏览器启动程序")
     print("=" * 70)

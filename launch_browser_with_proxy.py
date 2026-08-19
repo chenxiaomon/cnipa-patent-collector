@@ -25,7 +25,12 @@ except ImportError:
     print("[!] 请运行: pip install undetected_chromedriver")
     sys.exit(1)
 
-from browser_utils import _get_chrome_major_version, auto_fill_login, load_credentials
+from browser_utils import (
+    _get_chrome_major_version,
+    auto_fill_login,
+    load_credentials,
+    raise_system_exit_on_sigterm,
+)
 from settings import MITM_HOST, PUBLIC_MITM_PORT, CNIPA_PUBLIC_SEARCH_URL
 
 
@@ -136,6 +141,7 @@ def launch_chrome_with_proxy(proxy_url: str = None) -> uc.Chrome:
 
 
 def main():
+    raise_system_exit_on_sigterm()
     print("\n" + "=" * 70)
     print("🚀 CNIPA 公开查询 - 浏览器启动工具")
     print("=" * 70)

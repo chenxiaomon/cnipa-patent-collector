@@ -13,7 +13,7 @@ import time
 import undetected_chromedriver as uc
 from pathlib import Path
 from settings import MITM_HOST, PUBLIC_MITM_PORT, DATA_DIR, CNIPA_PUBLIC_SEARCH_URL
-from browser_utils import _get_chrome_major_version
+from browser_utils import _get_chrome_major_version, raise_system_exit_on_sigterm
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -168,6 +168,7 @@ def paginate_loop(driver, delay: float, max_pages: int):
 
 
 def main():
+    raise_system_exit_on_sigterm()
     parser = argparse.ArgumentParser(description="CNIPA 公开搜索自动翻页脚本")
     parser.add_argument(
         "--delay",

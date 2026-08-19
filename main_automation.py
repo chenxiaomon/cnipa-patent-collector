@@ -42,6 +42,7 @@ except ImportError as e:
 from detection_logger import DetectionLogger, DetectionRecord
 from browser_utils import (
     is_browser_alive,
+    raise_system_exit_on_sigterm,
 )
 from cache_utils import clear_cache_key, normalize_app_no, parse_app_no_list, poll_cache_with_retry
 from coordinate_service import CoordinateService
@@ -425,6 +426,8 @@ if __name__ == '__main__':
     # 强制更新模式（重新检索指定申请号）：
     #   python main_automation.py --update-list data/update_list.txt
     #   python main_automation.py --update-list data/update_list.txt --test 5
+
+    raise_system_exit_on_sigterm()
 
     import argparse
     parser = argparse.ArgumentParser()

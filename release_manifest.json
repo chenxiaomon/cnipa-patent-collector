@@ -23,7 +23,7 @@
     },
     {
       "path": "CHANGELOG.md",
-      "sha256": "f5156782b1929dfd55d9a8d733fd6907a0ffd25cd0bc0eb6db0f780821fc1904"
+      "sha256": "09f11daf7224528dd02b8041131b8291b8e54cc8a777759747f7745691d004df"
     },
     {
       "path": "CLAUDE.md",
@@ -39,7 +39,7 @@
     },
     {
       "path": "VERSION",
-      "sha256": "d10e3e451fb073cf40b5c7e40939a66fce86eb40a68ba1ed57d3a62e41068d25"
+      "sha256": "f07ac55817ac71d51cd0ba16c901e0f152d5a076a94eefafe4454e65176a71f3"
     },
     {
       "path": "agency_attempt.py",
@@ -59,7 +59,7 @@
     },
     {
       "path": "auto_paginate.py",
-      "sha256": "36352a907e774959b7d75d93e99b148ad629497e9988341fb634344582e252ef"
+      "sha256": "443b10504a057ef5cd2d867d97e6b82e40af35d581867c588ebc807cdf54f529"
     },
     {
       "path": "browser_service.py",
@@ -67,7 +67,7 @@
     },
     {
       "path": "browser_utils.py",
-      "sha256": "4377feddda8fc32133d49af037e359559a5c364ecb35ef95778471941b9bf505"
+      "sha256": "6a70b5d9069481507b3519c8d0b27288f100ab683d1a8b07685e2a6e9956d93c"
     },
     {
       "path": "cache_utils.py",
@@ -83,15 +83,15 @@
     },
     {
       "path": "collect_agency.py",
-      "sha256": "a7da4085b4121866cf834a2d6dec20c404e6a101511ef55a45d2a991997c8f00"
+      "sha256": "79fe9dca5978a3c3febd5aecfa5349931c76d8455d7540a51fa33fb69f48fc5c"
     },
     {
       "path": "collect_fees.py",
-      "sha256": "5e59785f6020b578c6242d004bcf68277c80b26c8f5b036258cead8f88c3e98d"
+      "sha256": "1cee49603c33968fae243e739a7c56b80a463a2abbb1cd18963118e2e6119508"
     },
     {
       "path": "collect_fwxx.py",
-      "sha256": "36bcb4b447a8d5bf87e01813ca9e675bc9f5f26b75a68bde75c26f464d431f7e"
+      "sha256": "c073ea5096b5d50db0a8b1b67c564293da0a226c95f42577ab13d12cdd3f574e"
     },
     {
       "path": "collection_health.py",
@@ -255,7 +255,7 @@
     },
     {
       "path": "launch_browser_with_proxy.py",
-      "sha256": "416820d1d7977b068e64fac89669d88f26bd68ec574aace7e32a6a5b9165d3bd"
+      "sha256": "8d02614ededaebcf3c0f3bb5680b471ccf3d232df2d9daf2063bcfd09d6c2129"
     },
     {
       "path": "machine_identity.py",
@@ -263,7 +263,7 @@
     },
     {
       "path": "main_automation.py",
-      "sha256": "eca3a89e85cc5eb6f0f13c83f64f38df94925a25a31c34b151b21051bad42e43"
+      "sha256": "d1e555bc39e2142dd676cdd7902694651e9db1835af396271a7d1f85013934e9"
     },
     {
       "path": "manual_fwxx_requests.py",
@@ -299,7 +299,7 @@
     },
     {
       "path": "pyproject.toml",
-      "sha256": "021cb8d7ddcb47cffe54cc1ed99c7d07814c0187e3bb2a4cfe822dfe47b1dd70"
+      "sha256": "caf844f789ee340bd0a9bda820baa7be642d6553035affc9f39a4f9c6ac73559"
     },
     {
       "path": "quick_retry.sh",
@@ -351,7 +351,7 @@
     },
     {
       "path": "start_browser_for_phase0.py",
-      "sha256": "b27f6bf8ebae6f7ffb99b3e02410a4336d9e581f957c1742d6008cb5e32ec800"
+      "sha256": "a55ebf68099878fbaf56bf1d29274bc3b064408f71671c97c520647b75884269"
     },
     {
       "path": "start_mitm_proxy.py",
@@ -583,7 +583,7 @@
     },
     {
       "path": "web_dashboard.py",
-      "sha256": "af9a5683b842ea0ff5e6fbe7db96f125766e8259773715753551657108a56482"
+      "sha256": "59923992ff1f929babd1a0c2280b140f34863015bb6cb57c4c1db4eceb7fecb2"
     }
   ]
 }

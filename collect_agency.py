@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from atomic_write import write_json_atomic
 from agency_attempt import begin_agency_attempt, clear_matching_agency_attempt
 from browser_service import BrowserService
-from browser_utils import is_browser_alive
+from browser_utils import is_browser_alive, raise_system_exit_on_sigterm
 from cache_utils import parse_app_no_list, poll_cache_for_key
 from coordinate_service import CoordinateService
 from db_manager import PatentsDB
@@ -552,6 +552,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raise_system_exit_on_sigterm()
     arguments = _build_argument_parser().parse_args(argv)
     if not USE_MITM_PROXY:
         print("[!] 代理机构复核依赖 MITM 代理，当前未启用", file=sys.stderr)

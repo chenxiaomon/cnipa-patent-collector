@@ -7,6 +7,12 @@
 
 ## [Unreleased]
 
+## [2026.08.19]
+
+### 修复
+- Dashboard 停止任务改为终止整个进程组（Windows `taskkill /T`，macOS/Linux killpg），不再遗留孤儿 Chrome 和 ChromeDriver 进程。
+- 各浏览器采集脚本注册 SIGTERM 处理，收到停止信号时走正常退出流程，确保 `driver.quit()`、桌面锁释放和临时目录清理得以执行。
+
 ## [2026.08.13]
 
 ### 新增

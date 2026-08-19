@@ -53,6 +53,7 @@ from settings import (
 )
 from db_manager import PatentsDB
 from cache_utils import normalize_app_no, parse_app_no_list, parse_timestamp
+from collection_watchdog import terminate_process_tree
 from payment_obligations import build_agency_arrears_ranking
 from machine_identity import MASTER_ROLE, read_machine_role
 from collection_health import read_alert_status
@@ -299,9 +300,16 @@ class JobManager:
         env.setdefault("PYTHONIOENCODING", "utf-8")
 
         requires_desktop = job.action in DESKTOP_BROWSER_ACTIONS
+        # 任务放进独立进程组/会话，停止时 terminate_process_tree 才能连同
+        # 浏览器等孙进程一起清理，而不会波及 Dashboard 自身
         extra_kwargs = {}
-        if sys.platform == 'win32' and not requires_desktop:
-            extra_kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+        if sys.platform == 'win32':
+            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+            if not requires_desktop:
+                creationflags |= subprocess.CREATE_NO_WINDOW
+            extra_kwargs['creationflags'] = creationflags
+        else:
+            extra_kwargs['start_new_session'] = True
 
         with self._lock:
             conflicting_job = self._start_conflict_locked(job.action)
@@ -346,8 +354,10 @@ class JobManager:
                 return False
             job.status = "stopping"
         job.append("[dashboard] 正在停止任务...")
-        job.process.terminate()
-        threading.Thread(target=self._force_kill_later, args=(job,), daemon=True).start()
+        # terminate_process_tree 内部最多等 8 秒再升级 SIGKILL，放后台线程执行
+        threading.Thread(
+            target=terminate_process_tree, args=(job.process,), daemon=True
+        ).start()
         return True
 
     def _start_conflict_locked(self, action: str) -> Job | None:
@@ -391,12 +401,6 @@ class JobManager:
                 else:
                     job.status = "failed"
             job.append(f"[dashboard] 任务结束，退出码: {returncode}")
-
-    def _force_kill_later(self, job: Job) -> None:
-        time.sleep(5)
-        if job.process and job.process.poll() is None:
-            job.append("[dashboard] 任务未正常退出，强制结束")
-            job.process.kill()
 
 
 def positive_int(value: Any, default: int | None = None, minimum: int = 1, maximum: int = 100000) -> int | None:

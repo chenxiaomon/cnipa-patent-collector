@@ -14,6 +14,7 @@ import os
 import sys
 import time
 import random
+import signal
 import socket
 import re
 import glob
@@ -27,6 +28,21 @@ import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+
+
+def raise_system_exit_on_sigterm() -> None:
+    """
+    把 SIGTERM 转成 SystemExit，让入口脚本的 finally 得以执行。
+
+    Dashboard 停止任务时对进程组发 SIGTERM；Python 默认行为是直接终止，
+    finally 里的 driver.quit()/锁释放都不会运行，Chrome 会变成孤儿进程。
+    在浏览器入口脚本的 main() 开头调用本函数。Windows 上注册无害
+    （taskkill /T /F 硬杀整棵进程树，不依赖此路径）。
+    """
+    def _exit(signum, frame):
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, _exit)
 
 
 def _major_version_from_text(version_text: str) -> int | None:
