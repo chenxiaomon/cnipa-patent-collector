@@ -39,6 +39,15 @@ class TestEnvironmentDiagnostics(unittest.TestCase):
         self.assertIsNone(checks[1]['details']['version'])
         self.assertIsNone(cache_directory)
 
+    def test_windows_dependency_filter_accepts_probe_subset(self):
+        with patch.object(diagnostics, '_DEPENDENCIES', (('json', 'distribution-not-installed'),)), patch.object(
+            diagnostics.sys, 'platform', 'win32',
+        ):
+            checks, cache_directory = diagnostics._inspect_python(sys.executable)
+
+        self.assertEqual([check['id'] for check in checks], ['python', 'dependency_json'])
+        self.assertIsNone(cache_directory)
+
     def test_missing_selected_python_does_not_fall_back_to_dashboard(self):
         checks, _ = diagnostics._inspect_python(str(self.project_root / 'missing-python'))
 

@@ -251,7 +251,7 @@
     },
     {
       "path": "environment_diagnostics.py",
-      "sha256": "3c15fcdaa9296e63c317ce245f261f38091f75ac957df781841a4057ec7ee202"
+      "sha256": "47ac151433df34cfda9a20e700c23e28c35e365f1001ddc09091530449bde577"
     },
     {
       "path": "export_public_search.py",
@@ -539,7 +539,7 @@
     },
     {
       "path": "tests/test_environment_diagnostics.py",
-      "sha256": "b8dc50e2b67bd7c8ae0aee10e8def2eedc892698546e3bf02431807654cc951e"
+      "sha256": "89ccb1ff3264ac9a8827318318abe479d9b5e91ac84bb72b470010e187dd4dc5"
     },
     {
       "path": "tests/test_failure_streak_and_env_loading.py",

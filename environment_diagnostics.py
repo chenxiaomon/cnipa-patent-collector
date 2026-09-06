@@ -71,7 +71,7 @@ for module_name, distribution_name in json.loads(sys.argv[1]):
 def _inspect_python(python_executable: str) -> tuple[list[dict], str | None]:
     expected_probes = dict(_DEPENDENCIES)
     if sys.platform == 'win32':
-        expected_probes.pop('pyvirtualdisplay')
+        expected_probes.pop('pyvirtualdisplay', None)
     probe_output = ''
     execution_error = None
     try:
