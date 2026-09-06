@@ -23,7 +23,7 @@
     },
     {
       "path": "CHANGELOG.md",
-      "sha256": "fa7df02021f31d48aea8cead21d974ee6bdbbf7ea7c6cfca44c4079a265fbd3a"
+      "sha256": "0ae1fd3033691b772b990b882ccb14bfeabd0abcde721cd1be6da9896a7835d5"
     },
     {
       "path": "CLAUDE.md",
@@ -607,7 +607,7 @@
     },
     {
       "path": "web_dashboard.py",
-      "sha256": "8a7a7538dba1831bca24220c4e21b35390c67e7d264be16782b909628653222c"
+      "sha256": "3862e6a44fb9eefd09b8848c4cc356d33bd3a21354dc7e0f2414980bb9959ccc"
     }
   ]
 }
