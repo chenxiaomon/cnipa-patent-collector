@@ -16,6 +16,57 @@ from code_release_safety import (
 
 
 class TestFetchUpdate(unittest.TestCase):
+    def test_same_day_revision_installs_and_rolls_back_with_its_code(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / 'VERSION').write_bytes(b'2026.09.06\n')
+            (root / 'RELEASE_REVISION').write_bytes(b'1\n')
+            (root / 'app.py').write_bytes(b'before\n')
+            release_files = {'VERSION': b'2026.09.06\n', 'RELEASE_REVISION': b'2\n', 'app.py': b'after\n'}
+            manifest = json.dumps({
+                'manifest_version': 1,
+                'release': {'version': '2026.09.06', 'revision': 2},
+                'files': [{'path': path, 'sha256': sha256_bytes(content)} for path, content in release_files.items()],
+            }).encode('utf-8')
+            with patch.object(fetch_update, 'download_release_file', side_effect=lambda path: manifest if path == fetch_update.MANIFEST_NAME else release_files[path]):
+                fetch_update.install_release(root, root / 'backups')
+            self.assertEqual((root / 'RELEASE_REVISION').read_bytes(), b'2\n')
+            self.assertEqual((root / 'app.py').read_bytes(), b'after\n')
+            restore_code_backup(latest_code_backup(root / 'backups'), root)
+            self.assertEqual((root / 'RELEASE_REVISION').read_bytes(), b'1\n')
+            self.assertEqual((root / 'app.py').read_bytes(), b'before\n')
+
+    def test_revision_downgrade_and_inconsistent_manifest_leave_code_untouched(self):
+        for staged_date, staged_revision, advertised_revision in (
+            ('2026.09.06', b'1\n', 1),
+            ('2026.09.06', b'3\n', 4),
+            ('2026.09.07', None, None),
+        ):
+            with self.subTest(staged_date=staged_date, staged_revision=staged_revision), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                (root / 'VERSION').write_bytes(b'2026.09.06\n')
+                (root / 'RELEASE_REVISION').write_bytes(b'2\n')
+                (root / 'app.py').write_bytes(b'before\n')
+                release_files = {'VERSION': staged_date.encode('ascii'), 'app.py': b'after\n'}
+                if staged_revision is not None:
+                    release_files['RELEASE_REVISION'] = staged_revision
+                manifest_payload = {
+                    'manifest_version': 1,
+                    'files': [{'path': path, 'sha256': sha256_bytes(content)} for path, content in release_files.items()],
+                }
+                if advertised_revision is not None:
+                    manifest_payload['release'] = {'version': staged_date, 'revision': advertised_revision}
+                manifest = json.dumps(manifest_payload).encode('utf-8')
+                with (
+                    patch.object(fetch_update, 'download_release_file', side_effect=lambda path: manifest if path == fetch_update.MANIFEST_NAME else release_files[path]),
+                    patch.object(fetch_update, 'create_code_backup') as backup,
+                ):
+                    with self.assertRaises(CodeReleaseVerificationError):
+                        fetch_update.install_release(root, root / 'backups')
+                backup.assert_not_called()
+                self.assertEqual((root / 'RELEASE_REVISION').read_bytes(), b'2\n')
+                self.assertEqual((root / 'app.py').read_bytes(), b'before\n')
+
     def test_verified_release_installs_and_can_rollback(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / 'project'

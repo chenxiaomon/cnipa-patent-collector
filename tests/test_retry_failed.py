@@ -24,6 +24,12 @@ class TestFailedRetryRecords(unittest.TestCase):
         self.assertFalse(is_failed_record({'status_code': PENDING_STATUS_CODE, 'zhuanlimc': None}))
         self.assertFalse(is_failed_record({'status_code': None, 'zhuanlimc': None}))
 
+    def test_legacy_exception_without_status_code_is_failed(self):
+        self.assertTrue(is_failed_record({
+            'status_code': None,
+            'error_message': 'browser command failed',
+        }))
+
     def test_success_with_title_is_not_failed(self):
         self.assertFalse(is_failed_record({'status_code': 200, 'zhuanlimc': '一种装置'}))
 

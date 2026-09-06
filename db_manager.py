@@ -33,6 +33,7 @@ _JSON_FIELDS = {
 }
 PENDING_STATUS_CODE = -1
 SYNC_CURSOR_FIELD = '_sync_updated_at'
+_SYNC_CURSOR_SCHEMA_VERSION = 1
 _APPLICANT_SPLIT_RE = re.compile(r"[,，;；、\r\n]+")
 _NOTICE_DATE_RE = re.compile(
     r"^(?P<year>\d{4})-?(?P<month>\d{2})-?(?P<day>\d{2})(?:[T\s].*)?$"
@@ -191,6 +192,14 @@ def _compare_fee_snapshot_times(incoming_timestamp: object, stored_timestamp: ob
     return (incoming_instant > stored_instant) - (incoming_instant < stored_instant)
 
 
+def normalize_sync_cursor(value: object) -> str:
+    """Normalize external ISO cursors to lexically ordered UTC microseconds."""
+    instant = parse_timestamp(value)
+    if instant is None:
+        raise ValueError('同步游标不是有效的 ISO 时间戳')
+    return instant.isoformat(timespec='microseconds').replace('+00:00', 'Z')
+
+
 class PatentsDB:
     """SQLite 专利数据库（线程安全，WAL 模式）"""
 
@@ -220,6 +229,7 @@ class PatentsDB:
 
     def _init_db(self) -> None:
         with self._lock, self._connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
             conn.execute(_CREATE_TABLE)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_anjianywzt ON patents(anjianywzt)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp   ON patents(timestamp)")
@@ -253,12 +263,45 @@ class PatentsDB:
                         raise  # 非"列已存在"的错误应当暴露
             # detail_enrichment 综合口径已随费用解耦移除，该索引不再有查询使用
             conn.execute("DROP INDEX IF EXISTS idx_detail_enrichment_pending")
-            migration_timestamp = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+            migration_timestamp = datetime.now(timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z')
+            if conn.execute('PRAGMA user_version').fetchone()[0] < _SYNC_CURSOR_SCHEMA_VERSION:
+                # Historic cursors used mixed ISO precision and offsets, which cannot be sorted as text.
+                legacy_cursors = conn.execute(
+                    'SELECT application_no, updated_at, timestamp FROM patents'
+                ).fetchall()
+                for legacy_cursor in legacy_cursors:
+                    instant = (
+                        parse_timestamp(legacy_cursor['updated_at'])
+                        or parse_timestamp(legacy_cursor['timestamp'])
+                    )
+                    normalized_cursor = (
+                        instant.isoformat(timespec='microseconds').replace('+00:00', 'Z')
+                        if instant else migration_timestamp
+                    )
+                    conn.execute(
+                        'UPDATE patents SET updated_at=? WHERE application_no=?',
+                        (normalized_cursor, legacy_cursor['application_no']),
+                    )
+                conn.execute(f'PRAGMA user_version={_SYNC_CURSOR_SCHEMA_VERSION}')
             conn.execute(
-                "UPDATE patents SET updated_at=COALESCE(NULLIF(timestamp, ''), ?) "
+                "UPDATE patents SET updated_at=? "
                 "WHERE updated_at IS NULL OR updated_at=''",
                 (migration_timestamp,),
             )
+            conn.commit()
+
+    @contextmanager
+    def _patent_write_transaction(self):
+        """Allocate one cursor per atomic commit while holding SQLite's writer lock."""
+        with self._lock, self._connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            latest_cursor = conn.execute('SELECT MAX(updated_at) FROM patents').fetchone()[0]
+            commit_instant = datetime.now(timezone.utc)
+            if latest_cursor:
+                committed_instant = datetime.fromisoformat(latest_cursor.replace('Z', '+00:00'))
+                commit_instant = max(commit_instant, committed_instant + timedelta(microseconds=1))
+            commit_cursor = commit_instant.isoformat(timespec='microseconds').replace('+00:00', 'Z')
+            yield conn, commit_cursor
             conn.commit()
 
     @staticmethod
@@ -267,7 +310,7 @@ class PatentsDB:
         row = {}
         for col in _COLUMNS:
             if col == 'updated_at':
-                row[col] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+                row[col] = None
                 continue
             v = record.get(col)
             if col in _JSON_FIELDS and v is not None:
@@ -334,9 +377,9 @@ class PatentsDB:
         row = self._encode(record)
         cols = list(row.keys())
         sql = self._upsert_statement(cols)
-        with self._lock, self._connect() as conn:
+        with self._patent_write_transaction() as (conn, commit_cursor):
+            row['updated_at'] = commit_cursor
             conn.execute(sql, [row[c] for c in cols])
-            conn.commit()
 
     def update_fields(self, app_no: str, fields: dict) -> int:
         """
@@ -358,12 +401,12 @@ class PatentsDB:
         for field in _JSON_FIELDS:
             if field in valid and valid[field] is not None and not isinstance(valid[field], str):
                 valid[field] = json.dumps(valid[field], ensure_ascii=False)
-        valid['updated_at'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        valid['updated_at'] = None
         set_clause = ', '.join(f'{col}=?' for col in valid)
         sql = f"UPDATE patents SET {set_clause} WHERE application_no=?"
-        with self._lock, self._connect() as conn:
+        with self._patent_write_transaction() as (conn, commit_cursor):
+            valid['updated_at'] = commit_cursor
             cursor = conn.execute(sql, [*valid.values(), app_no])
-            conn.commit()
             return cursor.rowcount
 
     def update_fee_snapshot(self, app_no: str, fee_fields: dict) -> dict | None:
@@ -382,17 +425,15 @@ class PatentsDB:
         row = self._encode({**fee_fields, 'application_no': app_no})
         columns = ['application_no', *self._FEE_SNAPSHOT_COLUMNS, 'updated_at']
         statement = self._upsert_statement(columns)
-        with self._lock, self._connect() as conn:
-            # The existence check and conflict update must share the SQLite write lock.
-            conn.execute('BEGIN IMMEDIATE')
+        with self._patent_write_transaction() as (conn, commit_cursor):
             if conn.execute('SELECT 1 FROM patents WHERE application_no=?', (app_no,)).fetchone() is None:
                 return None
+            row['updated_at'] = commit_cursor
             conn.execute(statement, [row[column] for column in columns])
             stored_snapshot = conn.execute(
                 f"SELECT {','.join(self._FEE_SNAPSHOT_COLUMNS)} FROM patents WHERE application_no=?",
                 (app_no,),
             ).fetchone()
-            conn.commit()
             return self._decode(stored_snapshot)
 
     def snapshot_previous_status(self) -> int:
@@ -401,14 +442,12 @@ class PatentsDB:
         供采集后对比分析。跨机同步游标依赖 updated_at，因此快照同时刷新 updated_at。
         返回快照的记录数（anjianywzt 非空的行）。
         """
-        stamped_at = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-        with self._lock, self._connect() as conn:
+        with self._patent_write_transaction() as (conn, commit_cursor):
             cursor = conn.execute(
                 "UPDATE patents SET previous_status=anjianywzt, updated_at=? "
                 "WHERE anjianywzt IS NOT NULL AND anjianywzt != ''",
-                (stamped_at,),
+                (commit_cursor,),
             )
-            conn.commit()
             return cursor.rowcount
 
     def upsert_batch(self, records: list[dict]) -> int:
@@ -418,9 +457,10 @@ class PatentsDB:
         rows = [self._encode(r) for r in records]
         cols = list(rows[0].keys())
         sql = self._upsert_statement(cols)
-        with self._lock, self._connect() as conn:
+        with self._patent_write_transaction() as (conn, commit_cursor):
+            for row in rows:
+                row['updated_at'] = commit_cursor
             conn.executemany(sql, [[r[c] for c in cols] for r in rows])
-            conn.commit()
         return len(rows)
 
     def apply_master_delta(self, master_records: list[dict]) -> int:
@@ -431,9 +471,10 @@ class PatentsDB:
         """
         if not master_records:
             return 0
-        with self._lock, self._connect() as conn:
+        with self._patent_write_transaction() as (conn, commit_cursor):
             for master_record in master_records:
                 encoded_patent = self._encode(master_record)
+                encoded_patent['updated_at'] = commit_cursor
                 columns = [
                     column for column in encoded_patent
                     if column in master_record or column == 'updated_at'
@@ -448,7 +489,6 @@ class PatentsDB:
                     f"ON CONFLICT(application_no) DO UPDATE SET {assignments}"
                 )
                 conn.execute(statement, [encoded_patent[column] for column in columns])
-            conn.commit()
         return len(master_records)
 
     def summarize_record_import(self, records: list[dict]) -> dict:
@@ -502,19 +542,19 @@ class PatentsDB:
 
     def mark_unattempted_records_pending(self) -> int:
         """Assign the explicit pending status to legacy records with NULL status_code."""
-        with self._lock, self._connect() as conn:
+        with self._patent_write_transaction() as (conn, commit_cursor):
             cursor = conn.execute(
                 "UPDATE patents SET status_code=?, updated_at=? WHERE status_code IS NULL",
                 (
                     PENDING_STATUS_CODE,
-                    datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                    commit_cursor,
                 ),
             )
-            conn.commit()
             return cursor.rowcount
 
     def export_delta(self, since: str) -> list[dict]:
         """Return records modified after the master-owned synchronization cursor."""
+        since = normalize_sync_cursor(since)
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM patents WHERE updated_at > ? "

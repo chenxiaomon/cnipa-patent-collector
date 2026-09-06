@@ -19,6 +19,24 @@ from code_release_safety import (
 
 
 class TestCodeReleaseSafety(unittest.TestCase):
+    def test_failed_code_copy_does_not_publish_the_new_release_identity(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / 'installed'
+            staging = Path(tmpdir) / 'staging'
+            root.mkdir()
+            staging.mkdir()
+            (root / 'VERSION').write_bytes(b'2026.09.06\n')
+            (root / 'RELEASE_REVISION').write_bytes(b'1\n')
+            release_files = {'VERSION': b'2026.09.07\n', 'RELEASE_REVISION': b'0\n', 'z.py': b'new code\n'}
+            for name, content in release_files.items():
+                (staging / name).write_bytes(content)
+            with patch('code_release_safety.shutil.copy2', side_effect=OSError('copy failed')) as copy:
+                with self.assertRaises(OSError):
+                    install_staged_release(staging, [{'path': name, 'sha256': sha256_bytes(content)} for name, content in release_files.items()], root)
+            self.assertEqual(copy.call_args.args[0], staging / 'z.py')
+            self.assertEqual((root / 'VERSION').read_bytes(), b'2026.09.06\n')
+            self.assertEqual((root / 'RELEASE_REVISION').read_bytes(), b'1\n')
+
     def test_failed_backup_is_not_published_as_the_latest_backup(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / 'project'
@@ -136,7 +154,7 @@ class TestCodeReleaseSafety(unittest.TestCase):
             validate_release_manifest(payload)
 
     def test_manifest_rejects_windows_aliases_for_runtime_paths(self):
-        for relative_path in ('DATA/patents.db', 'data./patents.db', 'data\\patents.db', 'C:app.py'):
+        for relative_path in ('DATA/patents.db', 'data./patents.db', 'data\\patents.db', 'C:app.py', ['x'], None):
             with self.subTest(relative_path=relative_path):
                 with self.assertRaises(CodeReleaseVerificationError):
                     validate_release_manifest({

@@ -63,6 +63,7 @@ if os.getenv('USE_VIRTUAL_DISPLAY', '').lower() in ('true', '1', 'yes') \
 
 # PyAutoGUI 和 Selenium
 import pyautogui
+from selenium.common.exceptions import WebDriverException
 
 # 导入现有模块
 sys.path.insert(0, os.path.dirname(__file__))
@@ -77,6 +78,7 @@ from detail_attempt import (
 )
 from browser_utils import is_browser_alive, raise_system_exit_on_sigterm
 from collection_health import CollectionFailureStreak, CollectionFailureStreakExceeded
+from collection_checkpoint import CollectionCheckpoint
 from coordinate_service import CoordinateService
 from browser_service import BrowserService
 from input_service import InputService
@@ -95,6 +97,7 @@ from settings import (
     FWXX_UNMATCHED_FILE, PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE,
     USE_MITM_PROXY,
     PATENTS_DB_FILE,
+    FWXX_COLLECTION_CHECKPOINT_FILE,
     FWXX_PAGE_LOAD_WAIT, FWXX_STARTUP_COUNTDOWN,
     FWXX_INPUT_DELAY_MIN, FWXX_INPUT_DELAY_MAX, FWXX_INPUT_PAUSE_PROB,
     FWXX_POST_SEARCH_WAIT, FWXX_DETAIL_CLICK_WAIT, FWXX_TAB_SWITCH_WAIT,
@@ -290,8 +293,7 @@ def collect_one_fwxx(
     try:
         # 检测浏览器是否还活着
         if not is_browser_alive(driver):
-            print(f"    [!] 浏览器已关闭，无法采集")
-            return None
+            raise DetailCollectionFatalError('浏览器已关闭，本条未采集，发文批次已中断')
 
         initial_handles = list(driver.window_handles)
         if len(initial_handles) != 1:
@@ -393,6 +395,8 @@ def collect_one_fwxx(
 
     except DetailCollectionFatalError:
         raise
+    except WebDriverException as error:
+        raise DetailCollectionFatalError('浏览器连接失效，发文批次已中断') from error
     except Exception as e:
         print(f"    [!] 采集失败: {str(e)[:100]}")
         return collected_fields or None
@@ -526,6 +530,8 @@ def _run_fwxx_collection(args) -> None:
             print("✓ 无需采集，所有驳回案件的发文信息都已采集！")
         return
 
+    checkpoint = CollectionCheckpoint(FWXX_COLLECTION_CHECKPOINT_FILE, targets)
+
     # 测试模式
     if test_count:
         targets = targets[:test_count]
@@ -578,7 +584,7 @@ def _run_fwxx_collection(args) -> None:
             if not is_browser_alive(driver):
                 print("\n⚠️  浏览器已关闭，停止采集")
                 print(f"\n已采集 {success_count} 条，失败 {failed_count} 条，还有 {len(targets) - idx + 1} 条未采集")
-                break
+                raise DetailCollectionFatalError('浏览器进程意外退出，发文采集已中断')
 
             print(f"\n[{idx}/{len(targets)}] 申请号: {application_no}")
 
@@ -601,6 +607,7 @@ def _run_fwxx_collection(args) -> None:
                 if persist_fwxx_fields(application_no, fwxx_fields):
                     print(f"  ✅ 已成功采集并更新日志")
                     success_count += 1
+                    checkpoint.record_success(application_no)
                     failure_streak.record_success()
                 else:
                     print(f"  ⚠️  主日志未更新，发文信息已备份到 {FWXX_UNMATCHED_FILE}")
@@ -622,7 +629,7 @@ def _run_fwxx_collection(args) -> None:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
         print("\n" + "="*70)
-        print(f"✓ 采集完成！成功: {success_count}, 失败: {failed_count}")
+        print(f"采集批次结束，成功: {success_count}, 失败: {failed_count}")
         print("="*70)
 
         print("\n[*] 导出 Excel...")
@@ -635,6 +642,10 @@ def _run_fwxx_collection(args) -> None:
         from db_manager import PatentsDB
         exported = PatentsDB(PATENTS_DB_FILE).export_to_jsonl(DETECTION_LOG_JSONL_FILE)
         print(f"[✓] JSONL 备份已刷新：{exported} 条（含发文信息）")
+        if failed_count:
+            raise RuntimeError(
+                f'发文采集失败 {failed_count} 条，未完成清单: {FWXX_COLLECTION_CHECKPOINT_FILE}'
+            )
 
     except CollectionFailureStreakExceeded:
         # 熔断信息已由 CollectionFailureStreak 打点并写入报警，无需 traceback
@@ -646,6 +657,9 @@ def _run_fwxx_collection(args) -> None:
         raise
 
     finally:
+        if checkpoint.remaining_count:
+            print(f"\n[*] 未完成 {checkpoint.remaining_count} 条，清单已保存: {FWXX_COLLECTION_CHECKPOINT_FILE}")
+            print(f'    续跑命令: python collect_fwxx.py --input "{FWXX_COLLECTION_CHECKPOINT_FILE}" --force')
         # 清理
         if driver:
             try:

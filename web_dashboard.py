@@ -60,8 +60,10 @@ from machine_identity import MASTER_ROLE, read_machine_role
 from collection_health import read_alert_status
 from operator_api_token import api_token_matches, ensure_api_token
 from manual_fwxx_requests import create_manual_fwxx_request
+from code_release_safety import CodeReleaseVerificationError, CodeReleaseVersion
 
 _patents_db = PatentsDB(PATENTS_DB_FILE)
+_RUNNING_CODE_RELEASE = CodeReleaseVersion.read()
 
 
 APP_NAME = "CNIPA 采集控制台"
@@ -690,6 +692,12 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
             "title": "从 master 拉取增量",
             "command": [py, "-u", "sync_pull_from_master.py"],
         }
+    if action == "sync_reconcile_master":
+        return {
+            "action": action,
+            "title": "从 master 全量对账",
+            "command": [py, "-u", "sync_pull_from_master.py", "--full"],
+        }
     if action == "upgrade_code":
         return {"action": action, "title": "安全更新系统代码", "command": [py, "-u", "fetch_update.py"]}
     if action == "fetch_update":
@@ -698,6 +706,19 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         return {"action": action, "title": "检查更新", "command": [py, "-u", "check_update.py"]}
 
     raise ValueError(f"未知操作: {action}")
+
+
+def dashboard_release_status() -> dict[str, Any]:
+    try:
+        installed_release = CodeReleaseVersion.read()
+    except CodeReleaseVerificationError as exc:
+        return {'running': str(_RUNNING_CODE_RELEASE), 'installed': None, 'restart_required': False, 'error': str(exc)}
+    return {
+        'running': str(_RUNNING_CODE_RELEASE),
+        'installed': str(installed_release),
+        'restart_required': installed_release != _RUNNING_CODE_RELEASE,
+        'error': None,
+    }
 
 
 def build_summary(job_manager: JobManager) -> dict[str, Any]:
@@ -786,6 +807,7 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
         "recent": db_summary["recent"],
         "files": {key: file_info(path) for key, path in DOWNLOADS.items()},
         "jobs": active_jobs,
+        "code_release": dashboard_release_status(),
         "warnings": warnings,
         "daily_counts": db_summary["daily_counts"],
         "fwxx_pending_list": db_summary["fwxx_pending_list"],
@@ -942,6 +964,9 @@ HTML = r"""<!doctype html>
       <span id="updateBannerText">🆕 发现新版本</span>
       <button class="btn primary" id="updateNowBtn">立即更新</button>
       <button class="btn secondary" id="updateDismissBtn">稍后</button>
+    </section>
+    <section id="restartBanner" class="warnings hidden" role="status">
+      已安装 <span id="restartRelease"></span>，Dashboard 待重启。
     </section>
 
     <!-- ═══ Tab 1：概览 ═══ -->
@@ -1445,6 +1470,7 @@ HTML = r"""<!doctype html>
         <div class="button-row">
           <button class="btn secondary" data-action="sync_status">查看同步状态</button>
           <button class="btn primary" data-action="sync_pull_master">从 master 拉取增量</button>
+          <button class="btn secondary" data-action="sync_reconcile_master">从 master 全量对账</button>
         </div>
         <div class="hint" style="margin-top:8px">副本机只从部署机 Dashboard 拉取增量；成功后自动创建数据提交，再由人工执行 git push</div>
       </article>
@@ -1549,6 +1575,7 @@ HTML = r"""<!doctype html>
       </section>
       <article class="panel operator-only" style="margin-bottom:14px">
         <div class="panel-head"><h2>代码更新</h2><span class="hint">check_update / upgrade / fetch_update</span></div>
+        <div class="hint" style="margin-bottom:8px">正在运行：<span id="runningCodeRelease">-</span>；已安装：<span id="installedCodeRelease">-</span></div>
         <div class="button-row">
           <button class="btn secondary" id="checkUpdateBtn">🔎 检查更新</button>
           <button class="btn primary" data-action="upgrade_code">🔄 更新系统代码（HTTP）</button>
@@ -2314,6 +2341,13 @@ async function refreshSummary() {
 }
 
 function renderSummary(data) {
+  const release = data.code_release;
+  if (release) {
+    $('#runningCodeRelease').textContent = release.running;
+    $('#installedCodeRelease').textContent = release.error || release.installed;
+    $('#restartRelease').textContent = release.installed || '';
+    $('#restartBanner').classList.toggle('hidden', !release.restart_required);
+  }
   // 顶部栏
   $('#clock').textContent = '当前 ' + shortTime(data.now);
   const pp = $('#proxyPill');
@@ -3138,13 +3172,13 @@ async function checkUpdate(showNoUpdateToast = false) {
       if (text) {
         text.textContent = d.method === 'git'
           ? `🆕 发现新版本：${d.pending_commits.length} 个新提交待更新`
-          : `🆕 发现新版本：${d.local_version} → ${d.remote_version}`;
+          : `🆕 发现新版本：${d.local_version} r${d.local_revision} → ${d.remote_version} r${d.remote_revision}`;
       }
       if (banner) banner.classList.remove('hidden');
     } else {
       if (banner) banner.classList.add('hidden');
       if (showNoUpdateToast) {
-        showToast(d.error ? ('检查失败：' + d.error) : `已是最新版本（${d.local_version}）`);
+        showToast(d.error ? ('检查失败：' + d.error) : `已是最新版本（${d.local_version} r${d.local_revision}）`);
       }
     }
     return d;
@@ -3451,11 +3485,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self.send_json({"error": "缺少 since 参数（格式：2026-05-01T00:00:00Z）"}, status=400)
                     return
                 try:
-                    datetime.fromisoformat(since.replace('Z', '+00:00'))
+                    records = _patents_db.export_delta(since)
                 except ValueError:
                     self.send_json({"error": "since 不是有效的 ISO 时间戳"}, status=400)
                     return
-                records = _patents_db.export_delta(since)
                 lines = "\n".join(json.dumps(r, ensure_ascii=False) for r in records)
                 data = lines.encode("utf-8")
                 self.send_response(HTTPStatus.OK)

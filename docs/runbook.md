@@ -231,11 +231,36 @@ Windows 的 `upgrade.bat` 和 Dashboard 更新入口统一使用 HTTP 发布清�
 
 公司电脑通过 GitHub `main` 分支的 HTTP 文件获取发布版本。向 GitHub 推送代码不会远程安装到公司电脑；公司电脑的更新检查会发现新版本，由现场操作者触发安装。
 
-1. 在发布分支整理代码、测试和运行手册，以 `VERSION` 为准提升日期版本号。
+1. 在发布分支整理代码、测试和运行手册。跨日期发布提升 `VERSION`，并把 `RELEASE_REVISION` 设为 `0`；同日追加发布只递增 `RELEASE_REVISION`。日期格式始终为 `YYYY.MM.DD`，不可直接在 `VERSION` 后加修订后缀。
 2. 运行 `python scripts/sync_version.py`，再运行 `uv lock --python 3.11` 同步项目版本，不加 `--upgrade`。
 3. 完成代码检查和隔离测试后，最后运行 `python scripts/generate_code_manifest.py`。版本、代码、锁文件和清单须一起提交，本轮不提交 `data/` 的变化。
 4. 推送发布分支，创建目标为 `main` 的 Pull Request，等待 Ubuntu 和 Windows CI 全部通过。当前工作流不会因单独推送普通开发分支而触发。
-5. 合并到 `main` 后，该版本即可被公司电脑检测到。不要把尚未通过 Windows 检查的候选版本直接推到 `main`。
+5. 合并到 `main` 后，支持修订号的公司电脑即可检测该发布。首次迁移按下面的同日修订步骤手动更新。不要把尚未通过 Windows 检查的候选版本直接推到 `main`。
+
+### 同日修订、重启和同步对账
+
+`2026.09.06 r1` 的 `VERSION` 仍是 `2026.09.06`，`RELEASE_REVISION` 为 `1`。没有修订文件的旧安装按 `r0` 处理；旧更新检查只比较日期，因此首次安装 r1 不会自动提示新版本。
+
+1. 在公司 master 停止采集、看门狗和代理，保留数据库备份。已安装 `2026.09.06` 的机器可直接运行 `upgrade.bat`，或点击 Dashboard「更新系统代码（HTTP）」；更早的部署按下方首次升级步骤操作。
+2. 更新完成后重启 Dashboard 和需要使用的代理。后续更新或回滚时，Dashboard 会区分「正在运行」和「已安装」修订，并提示待重启；修改磁盘上的代码不会自动替换正在运行的服务。
+3. 开发 replica 也升级到 r1 后，在 replica 项目环境执行 `python sync_pull_from_master.py --full`，或在「数据管理 → 多机同步」点击「从 master 全量对账」。它只把 master 的专利快照合并到 replica，不删除或修改 master 数据。
+4. 升级后的首次同步本身会自动全量对账一次。仍建议在两端都升级并重启后显式执行 `--full`，覆盖 replica 先升级、master 尚未升级期间的旧同步问题。同步生成的数据提交须检查后再推送 GitHub。
+
+同一副本机的增量同步和全量对账不能同时运行；重复启动会提示已有同步任务占用。不要删除正在使用的 `data/master_sync.lock` 文件。
+
+### 采集中断后继续
+
+三个采集器分别维护最新一批的恢复清单：主采集为 `data/checkpoint_resume.txt`，发文为 `data/checkpoint_fwxx.txt`，费用为 `data/checkpoint_fees.txt`。新批次会替换对应采集器的旧清单；每条成功写入数据库后才从清单移除，失败和未尝试项都会保留。清单是本机运行文件，不提交 GitHub。
+
+普通单条失败仍会继续处理后续申请号；完成本批导出后，只要本次选中的目标仍有失败项，任务就以失败状态结束。`--test N` 只限制本次执行数量，未选中的后续目标仍保留在清单中，不算本次失败。浏览器退出或用户中断同样不会被报告为正常完成。恢复浏览器和登录环境后，在项目 Python 环境执行对应命令：
+
+```text
+python main_automation.py --update-list data/checkpoint_resume.txt
+python collect_fwxx.py --input data/checkpoint_fwxx.txt --force
+python collect_fees.py --input data/checkpoint_fees.txt --force
+```
+
+日志也会输出包含绝对路径的续跑命令。清单内所有目标采集成功后，对应文件为空。
 
 ### 首次升级到 2026.09.06
 

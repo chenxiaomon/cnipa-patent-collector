@@ -50,6 +50,10 @@ def main() -> None:
     ]
     payload = {
         'manifest_version': 1,
+        'release': {
+            'version': (ROOT / 'VERSION').read_text(encoding='utf-8').strip(),
+            'revision': json.loads((ROOT / 'RELEASE_REVISION').read_text(encoding='utf-8')),
+        },
         'files': entries,
     }
     temporary_path = MANIFEST_PATH.with_suffix('.tmp')

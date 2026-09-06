@@ -7,6 +7,7 @@ data/config_fwxx.json
 data/machine_role.txt
 data/master_sync.json
 data/master_sync_state.json
+data/master_sync.lock
 data/collection_heartbeat.json
 data/alert_status.json
 data/watchdog_events.jsonl
@@ -28,6 +29,9 @@ data/detail_collection.lock
 data/patent_detail_identity_cache.json
 data/fwxx_list.txt
 data/manual_fwxx_lists/
+data/checkpoint_resume.txt*
+data/checkpoint_fwxx.txt*
+data/checkpoint_fees.txt*
 data/failed_applications.txt
 data/search_list_retry.txt
 data/search_list.txt

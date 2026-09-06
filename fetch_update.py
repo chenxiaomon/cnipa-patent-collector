@@ -12,6 +12,7 @@ from pathlib import Path
 
 from code_release_safety import (
     BACKUPS_DIR,
+    CodeReleaseVersion,
     CodeReleaseVerificationError,
     create_code_backup,
     install_staged_release,
@@ -67,6 +68,10 @@ def install_release(project_root: Path = BASE_DIR, backups_dir: Path = BACKUPS_D
             print(f"  [{index}/{len(manifest_entries)}] {entry['path']}")
         verify_staged_release(staging_root, manifest_entries)
         verify_staged_release_version(staging_root, project_root)
+        if 'release' in manifest_payload:
+            advertised_version = CodeReleaseVersion.from_manifest(manifest_payload)
+            if CodeReleaseVersion.read(staging_root) != advertised_version:
+                raise CodeReleaseVerificationError('发布清单版本与下载的版本文件不一致。')
         backup_path = create_code_backup(project_root, backups_dir)
         print(f'[release] 当前代码已备份到 {backup_path}')
         try:
@@ -80,6 +85,7 @@ def install_release(project_root: Path = BASE_DIR, backups_dir: Path = BACKUPS_D
     except OSError as exc:
         print(f'[!] 代码已安装，但旧备份清理失败: {exc}')
     print('[✓] 新代码已通过完整哈希校验并安装。')
+    print(f'[release] 已安装 {CodeReleaseVersion.read(project_root)}；正在运行的 Dashboard 需重启后生效。')
     print('如需撤销本次更新，运行: python rollback.py')
 
 

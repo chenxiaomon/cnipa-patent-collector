@@ -54,12 +54,13 @@ from collection_health import (
     write_collection_start_heartbeat,
     write_collection_stopped_heartbeat,
 )
+from collection_checkpoint import CollectionCheckpoint
 from input_service import InputService
 from settings import (
     CNIPA_URL, SEARCH_LIST_FILE, FORCE_UPDATE_FLAG,
     PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE, MITM_TIMEOUT, MITM_POLL_INTERVAL,
     PATENT_CACHE_FILE, USE_MITM_PROXY, PATENTS_DB_FILE, DETECTION_LOG_JSONL_FILE,
-    DATA_DIR,
+    MAIN_COLLECTION_CHECKPOINT_FILE,
     AUTOMATION_CONFIG_LOAD_WAIT, AUTOMATION_STARTUP_COUNTDOWN,
     AUTOMATION_ANTI_CRAWL_BATCH_SIZE, AUTOMATION_STATS_PRINT_INTERVAL,
     AUTOMATION_ANTI_CRAWL_WAIT_MIN, AUTOMATION_ANTI_CRAWL_WAIT_MAX,
@@ -217,6 +218,7 @@ def search_application(
     except Exception as e:
         record = DetectionRecord(
             application_no=normalize_app_no(application_no),
+            status_code=0,
             error_message=str(e),
             response_summary=f'Error: {str(e)[:50]}'
         )
@@ -273,14 +275,15 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
         print(f"✓ 已处理: {len(all_applications) - len(pending)} 个")
         print(f"⏳ 待处理: {len(pending)} 个")
 
-    if test_count:
-        pending = pending[:test_count]
-        print(f"📌 测试模式: 仅处理前 {test_count} 个")
-
     if not pending:
         print("✓ 所有申请号都已处理！")
         logger.print_summary()
         return
+
+    checkpoint = CollectionCheckpoint(MAIN_COLLECTION_CHECKPOINT_FILE, pending)
+    if test_count:
+        pending = pending[:test_count]
+        print(f"📌 测试模式: 仅处理前 {test_count} 个")
 
     driver = None
     run_total = 0
@@ -320,11 +323,6 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
                 remaining = pending[i - 1:]
                 print("\n⚠️  浏览器已关闭，停止采集")
                 print(f"已采集 {i-1} 条，还有 {len(remaining)} 条未采集")
-                if remaining:
-                    checkpoint = DATA_DIR / 'checkpoint_resume.txt'
-                    checkpoint.write_text('\n'.join(remaining) + '\n', encoding='utf-8')
-                    print(f"[*] 未完成列表已写入: {checkpoint}")
-                    print(f"    续跑命令: python main_automation.py --update-list {checkpoint}")
                 raise RuntimeError('浏览器进程意外退出')
 
             print(f"\n[{i}/{len(pending)}]")
@@ -344,12 +342,13 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
                     run_total += 1
                     if record.status_code == 200:
                         run_success += 1
+                        checkpoint.record_success(app_no)
                         failure_streak.record_success()
                     else:
                         run_failed += 1
                         failure_streak.record_failure()
                 else:
-                    failure_streak.record_failure()
+                    raise RuntimeError('浏览器已关闭，本条未采集，批次已中断')
             finally:
                 write_collection_progress_heartbeat(
                     app_no,
@@ -371,7 +370,11 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
 
     except KeyboardInterrupt:
         print("\n\n⚠️  用户中断")
+        raise
     finally:
+        if checkpoint.remaining_count:
+            print(f"\n[*] 未完成 {checkpoint.remaining_count} 条，清单已保存: {MAIN_COLLECTION_CHECKPOINT_FILE}")
+            print(f'    续跑命令: python main_automation.py --update-list "{MAIN_COLLECTION_CHECKPOINT_FILE}"')
         write_collection_stopped_heartbeat(run_total, len(pending))
         if update_list:
             try:
@@ -416,6 +419,11 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
             print(f"✓ Excel 文件: {excel_file}")
             PatentsDB(PATENTS_DB_FILE).export_to_jsonl(DETECTION_LOG_JSONL_FILE)
             print(f"✓ JSONL 备份已刷新: {DETECTION_LOG_JSONL_FILE}")
+
+    if run_failed:
+        raise RuntimeError(
+            f'本批采集失败 {run_failed} 条，未完成清单: {MAIN_COLLECTION_CHECKPOINT_FILE}'
+        )
 
 
 if __name__ == '__main__':

@@ -5,6 +5,8 @@ import io
 import unittest
 from argparse import Namespace
 from contextlib import ExitStack, redirect_stderr
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import collect_fees
@@ -100,6 +102,11 @@ class TestFeeFailureLifecycle(unittest.TestCase):
             patch("collect_fees.PatentsDB"),
         )
         with ExitStack() as stack:
+            temporary_directory = stack.enter_context(TemporaryDirectory())
+            stack.enter_context(patch(
+                'collect_fees.FEE_COLLECTION_CHECKPOINT_FILE',
+                Path(temporary_directory) / 'resume.txt',
+            ))
             (
                 _load_targets,
                 coordinate_service,
@@ -122,12 +129,15 @@ class TestFeeFailureLifecycle(unittest.TestCase):
                 6,
             )
 
+            self.failure_database = db_class.return_value
             collect_fees._run_fee_collection(_collection_arguments())
 
             return db_class.return_value
 
     def test_no_payload_records_a_retryable_failure(self):
-        db = self._run_one_target(fee_fields=None, stored_snapshot=None)
+        with self.assertRaisesRegex(RuntimeError, '采集失败 1 条'):
+            self._run_one_target(fee_fields=None, stored_snapshot=None)
+        db = self.failure_database
 
         db.record_collection_failure.assert_called_once_with(
             "fees",
@@ -137,10 +147,12 @@ class TestFeeFailureLifecycle(unittest.TestCase):
         db.clear_collection_failure.assert_not_called()
 
     def test_persistence_failure_records_a_retryable_failure(self):
-        db = self._run_one_target(
-            fee_fields=_complete_fee_payload(),
-            stored_snapshot=None,
-        )
+        with self.assertRaisesRegex(RuntimeError, '采集失败 1 条'):
+            self._run_one_target(
+                fee_fields=_complete_fee_payload(),
+                stored_snapshot=None,
+            )
+        db = self.failure_database
 
         db.record_collection_failure.assert_called_once_with(
             "fees",
@@ -150,14 +162,16 @@ class TestFeeFailureLifecycle(unittest.TestCase):
         db.clear_collection_failure.assert_not_called()
 
     def test_partial_payload_is_persisted_but_remains_retryable(self):
-        db = self._run_one_target(
-            fee_fields={"payable_fee_records": []},
-            stored_snapshot={
-                "payable_fee_records": [],
-                "paid_fee_records": None,
-                "fee_receipt_dispatch_records": None,
-            },
-        )
+        with self.assertRaisesRegex(RuntimeError, '采集失败 1 条'):
+            self._run_one_target(
+                fee_fields={"payable_fee_records": []},
+                stored_snapshot={
+                    "payable_fee_records": [],
+                    "paid_fee_records": None,
+                    "fee_receipt_dispatch_records": None,
+                },
+            )
+        db = self.failure_database
 
         db.record_collection_failure.assert_called_once_with(
             "fees",
