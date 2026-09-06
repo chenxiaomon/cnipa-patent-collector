@@ -3,10 +3,9 @@
 """
 网络更新检查脚本
 
-统一检查本地代码是否落后于 GitHub 远端，输出结构化 JSON 供 Dashboard 解析。
-两种检查方式自动选择：
-  - git 模式（有 .git 且 git 可用）：git fetch + 对比 HEAD..origin/main 的提交
-  - HTTP 模式（无 git）：拉取远端 VERSION 文件与本地 VERSION 对比
+按 HTTP 发布版本检查更新，输出结构化 JSON 供 Dashboard 解析。
+HTTP 安装不会推进 Git HEAD，因此控制台按已安装 VERSION 判断。
+显式 Git 提交检查仍可使用 python upgrade.py --check。
 
 用法：
   python check_update.py           # 检查并打印 JSON（最后一行为 JSON）
@@ -100,6 +99,13 @@ def check_via_git(git: str) -> dict:
         upstream = f'origin/{_BRANCH}'
 
     log = run(['log', f'HEAD..{upstream}', '--oneline'])
+    if log.returncode != 0:
+        return {
+            "has_update": False, "method": "git",
+            "local_version": _read_local_version(), "remote_version": None,
+            "pending_commits": [],
+            "error": f"git log 失败：{log.stderr.strip()}",
+        }
     commits = [line for line in log.stdout.splitlines() if line.strip()]
 
     return {
@@ -162,10 +168,7 @@ def check_via_http() -> dict:
 
 
 def check_update() -> dict:
-    """统一入口：优先 git，回退 HTTP。"""
-    git = _git_available()
-    if git:
-        return check_via_git(git)
+    """Match the HTTP installation channel even when a Git checkout exists."""
     return check_via_http()
 
 

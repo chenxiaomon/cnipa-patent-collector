@@ -10,7 +10,7 @@ CNIPA 专利数据 MITM 拦截脚本
 import json
 import os
 import threading
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Optional
 from mitmproxy import http
 
@@ -18,12 +18,16 @@ from mitmproxy import http
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from agency_attempt import read_agency_attempt_marker
+from detail_attempt import (
+    publish_detail_identity,
+    read_detail_identity,
+    read_detail_attempt_marker,
+)
 from detection_logger import DetectionLogger
 from cache_utils import normalize_app_no, read_json_cache, write_json_cache
 from settings import (
     AGENCY_UNMATCHED_FILE,
     FORCE_UPDATE_FLAG,
-    MARKER_FILE,
     PATENT_AGENCY_CACHE_FILE,
     PATENT_CACHE_FILE,
     PATENT_FEE_CACHE_FILE,
@@ -35,6 +39,7 @@ FORCE_UPDATE_FLAG = str(FORCE_UPDATE_FLAG)
 
 _DETAIL_API_PATTERNS = ('/api/view/gn/fwxx', '/api/view/gn/fyxx')
 _DETAIL_TARGET_METADATA_KEY = 'cnipa_detail_target_application_no'
+_DETAIL_ATTEMPT_METADATA_KEY = 'cnipa_detail_attempt'
 _AGENCY_ATTEMPT_METADATA_KEY = 'cnipa_agency_attempt'
 _SQXX_API_PATTERN = '/api/view/gn/sqxx'
 
@@ -55,12 +60,25 @@ class PatentMITMScraper:
         self.processed_count = 0
         # mitmproxy 在线程池中并发回调 response()，缓存与备份文件的读-改-写必须加锁
         self._cache_lock = threading.Lock()
+        self._pending_detail_attempt_id = None
+        self._pending_detail_fields = {}
 
     def request(self, flow: http.HTTPFlow) -> None:
         """在详情 API 请求发出时绑定申请号，避免迟到响应串到下一件。"""
         url = flow.request.pretty_url
         if 'cponline.cnipa.gov.cn' not in url:
             return
+
+        if not any(pattern in url for pattern in (*_DETAIL_API_PATTERNS, _SQXX_API_PATTERN)):
+            return
+        detail_attempt = read_detail_attempt_marker()
+        with self._cache_lock:
+            current_attempt_id = detail_attempt['attempt_id'] if detail_attempt is not None else None
+            if self._pending_detail_attempt_id != current_attempt_id:
+                self._pending_detail_fields.clear()
+                self._pending_detail_attempt_id = current_attempt_id
+        if detail_attempt is not None:
+            flow.metadata[_DETAIL_ATTEMPT_METADATA_KEY] = detail_attempt
 
         if _SQXX_API_PATTERN in url:
             agency_attempt = read_agency_attempt_marker()
@@ -72,12 +90,12 @@ class PatentMITMScraper:
                 )
             return
 
-        if not any(pattern in url for pattern in _DETAIL_API_PATTERNS):
-            return
-        application_no = self._read_recent_target_app_no()
-        if application_no:
-            flow.metadata[_DETAIL_TARGET_METADATA_KEY] = application_no
-            print(f"[✓] 详情请求已绑定申请号: {application_no}")
+        if (
+            detail_attempt is not None
+            and read_detail_identity(detail_attempt['attempt_id']) == detail_attempt['application_no']
+        ):
+            flow.metadata[_DETAIL_TARGET_METADATA_KEY] = detail_attempt['application_no']
+            print(f"[✓] 详情请求已绑定官方确认的申请号: {detail_attempt['application_no']}")
 
     def response(self, flow: http.HTTPFlow) -> None:
         """拦截响应的钩子函数：CNIPA 域名 + 200 + JSON 才处理。"""
@@ -249,6 +267,23 @@ class PatentMITMScraper:
             if not app_no:
                 print('[-] sqxx: 未找到申请号，跳过')
                 return
+
+            bound_detail_attempt = flow.metadata.get(_DETAIL_ATTEMPT_METADATA_KEY)
+            if isinstance(bound_detail_attempt, dict):
+                with self._cache_lock:
+                    publish_detail_identity(bound_detail_attempt, app_no)
+                    if self._pending_detail_attempt_id == bound_detail_attempt.get('attempt_id'):
+                        if (
+                            read_detail_attempt_marker() == bound_detail_attempt
+                            and app_no == bound_detail_attempt['application_no']
+                        ):
+                            for cache_file, captured_fields in self._pending_detail_fields.items():
+                                detail_cache = read_json_cache(cache_file)
+                                detail_cache[app_no] = captured_fields
+                                write_json_cache(cache_file, detail_cache)
+                            if self._pending_detail_fields:
+                                print(f'[✓] 官方身份已确认，详情预加载数据已缓存: {app_no}')
+                        self._pending_detail_fields.clear()
 
             # 提取代理机构信息
             agency_section = body.get('dailijg')
@@ -427,12 +462,6 @@ class PatentMITMScraper:
                     print(f"[*] 找到驳回决定: {bhsj_data.get('xiazaisj')}")
                     break
 
-            application_no = self._read_bound_detail_target(flow)
-
-            if not application_no:
-                print(f"[-] 无法提取申请号")
-                return
-
             fwxx_cache_data = {
                 'fwxx_list': fwxx_list,
                 'bhsjtzs_xiazaisj': bhsj_data.get('xiazaisj') if bhsj_data else None,
@@ -440,12 +469,8 @@ class PatentMITMScraper:
             }
 
             cache_file = str(PATENT_FWXX_CACHE_FILE)
-            with self._cache_lock:
-                cache_data = read_json_cache(cache_file)
-                cache_data[application_no] = fwxx_cache_data
-                write_json_cache(cache_file, cache_data)
-
-            print(f"[✓] 发文信息已缓存: {application_no}")
+            if self._cache_verified_detail_fields(flow, cache_file, fwxx_cache_data):
+                print(f"[✓] 发文信息已缓存: {flow.metadata[_DETAIL_TARGET_METADATA_KEY]}")
 
         except json.JSONDecodeError as e:
             print(f"[!] 发文信息 JSON 解析失败: {e}")
@@ -511,14 +536,9 @@ class PatentMITMScraper:
                 print('[-] 费用信息响应没有可缓存的有效栏目')
                 return
 
-            application_no = self._read_bound_detail_target(flow)
-            if not application_no:
+            if not self._cache_verified_detail_fields(flow, str(PATENT_FEE_CACHE_FILE), fee_cache_entry):
                 return
-
-            with self._cache_lock:
-                fee_cache = read_json_cache(str(PATENT_FEE_CACHE_FILE))
-                fee_cache[application_no] = fee_cache_entry
-                write_json_cache(str(PATENT_FEE_CACHE_FILE), fee_cache)
+            application_no = flow.metadata[_DETAIL_TARGET_METADATA_KEY]
 
             section_counts = ', '.join(
                 f'{cache_field} {len(fee_cache_entry[cache_field])} 条'
@@ -534,62 +554,43 @@ class PatentMITMScraper:
         except Exception as e:
             print(f'[!] 处理费用信息失败: {e}')
 
-    @staticmethod
-    def _read_bound_detail_target(flow: http.HTTPFlow) -> str | None:
-        """读取 request() 已绑定到当前 HTTP 流的申请号。"""
+    def _cache_verified_detail_fields(self, flow: http.HTTPFlow, cache_file: str, captured_fields: dict) -> bool:
+        """Publish verified fields or retain at most one early response per detail endpoint."""
         metadata = getattr(flow, 'metadata', None)
         if not isinstance(metadata, dict):
             print('[-] 详情响应缺少请求元数据，跳过')
-            return None
-        application_no = normalize_app_no(
-            metadata.get(_DETAIL_TARGET_METADATA_KEY)
-        )
-        if not application_no:
-            print('[-] 详情响应没有请求时绑定的申请号，跳过')
-            return None
-        return application_no
-
-    def _read_recent_target_app_no(self) -> str:
-        """
-        从详情采集标记读取当前申请号。
-
-        标记超过 5 秒即视为陈旧，防止异步响应关联到下一件专利。
-
-        Returns:
-            申请号 或 None
-        """
-        try:
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # 方案 0（最优先）：从标记文件读取
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # collect_fwxx.py 在点击详情菜单前会标记申请号
-            marker = read_json_cache(str(MARKER_FILE))
-            app_no = marker.get('application_no')
-            if app_no:
-                # TTL 检查：标记必须在 5 秒内写入，超时视为上一轮遗留的陈旧标记
-                written_at_str = marker.get('written_at')
-                if written_at_str:
-                    try:
-                        written_at = datetime.fromisoformat(
-                            written_at_str.replace('Z', '+00:00')
-                        )
-                        age = datetime.now(timezone.utc) - written_at
-                        if age > timedelta(seconds=5):
-                            print(f"[-] 标记文件已过期（{age.total_seconds():.1f}s 前写入），跳过此详情响应")
-                            return None
-                    except Exception:
-                        pass  # 解析失败时不拒绝，降级为无 TTL 行为
-                print(f"[✓] 从标记文件获取申请号: {app_no}")
-                return app_no
-
-            # 方案 1（唯一回退）：标记文件为空，记录告警，不猜测申请号
-            # 猜测 patent_cache 最后一个键在并发写入下不可靠，会静默关联错误数据
-            print(f"[-] 标记文件为空，无法确定当前申请号，跳过此发文响应")
-            return None
-
-        except Exception as e:
-            print(f"[!] 提取申请号失败: {e}")
-            return None
+            return False
+        attempt = metadata.get(_DETAIL_ATTEMPT_METADATA_KEY)
+        if (
+            not isinstance(attempt, dict)
+            or not attempt.get('attempt_id')
+            or not attempt.get('application_no')
+        ):
+            print('[-] 详情响应没有请求时绑定的采集尝试，跳过')
+            return False
+        captured_fields['detail_attempt_id'] = attempt['attempt_id']
+        with self._cache_lock:
+            if read_detail_attempt_marker() != attempt:
+                if self._pending_detail_attempt_id == attempt['attempt_id']:
+                    self._pending_detail_fields.clear()
+                return False
+            application_no = metadata.get(_DETAIL_TARGET_METADATA_KEY)
+            if application_no is None:
+                application_no = read_detail_identity(attempt['attempt_id'])
+                if application_no is None:
+                    if self._pending_detail_attempt_id != attempt['attempt_id']:
+                        self._pending_detail_fields.clear()
+                        self._pending_detail_attempt_id = attempt['attempt_id']
+                    self._pending_detail_fields[cache_file] = captured_fields
+                    print('[*] 详情响应已暂存，等待 sqxx 确认申请号')
+                    return False
+            if application_no != attempt['application_no']:
+                return False
+            metadata[_DETAIL_TARGET_METADATA_KEY] = application_no
+            detail_cache = read_json_cache(cache_file)
+            detail_cache[application_no] = captured_fields
+            write_json_cache(cache_file, detail_cache)
+            return True
 
     @staticmethod
     def _convert_patent_type(type_code: str) -> str:

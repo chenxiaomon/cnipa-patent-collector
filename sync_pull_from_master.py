@@ -25,6 +25,7 @@ from settings import (
 from update_readme_stats import update_readme_statistics
 
 INITIAL_SYNC_TIMESTAMP = '1970-01-01T00:00:00Z'
+_MASTER_SNAPSHOT_IMPORT_VERSION = 1
 
 
 class MasterSyncConfigurationError(RuntimeError):
@@ -50,6 +51,9 @@ def load_sync_cursor(master_url: str) -> str:
         return INITIAL_SYNC_TIMESTAMP
     payload = json.loads(MASTER_SYNC_STATE_FILE.read_text(encoding='utf-8'))
     if str(payload.get('master_url', '')).rstrip('/') != master_url.rstrip('/'):
+        return INITIAL_SYNC_TIMESTAMP
+    # Older imports skipped explicit NULL values even after advancing the cursor.
+    if payload.get('snapshot_import_version') != _MASTER_SNAPSHOT_IMPORT_VERSION:
         return INITIAL_SYNC_TIMESTAMP
     timestamp = str(payload.get('last_sync_updated_at', '')).strip()
     return timestamp or INITIAL_SYNC_TIMESTAMP
@@ -92,7 +96,7 @@ def merge_master_delta(records: list[dict]) -> dict:
     db = PatentsDB(PATENTS_DB_FILE)
     summary = db.summarize_record_import(records)
     if records:
-        db.upsert_batch(records)
+        db.apply_master_delta(records)
         db.export_to_jsonl(DETECTION_LOG_JSONL_FILE)
     return summary
 
@@ -129,6 +133,7 @@ def save_sync_cursor(master_url: str, timestamp: str) -> None:
     payload = {
         'master_url': master_url,
         'last_sync_updated_at': timestamp,
+        'snapshot_import_version': _MASTER_SNAPSHOT_IMPORT_VERSION,
         'synced_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
     }
     MASTER_SYNC_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)

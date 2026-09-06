@@ -90,5 +90,24 @@ class TestManualFwxxBatchJob(unittest.TestCase):
                         {"app_nos": "CN202411006597.0\ninvalid"},
                     )
 
+
+class TestJobLoginConfirmation(unittest.TestCase):
+    def test_confirmation_signal_is_not_treated_as_verified_login(self):
+        job = web_dashboard.Job('a1234567', 'main_full', 'collection', ['python'])
+        job.append('[WAITING_FOR_LOGIN] pending')
+        job.append('收到登录完成信号')
+        self.assertTrue(job.to_dict()['waiting_for_login'])
+        job.append('[LOGIN_CONFIRMED] confirmed')
+        self.assertFalse(job.to_dict()['waiting_for_login'])
+
+    def test_new_login_attempt_is_not_hidden_by_previous_confirmation(self):
+        job = web_dashboard.Job('a1234567', 'main_full', 'collection', ['python'])
+        job.append('[WAITING_FOR_LOGIN] first attempt')
+        job.append('[LOGIN_CONFIRMED] first attempt')
+        job.append('[WAITING_FOR_LOGIN] retry')
+        self.assertTrue(job.to_dict()['waiting_for_login'])
+        job.append('[LOGIN_REQUIRED] timed out')
+        self.assertFalse(job.to_dict()['waiting_for_login'])
+
 if __name__ == '__main__':
     unittest.main()

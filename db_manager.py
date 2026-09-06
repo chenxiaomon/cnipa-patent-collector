@@ -10,16 +10,18 @@ SQLite 数据库管理模块
 """
 
 import json
+import os
 import re
 import sqlite3
 import sys
+import tempfile
 import threading
 from collections import Counter
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from cache_utils import is_supported_cn_application_no, normalize_app_no
+from cache_utils import is_supported_cn_application_no, normalize_app_no, parse_timestamp
 
 _JSON_FIELDS = {
     'fwxx_list',
@@ -178,6 +180,17 @@ def _require_collection_kind(value: object) -> str:
     return collection_kind
 
 
+def _compare_fee_snapshot_times(incoming_timestamp: object, stored_timestamp: object) -> int:
+    """Order UTC instants exactly; absent or malformed timestamps are unversioned."""
+    incoming_instant = parse_timestamp(incoming_timestamp)
+    stored_instant = parse_timestamp(stored_timestamp)
+    if incoming_instant is None:
+        return 0 if stored_instant is None else -1
+    if stored_instant is None:
+        return 1
+    return (incoming_instant > stored_instant) - (incoming_instant < stored_instant)
+
+
 class PatentsDB:
     """SQLite 专利数据库（线程安全，WAL 模式）"""
 
@@ -193,6 +206,7 @@ class PatentsDB:
     def _connect(self):
         conn = sqlite3.connect(str(self._db_path))
         conn.row_factory = sqlite3.Row
+        conn.create_function('cnipa_fee_snapshot_order', 2, _compare_fee_snapshot_times, deterministic=True)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
@@ -277,14 +291,34 @@ class PatentsDB:
 
     # ── 写入 ──────────────────────────────────────────────────────────────
 
+    _FEE_SNAPSHOT_COLUMNS = (
+        'payable_fee_records',
+        'late_fee_schedule_records',
+        'paid_fee_records',
+        'fee_receipt_dispatch_records',
+        'fee_snapshot_at',
+    )
+
     @staticmethod
     def _upsert_statement(columns: list[str]) -> str:
         placeholders = ','.join('?' * len(columns))
         assignments = []
+        snapshot_order = 'cnipa_fee_snapshot_order(excluded.fee_snapshot_at, patents.fee_snapshot_at)'
         for column in columns:
             if column == 'application_no':
                 continue
-            if column in {'error_message', 'updated_at'}:
+            if column == 'fee_snapshot_at':
+                assignments.append(
+                    f'{column}=CASE WHEN {snapshot_order}>=0 '
+                    f'THEN COALESCE(excluded.{column}, patents.{column}) ELSE patents.{column} END'
+                )
+            elif column in PatentsDB._FEE_SNAPSHOT_COLUMNS:
+                # A newer version owns all fee sections, including sections it did not return.
+                assignments.append(
+                    f'{column}=CASE {snapshot_order} WHEN 1 THEN excluded.{column} '
+                    f'WHEN 0 THEN COALESCE(excluded.{column}, patents.{column}) ELSE patents.{column} END'
+                )
+            elif column in {'error_message', 'updated_at'}:
                 assignments.append(f'{column}=excluded.{column}')
             else:
                 assignments.append(
@@ -296,7 +330,7 @@ class PatentsDB:
         )
 
     def upsert(self, record: dict) -> None:
-        """Upsert one record without erasing existing fields when incoming values are NULL."""
+        """Merge a local record; only a newer fee snapshot replaces absent fee sections."""
         row = self._encode(record)
         cols = list(row.keys())
         sql = self._upsert_statement(cols)
@@ -332,6 +366,35 @@ class PatentsDB:
             conn.commit()
             return cursor.rowcount
 
+    def update_fee_snapshot(self, app_no: str, fee_fields: dict) -> dict | None:
+        """Write fee fields atomically without creating a patent or changing its status.
+
+        Newer fee_snapshot_at replaces the whole snapshot; missing sections become NULL.
+        Equal instants may fill sections of the same snapshot. Older or unversioned
+        payloads cannot replace a versioned snapshot. Unversioned rows still accept
+        legacy partial fields. ISO timestamps are compared at full microsecond
+        precision in UTC. Return the retained snapshot from the same transaction,
+        including when the incoming payload was ignored. Return None when the patent
+        is absent or no recognized fee field was given.
+        """
+        if not any(column in fee_fields for column in self._FEE_SNAPSHOT_COLUMNS):
+            return None
+        row = self._encode({**fee_fields, 'application_no': app_no})
+        columns = ['application_no', *self._FEE_SNAPSHOT_COLUMNS, 'updated_at']
+        statement = self._upsert_statement(columns)
+        with self._lock, self._connect() as conn:
+            # The existence check and conflict update must share the SQLite write lock.
+            conn.execute('BEGIN IMMEDIATE')
+            if conn.execute('SELECT 1 FROM patents WHERE application_no=?', (app_no,)).fetchone() is None:
+                return None
+            conn.execute(statement, [row[column] for column in columns])
+            stored_snapshot = conn.execute(
+                f"SELECT {','.join(self._FEE_SNAPSHOT_COLUMNS)} FROM patents WHERE application_no=?",
+                (app_no,),
+            ).fetchone()
+            conn.commit()
+            return self._decode(stored_snapshot)
+
     def snapshot_previous_status(self) -> int:
         """
         采集前将当前 anjianywzt 快照到 previous_status（单条 SQL 全表完成），
@@ -359,6 +422,34 @@ class PatentsDB:
             conn.executemany(sql, [[r[c] for c in cols] for r in rows])
             conn.commit()
         return len(rows)
+
+    def apply_master_delta(self, master_records: list[dict]) -> int:
+        """Apply authoritative master values, including NULL, in one transaction.
+
+        Omitted columns remain local so an older master can synchronize with a
+        newer replica. Collection upserts instead preserve missing enrichment.
+        """
+        if not master_records:
+            return 0
+        with self._lock, self._connect() as conn:
+            for master_record in master_records:
+                encoded_patent = self._encode(master_record)
+                columns = [
+                    column for column in encoded_patent
+                    if column in master_record or column == 'updated_at'
+                ]
+                placeholders = ','.join('?' * len(columns))
+                assignments = ','.join(
+                    f'{column}=excluded.{column}'
+                    for column in columns if column != 'application_no'
+                )
+                statement = (
+                    f"INSERT INTO patents ({','.join(columns)}) VALUES ({placeholders}) "
+                    f"ON CONFLICT(application_no) DO UPDATE SET {assignments}"
+                )
+                conn.execute(statement, [encoded_patent[column] for column in columns])
+            conn.commit()
+        return len(master_records)
 
     def summarize_record_import(self, records: list[dict]) -> dict:
         """Summarize how an external record set would change this database."""
@@ -1112,23 +1203,46 @@ class PatentsDB:
         rows.sort(key=lambda r: -r['total_count'])
         return rows
 
+    def backup_to(self, backup_path: Path) -> None:
+        """Atomically publish a complete SQLite snapshot, including committed WAL pages."""
+        backup_path = Path(backup_path)
+        if backup_path.resolve() == self._db_path.resolve():
+            raise ValueError('备份文件不能覆盖运行数据库')
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            prefix=backup_path.name + '.', suffix='.tmp',
+            dir=backup_path.parent, delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+        try:
+            with self._connect() as source, closing(sqlite3.connect(temporary_path)) as destination:
+                source.backup(destination)
+                # Published backups must not depend on a separate WAL file.
+                destination.execute('PRAGMA journal_mode=DELETE')
+            with temporary_path.open('rb+') as snapshot_file:
+                os.fsync(snapshot_file.fileno())
+            os.replace(temporary_path, backup_path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+
     # ── 导入 / 导出 ───────────────────────────────────────────────────────
 
     def import_from_jsonl(self, path: Path) -> int:
-        """从 JSONL 文件批量导入（一次性迁移用）"""
+        """先验证整份备份，再事务导入；旧追加日志按文件顺序重放。"""
         records = []
-        bad = 0
         with open(path, 'r', encoding='utf-8') as f:
-            for line in f:
+            for line_number, line in enumerate(f, 1):
                 line = line.strip()
                 if not line:
                     continue
                 try:
-                    records.append(json.loads(line))
-                except json.JSONDecodeError:
-                    bad += 1
-        if bad:
-            print(f"[!] 跳过 {bad} 行损坏记录")
+                    record = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"JSONL 第 {line_number} 行损坏，未导入任何记录") from exc
+                application_no = record.get('application_no') if isinstance(record, dict) else None
+                if not isinstance(application_no, str) or not application_no.strip():
+                    raise ValueError(f"JSONL 第 {line_number} 行缺少有效申请号，未导入任何记录")
+                records.append(record)
         return self.upsert_batch(records)
 
     def export_to_jsonl(self, path: Path) -> int:

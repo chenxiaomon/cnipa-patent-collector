@@ -72,8 +72,9 @@ class TestFeeFieldPersistence(unittest.TestCase):
     @patch("collect_fees.PatentsDB")
     def test_partial_fee_success_does_not_clear_missing_fwxx_fields(self, mock_db_class):
         mock_db = mock_db_class.return_value
-        mock_db.get_record.return_value = {"application_no": "2026102909420"}
-        mock_db.update_fields.return_value = 1
+        mock_db.update_fee_snapshot.return_value = {
+            "payable_fee_records": [], "paid_fee_records": [], "fee_receipt_dispatch_records": [],
+        }
 
         self.assertTrue(persist_fee_fields(
             "2026102909420",
@@ -85,7 +86,7 @@ class TestFeeFieldPersistence(unittest.TestCase):
             },
         ))
 
-        persisted = mock_db.update_fields.call_args[0][1]
+        persisted = mock_db.update_fee_snapshot.call_args[0][1]
         self.assertEqual(persisted["payable_fee_records"], [])
         self.assertEqual(persisted["paid_fee_records"], [])
         self.assertEqual(persisted["fee_receipt_dispatch_records"], [])

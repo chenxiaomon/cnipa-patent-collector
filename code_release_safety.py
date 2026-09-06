@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -18,7 +19,7 @@ _EXCLUDED_DIRECTORIES = {
     '.git', '.venv', 'venv', '__pycache__', '.pytest_cache',
     'data', 'backups', 'chromedriver-linux64', 'chromedriver-win64',
 }
-_EXCLUDED_FILES = {'.env', '.DS_Store'}
+_EXCLUDED_FILES = {'.env', '.ds_store'}
 _BACKUP_INDEX = '.code_backup_index.json'
 _CALENDAR_VERSION_PATTERN = re.compile(r'([0-9]{4})\.([0-9]{2})\.([0-9]{2})')
 
@@ -90,11 +91,11 @@ def code_file_paths(project_root: Path = BASE_DIR) -> list[Path]:
     owned_files: list[Path] = []
     for directory, directory_names, file_names in os.walk(project_root):
         directory_names[:] = [
-            name for name in directory_names if name not in _EXCLUDED_DIRECTORIES
+            name for name in directory_names if name.casefold() not in _EXCLUDED_DIRECTORIES
         ]
         current_directory = Path(directory)
         for file_name in file_names:
-            if file_name in _EXCLUDED_FILES or file_name.endswith(('.pyc', '.pyo')):
+            if file_name.casefold() in _EXCLUDED_FILES or file_name.endswith(('.pyc', '.pyo')):
                 continue
             owned_files.append(current_directory / file_name)
     return sorted(owned_files)
@@ -103,30 +104,39 @@ def code_file_paths(project_root: Path = BASE_DIR) -> list[Path]:
 def create_code_backup(project_root: Path = BASE_DIR, backups_dir: Path = BACKUPS_DIR) -> Path:
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
     backup_path = backups_dir / f'code_{timestamp}'
-    backup_path.mkdir(parents=True, exist_ok=False)
-    relative_files: list[str] = []
-    for source_path in code_file_paths(project_root):
-        relative_path = source_path.relative_to(project_root)
-        destination = backup_path / relative_path
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source_path, destination)
-        relative_files.append(relative_path.as_posix())
-    index_payload = {
-        'created_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-        'files': relative_files,
-    }
-    (backup_path / _BACKUP_INDEX).write_text(
-        json.dumps(index_payload, ensure_ascii=False, indent=2) + '\n',
-        encoding='utf-8',
-    )
+    backups_dir.mkdir(parents=True, exist_ok=True)
+    # Only complete backups receive the code_* name used by rollback and retention.
+    with tempfile.TemporaryDirectory(prefix='.code_staging_', dir=backups_dir) as staging_directory:
+        staging_root = Path(staging_directory)
+        file_sha256: dict[str, str] = {}
+        for source_path in code_file_paths(project_root):
+            relative_path = source_path.relative_to(project_root)
+            destination = staging_root / relative_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, destination)
+            file_sha256[relative_path.as_posix()] = sha256_file(destination)
+        index_payload = {
+            'created_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            'files': list(file_sha256),
+            'file_sha256': file_sha256,
+        }
+        (staging_root / _BACKUP_INDEX).write_text(
+            json.dumps(index_payload, ensure_ascii=False, indent=2) + '\n',
+            encoding='utf-8',
+        )
+        staging_root.replace(backup_path)
     return backup_path
 
 
 def _safe_relative_path(raw_path: str) -> Path:
+    if not isinstance(raw_path, str) or '\\' in raw_path or ':' in raw_path:
+        raise CodeReleaseVerificationError(f'发布清单包含不安全路径: {raw_path!r}')
     relative_path = Path(raw_path)
     if relative_path.is_absolute() or '..' in relative_path.parts or not relative_path.parts:
         raise CodeReleaseVerificationError(f'发布清单包含不安全路径: {raw_path!r}')
-    if relative_path.parts[0] in _EXCLUDED_DIRECTORIES or relative_path.name in _EXCLUDED_FILES:
+    if any(part.endswith(('.', ' ')) for part in relative_path.parts):
+        raise CodeReleaseVerificationError(f'发布清单包含 Windows 路径别名: {raw_path!r}')
+    if relative_path.parts[0].casefold() in _EXCLUDED_DIRECTORIES or relative_path.name.casefold() in _EXCLUDED_FILES:
         raise CodeReleaseVerificationError(f'发布清单试图覆盖本机运行数据: {raw_path!r}')
     return relative_path
 
@@ -143,9 +153,9 @@ def validate_release_manifest(payload: dict) -> list[dict[str, str]]:
         expected_hash = str(entry.get('sha256', '')).lower()
         if len(expected_hash) != 64 or any(char not in '0123456789abcdef' for char in expected_hash):
             raise CodeReleaseVerificationError(f'{relative_path} 的 SHA-256 无效。')
-        if relative_path in seen_paths:
+        if relative_path.casefold() in seen_paths:
             raise CodeReleaseVerificationError(f'发布清单包含重复路径: {relative_path}')
-        seen_paths.add(relative_path)
+        seen_paths.add(relative_path.casefold())
         verified_entries.append({'path': relative_path, 'sha256': expected_hash})
     if not verified_entries:
         raise CodeReleaseVerificationError('发布清单不包含任何代码文件。')
@@ -182,10 +192,28 @@ def restore_code_backup(backup_path: Path, project_root: Path = BASE_DIR) -> int
     index_path = backup_path / _BACKUP_INDEX
     if not index_path.exists():
         raise CodeReleaseVerificationError(f'备份缺少 {_BACKUP_INDEX}: {backup_path}')
-    payload = json.loads(index_path.read_text(encoding='utf-8'))
-    relative_files = {_safe_relative_path(path).as_posix() for path in payload.get('files', [])}
+    try:
+        payload = json.loads(index_path.read_text(encoding='utf-8'))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise CodeReleaseVerificationError(f'无法读取备份索引: {backup_path}: {exc}') from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get('files'), list):
+        raise CodeReleaseVerificationError(f'备份文件索引格式无效: {backup_path}')
+    relative_files = {_safe_relative_path(path).as_posix() for path in payload['files']}
     if not relative_files:
         raise CodeReleaseVerificationError(f'备份文件索引为空: {backup_path}')
+    file_sha256 = payload.get('file_sha256')
+    if not isinstance(file_sha256, dict):
+        raise CodeReleaseVerificationError(
+            f'备份缺少文件哈希，无法自动验证，拒绝覆盖当前代码。请人工核对旧备份: {backup_path}'
+        )
+    if set(file_sha256) != relative_files:
+        raise CodeReleaseVerificationError(f'备份哈希索引与文件列表不一致: {backup_path}')
+    for relative in sorted(relative_files):
+        source_path = backup_path / relative
+        if not source_path.is_file():
+            raise CodeReleaseVerificationError(f'备份文件缺失: {relative}')
+        if sha256_file(source_path) != file_sha256[relative]:
+            raise CodeReleaseVerificationError(f'备份文件哈希不匹配: {relative}')
 
     current_files = {
         path.relative_to(project_root).as_posix()
@@ -198,8 +226,6 @@ def restore_code_backup(backup_path: Path, project_root: Path = BASE_DIR) -> int
     restored = 0
     for relative in sorted(relative_files):
         source_path = backup_path / relative
-        if not source_path.is_file():
-            raise CodeReleaseVerificationError(f'备份文件缺失: {relative}')
         destination = project_root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = destination.with_suffix(destination.suffix + '.rollback_tmp')
@@ -210,7 +236,10 @@ def restore_code_backup(backup_path: Path, project_root: Path = BASE_DIR) -> int
 
 
 def latest_code_backup(backups_dir: Path = BACKUPS_DIR) -> Path:
-    backups = sorted(path for path in backups_dir.glob('code_*') if path.is_dir())
+    backups = sorted(
+        path for path in backups_dir.glob('code_*')
+        if path.is_dir() and (path / _BACKUP_INDEX).is_file()
+    )
     if not backups:
         raise CodeReleaseVerificationError(f'没有可用代码备份: {backups_dir}')
     return backups[-1]

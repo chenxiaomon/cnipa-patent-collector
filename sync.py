@@ -10,16 +10,14 @@
 
 日常数据回流固定使用 sync_pull_from_master.py；旧 pull/push 方向命令已禁用。
 """
-import shlex
 import shutil
 
-import json
 import os
 import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from settings import DETECTION_LOG_JSONL_FILE, PATENTS_DB_FILE
+from settings import BASE_DIR, DETECTION_LOG_JSONL_FILE, PATENTS_DB_FILE
 from db_manager import PatentsDB
 from machine_identity import (
     MachineRoleConfigurationError,
@@ -56,12 +54,13 @@ def _find_git() -> str:
 _GIT = _find_git()
 
 
-def run(cmd: str, check: bool = True) -> subprocess.CompletedProcess:
-    parts = shlex.split(cmd)
+def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
+    parts = list(cmd)
     if parts and parts[0] == 'git':
         parts[0] = _GIT
     return subprocess.run(
         parts,
+        cwd=BASE_DIR,
         text=True,
         encoding='utf-8',
         errors='replace',
@@ -78,67 +77,17 @@ def record_count() -> int:
         return 0
 
 
-def _parse_jsonl(text: str) -> dict:
-    """将 JSONL 文本解析为 {application_no: record} 字典"""
-    result = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-            app_no = record.get('application_no')
-            if app_no:
-                result[app_no] = record
-        except json.JSONDecodeError:
-            pass
-    return result
-
-
-def _auto_merge_conflict() -> bool:
-    """
-    git pull 产生冲突时自动合并 detection_log.jsonl。
-    策略：以申请号为 key 合并双方记录，timestamp 较新的优先，两边独有的都保留。
-    返回 True 表示合并成功并已 git add，False 表示合并失败需人工介入。
-    """
-    try:
-        ours_raw   = run(f'git show :2:{LOG_FILE}', check=False).stdout
-        theirs_raw = run(f'git show :3:{LOG_FILE}', check=False).stdout
-        our_map    = _parse_jsonl(ours_raw)
-        their_map  = _parse_jsonl(theirs_raw)
-    except Exception as e:
-        print(f"[!] 无法解析冲突文件，需人工处理: {e}")
-        return False
-
-    merged = dict(their_map)
-    for app_no, record in our_map.items():
-        if app_no not in merged:
-            merged[app_no] = record
-        else:
-            if record.get('timestamp', '') > merged[app_no].get('timestamp', ''):
-                merged[app_no] = record
-
-    tmp = LOG_FILE + '.tmp'
-    with open(tmp, 'w', encoding='utf-8') as f:
-        for record in merged.values():
-            f.write(json.dumps(record, ensure_ascii=False) + '\n')
-    os.replace(tmp, LOG_FILE)
-
-    run(f'git add {LOG_FILE}')
-    total = len(merged)
-    ours_only   = len(set(our_map) - set(their_map))
-    theirs_only = len(set(their_map) - set(our_map))
-    print(f"[✓] 自动合并完成：共 {total} 条（本地独有 {ours_only} 条，远端独有 {theirs_only} 条）")
-    return True
-
-
 def cmd_status():
     print("=" * 60)
     print("📊 同步状态")
     print("=" * 60)
     print(f"本地记录数 : {record_count()} 条")
 
-    log = run('git log --oneline -5 data/results/detection_log.jsonl', check=False).stdout
+    log = run(
+        ['git', 'log', '--oneline', '-5', '--',
+         DETECTION_LOG_JSONL_FILE.relative_to(BASE_DIR).as_posix()],
+        check=False,
+    ).stdout
     if log.strip():
         print("最近提交:")
         for line in log.strip().splitlines():
@@ -146,7 +95,7 @@ def cmd_status():
     else:
         print("尚无提交记录")
 
-    ahead = run('git status -sb', check=False).stdout.strip()
+    ahead = run(['git', 'status', '-sb'], check=False).stdout.strip()
     print(f"git 状态  : {ahead.splitlines()[0] if ahead else '未知'}")
 
 
@@ -172,15 +121,16 @@ def cmd_init():
             sys.exit(1)
 
     print("[*] 拉取最新进度...")
-    result = run('git pull', check=False)
-    if result.returncode != 0:
-        if 'CONFLICT' in result.stdout or 'conflict' in result.stderr:
-            print("[!] 检测到合并冲突，尝试自动合并...")
-            if not _auto_merge_conflict():
-                print("[✗] 自动合并失败，请手动检查后重试")
-                sys.exit(1)
-        else:
-            print(f"[!] git pull 失败，尝试使用现有 JSONL 重建...\n{result.stderr.strip()}")
+    # 基础状态和费用使用不同的快照时间，Git 合并无法确定整条记录的权威版本。
+    pull_attempt = run(['git', 'pull', '--ff-only'], check=False)
+    if pull_attempt.returncode != 0:
+        print(f"[✗] git pull 失败，未导入数据库。\n{pull_attempt.stderr.strip()}")
+        print("    请先处理 Git 状态后重试；仅从已核实的本地备份恢复请运行 python sync.py rebuild。")
+        sys.exit(1)
+
+    if not DETECTION_LOG_JSONL_FILE.is_file():
+        print(f"[✗] JSONL 文件不存在，未导入数据库: {DETECTION_LOG_JSONL_FILE}")
+        sys.exit(1)
 
     db = PatentsDB(PATENTS_DB_FILE)
     imported = db.import_from_jsonl(DETECTION_LOG_JSONL_FILE)
@@ -221,3 +171,6 @@ if __name__ == '__main__':
     except MachineRoleConfigurationError as exc:
         print(f"[✗] {exc}")
         sys.exit(2)
+    except ValueError as exc:
+        print(f"[✗] {exc}")
+        sys.exit(1)

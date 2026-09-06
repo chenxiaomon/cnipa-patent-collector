@@ -1,4 +1,5 @@
 import io
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -6,6 +7,27 @@ import check_update
 
 
 class HttpVersionComparisonTests(unittest.TestCase):
+    def test_dashboard_update_check_uses_the_http_installation_channel(self):
+        with patch.object(check_update, 'check_via_http', return_value={'method': 'http'}) as check_http:
+            with patch.object(check_update, 'check_via_git') as check_git, patch.object(
+                check_update, '_git_available', return_value='git'
+            ):
+                check = check_update.check_update()
+
+        self.assertEqual(check, {'method': 'http'})
+        check_http.assert_called_once_with()
+        check_git.assert_not_called()
+
+    def test_failed_git_comparison_is_not_reported_as_up_to_date(self):
+        commands = [
+            subprocess.CompletedProcess([], 0, stdout='', stderr=''),
+            subprocess.CompletedProcess([], 0, stdout='origin/missing\n', stderr=''),
+            subprocess.CompletedProcess([], 128, stdout='', stderr='bad revision'),
+        ]
+        with patch.object(check_update.subprocess, 'run', side_effect=commands):
+            check = check_update.check_via_git('git')
+        self.assertIn('bad revision', check['error'])
+
     def check_versions(self, local_version: str, remote_version: str) -> dict:
         with (
             patch.object(check_update, '_read_local_version', return_value=local_version),

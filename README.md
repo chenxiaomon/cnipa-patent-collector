@@ -188,6 +188,8 @@ data/
 
 ### 新机器一键初始化
 
+Windows 生产机与 Mac 开发机统一使用 Python 3.11 和项目内的 `.venv`，依赖版本以 `uv.lock` 为准。先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，Windows 安装后重新打开终端。
+
 ```bash
 git clone https://github.com/chenxiaomon/cnipa-patent-collector.git
 cd cnipa-patent-collector
@@ -198,6 +200,10 @@ echo replica > data/machine_role.txt
 # 从远端 JSONL 重建本地 DB（导入历史记录，避免重复采集）
 uv run python sync.py init
 ```
+
+Windows 生产机可运行 `setup.bat` 安装相同的锁定运行依赖，再用 `.venv\Scripts\python.exe web_dashboard.py` 启动控制台。`run.bat` 和 `launch_browser.bat` 也使用该项目环境；本机角色按实际用途配置，生产机写入 `master`。
+
+`sync.py init` 在拉取失败或分支分叉时停止，不自动合并备份；离线恢复使用 `sync.py rebuild`。Windows 代码更新使用 `upgrade.bat` 的 HTTP 发布通道，更新后运行 `setup.bat` 并重启 Dashboard、主 MITM 代理。完整数据库备份与回滚步骤见 [运行手册](docs/runbook.md)。
 
 ### Replica 每日单命令回流
 

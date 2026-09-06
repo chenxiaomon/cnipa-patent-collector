@@ -13,38 +13,57 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
 
       - name: 安装 Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-          cache: pip
+          python-version: "3.11"
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.10"
+          enable-cache: true
 
       - name: 安装系统依赖（xvfb 供 pyautogui 在无头环境 import）
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y xvfb
 
-      - name: 安装 Python 依赖
+      - name: 安装锁定依赖
+        shell: bash
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest ruff
+          uv lock --check --python 3.11
+          uv sync --frozen --python 3.11
 
       - name: 语法检查
-        run: python -m compileall -q $(ls *.py)
+        shell: bash
+        run: uv run --frozen python -m compileall -q *.py
 
       - name: 代码检查（ruff lint）
-        run: ruff check .
+        run: uv run --frozen ruff check .
 
       - name: 版本一致性校验（VERSION == pyproject.toml）
-        run: python scripts/sync_version.py --check
+        run: uv run --frozen python scripts/sync_version.py --check
 
       - name: 发布清单一致性校验
+        shell: bash
         run: |
-          python scripts/generate_code_manifest.py
+          uv run --frozen python scripts/generate_code_manifest.py
           git diff --exit-code -- release_manifest.json
 
-      - name: 单元测试（排除依赖真实 DB 的数据质量测试）
-        run: xvfb-run -a python -m pytest tests/ -q --ignore=tests/test_validation.py
+      - name: Linux 单元测试（排除依赖真实 DB 的数据质量测试）
+        if: runner.os == 'Linux'
+        run: xvfb-run -a uv run --frozen python -m pytest tests/ -q --ignore=tests/test_validation.py
+
+      - name: Windows 单元测试（排除依赖真实 DB 的数据质量测试）
+        if: runner.os == 'Windows'
+        run: uv run --frozen python -m pytest tests/ -q --ignore=tests/test_validation.py

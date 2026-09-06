@@ -2,13 +2,15 @@
 # -*- coding: utf-8 -*-
 
 import unittest
-from datetime import datetime, timezone
 from unittest.mock import patch
 
-from tests.test_mitm_scraper import _json_body, _make_flow
+from tests.test_mitm_scraper import _json_body, _verified_detail_flow
 
 
 class TestEmptyFwxxCache(unittest.TestCase):
+    @patch("patent_mitm_scraper.read_detail_attempt_marker", return_value={
+        "application_no": "2026102909420", "attempt_id": "attempt-current",
+    })
     @patch("patent_mitm_scraper.write_json_cache")
     @patch("patent_mitm_scraper.read_json_cache")
     @patch("patent_mitm_scraper.DetectionLogger")
@@ -17,16 +19,14 @@ class TestEmptyFwxxCache(unittest.TestCase):
         _logger_class,
         read_cache,
         write_cache,
+        _attempt_marker,
     ):
         from patent_mitm_scraper import PatentMITMScraper
 
-        written_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        read_cache.side_effect = [
-            {"application_no": "2026102909420", "written_at": written_at},
-            {},
-        ]
-        flow = _make_flow(
+        read_cache.return_value = {}
+        flow = _verified_detail_flow(
             "https://cponline.cnipa.gov.cn/api/view/gn/fwxx?token=abc",
+            "2026102909420",
             body=_json_body({
                 "code": 200,
                 "data": {
@@ -38,7 +38,6 @@ class TestEmptyFwxxCache(unittest.TestCase):
         )
 
         scraper = PatentMITMScraper()
-        scraper.request(flow)
         scraper._process_fwxx_response(flow)
 
         cached = write_cache.call_args.args[1]["2026102909420"]

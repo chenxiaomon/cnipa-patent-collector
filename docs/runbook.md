@@ -8,7 +8,7 @@
 # 确保在项目目录
 cd ~/Desktop/vibe/cnipa-patent-collector
 
-# 检查 Python 版本（3.8+）
+# 检查项目 Python 版本（生产与开发统一为 3.11）
 python --version
 
 # 检查必需文件
@@ -19,16 +19,15 @@ ls data/config.json      # 鼠标坐标配置
 ### 1. 安装依赖
 
 ```bash
-# 新建虚拟环境（推荐）
-python -m venv venv
-source venv/bin/activate  # macOS/Linux
-# venv\Scripts\activate  # Windows
+# 使用 uv.lock 安装到项目 .venv
+uv sync --frozen --python 3.11
 
-# 安装依赖
-pip install -r requirements.txt  # 如果有 requirements.txt
-# 或逐个安装:
-pip install undetected-chromedriver selenium pyautogui mitmproxy pandas openpyxl
+# 后续 python 命令使用该环境
+source .venv/bin/activate  # macOS/Linux
+# .venv\Scripts\activate.bat  # Windows CMD
 ```
+
+Windows 可直接运行 `setup.bat` 安装锁定运行依赖；缺少 uv 时按脚本提示安装，再重新打开终端。采集入口 `run.bat` 和公开浏览器入口 `launch_browser.bat` 固定使用项目 `.venv`。
 
 ### 2. 准备申请号列表
 
@@ -101,20 +100,20 @@ MITM_TIMEOUT=10 USE_MITM_PROXY=true python main_automation.py
 # 进入项目目录
 cd ~/Desktop/vibe/cnipa-patent-collector
 
-# 启动 mitmproxy（监听 127.0.0.1:8082）
+# 启动主 mitmproxy（默认监听 127.0.0.1:8083）
 python start_mitm_proxy.py
 ```
 
 **预期输出**:
 ```
 [+] 启动 mitmproxy...
-[*] 监听地址: 127.0.0.1:8082
+[*] 监听地址: 127.0.0.1:8083
 [*] 脚本文件: patent_mitm_scraper.py
 ```
 
 **故障排查**:
-- 端口被占用: `lsof -i :8082 | kill -9 <PID>`
-- mitmproxy 未安装: `pip install mitmproxy`
+- 端口被占用：先确认是否已有主代理运行；主代理默认 8083，公开查询代理默认 8082，可通过 `settings.py` 的环境变量覆盖。
+- mitmproxy 未安装：在项目目录重新运行 `uv sync --frozen --python 3.11`。
 
 ### 5. 启动主程序（终端 2）
 
@@ -138,10 +137,13 @@ USE_MITM_PROXY=true python main_automation.py
 ```
 
 **浏览器交互**:
+- 完成登录后在终端按 Enter，或在 Dashboard 点击登录确认按钮。等待超时、未确认或登录表单仍可见时任务会停止，不继续消耗申请号；看门狗对 `login_required` 报警不自动重启。处理完成后重新启动任务。
 - 浏览器自动打开，PyAutoGUI 自动输入搜索框
 - **勿手动关闭浏览器**（会中断采集）
 - **勿移动鼠标**（可能干扰 PyAutoGUI）
 - **勿切换窗口**（某些情况下会导致输入失败）
+
+发文和费用采集会先用本轮官方 `sqxx` 响应核对详情页申请号，身份缺失或不符时停止批次。升级这些模块后须重启 Dashboard 和主 MITM 代理，使采集器和代理使用同一版协议。
 
 ---
 
@@ -178,6 +180,8 @@ echo replica > data/machine_role.txt
 uv run python sync.py init   # 仅 replica 从 JSONL 备份初始化 SQLite
 ```
 
+`init` 只接受 `git pull --ff-only` 成功后的备份；网络失败、分支分叉或合并冲突时停止，不导入数据库。需要离线恢复已核实的本地 JSONL 时，单独执行 `sync.py rebuild`。导入前会验证整份 JSONL，损坏行或无效申请号会使整次导入失败；旧版追加日志中的同申请号多条记录仍按文件顺序重放。
+
 ### replica 拉取 master 增量
 
 ```bash
@@ -186,7 +190,7 @@ cp data/master_sync.example.json data/master_sync.json
 uv run python sync_pull_from_master.py
 ```
 
-脚本以 `data/master_sync_state.json` 保存的 master 数据库修改时间为游标，同时拉取新增记录和已有记录更新；成功后合并 SQLite、刷新 JSONL 和 README，并创建一个限定范围的数据提交。旧游标首次升级或 master 地址变化时会做一次全量重对账。最后人工检查并执行：
+脚本以 `data/master_sync_state.json` 保存的 master 数据库修改时间为游标，同时拉取新增记录和已有记录更新；master 明确提供的空值也会覆盖 replica 旧值。成功后合并 SQLite、刷新 JSONL 和 README，并创建一个限定范围的数据提交。升级本次同步导入逻辑后，旧游标会触发一次全量重对账，补回以前漏掉的清空操作；之后继续增量。master 地址变化也会触发全量重对账。最后人工检查并执行：
 
 ```bash
 git push
@@ -202,6 +206,12 @@ uv run python sync.py rebuild --force --i-know-this-is-master
 
 master 的增量导入允许执行，但终端必须先显示输入条数、新申请号、更新已有记录和时间范围，并等待回车确认。Dashboard 导入会先返回同一摘要，再要求二次确认。
 
+### 完整数据库备份
+
+`DetectionLogger` 每累计 500 次写入生成一份完整 SQLite 备份，保存于日志同目录的 `detection_log_backup_*.db`，保留最新 5 份。备份读取已提交的 WAL 内容，包含专利、费用数据集、请求和采集失败记录；完成后才原子发布，失败不会替换上一份备份。历史 `.jsonl` 备份继续保留。
+
+JSONL 只保存专利记录，不能替代完整数据库备份。恢复 `.db` 备份前须停止 Dashboard、MITM 和全部采集进程，并保留当前数据库及其 WAL/SHM 文件；恢复时不能混用旧数据库的 WAL/SHM 与备份文件。本轮升级不会自动恢复或改写生产数据。
+
 ### 安全代码更新与回滚
 
 部署机代码更新使用 HTTP 发布清单，永不覆盖 `data/`：
@@ -211,7 +221,33 @@ uv run python fetch_update.py
 uv run python rollback.py
 ```
 
-更新前代码写入 `backups/code_YYYYMMDD_HHMMSS/`，下载文件逐一校验 SHA-256；校验或安装失败会自动恢复，最多保留 5 份备份。
+更新先下载全部文件并校验 SHA-256 和版本，验证成功后才生成代码备份并安装。备份位于 `backups/code_YYYYMMDD_HHMMSS_ffffff/`，完成后才发布；安装失败会自动恢复，最多保留 5 份。下载或校验失败不会替换当前代码。
+
+回滚前验证整份备份的文件清单和 SHA-256。残缺、损坏或缺少哈希索引的旧备份会被拒绝，旧备份文件仍保留，可人工核对后恢复。代码回滚不回退 Python 依赖。
+
+Windows 的 `upgrade.bat` 和 Dashboard 更新入口统一使用 HTTP 发布清单。维护顺序为：停止采集，执行更新，运行 `setup.bat` 同步锁定依赖，再重启 Dashboard 和主 MITM 代理。回滚到旧代码后也须重新运行对应版本的 `setup.bat`。
+
+### 从 Mac 发布到 GitHub
+
+公司电脑通过 GitHub `main` 分支的 HTTP 文件获取发布版本。向 GitHub 推送代码不会远程安装到公司电脑；公司电脑的更新检查会发现新版本，由现场操作者触发安装。
+
+1. 在发布分支整理代码、测试和运行手册，以 `VERSION` 为准提升日期版本号。
+2. 运行 `python scripts/sync_version.py`，再运行 `uv lock --python 3.11` 同步项目版本，不加 `--upgrade`。
+3. 完成代码检查和隔离测试后，最后运行 `python scripts/generate_code_manifest.py`。版本、代码、锁文件和清单须一起提交，本轮不提交 `data/` 的变化。
+4. 推送发布分支，创建目标为 `main` 的 Pull Request，等待 Ubuntu 和 Windows CI 全部通过。当前工作流不会因单独推送普通开发分支而触发。
+5. 合并到 `main` 后，该版本即可被公司电脑检测到。不要把尚未通过 Windows 检查的候选版本直接推到 `main`。
+
+### 首次升级到 2026.09.06
+
+以下步骤用于已经带有 `fetch_update.py` 的旧部署。公司电脑的实际版本尚未核验；如果没有该文件，应先核对现有部署入口。
+
+旧更新器会在进程启动时加载旧备份代码，即使下载了新版文件，本次升级前的备份仍可能没有哈希索引。因此首次迁移使用独立的项目副本作为回退依据，后续由新版更新器生成可校验的代码备份。
+
+1. 在公司电脑确认 `uv --version` 可用，再停止看门狗、采集任务、Dashboard 和两个 MITM 代理，关闭使用项目虚拟环境的终端任务。缺少 uv 时先按 [uv 官方说明](https://docs.astral.sh/uv/getting-started/installation/) 安装并重新打开终端。
+2. 将整个项目目录复制到项目之外的另一个目录，保留 `data/`、`.venv`、`.env` 及本机配置。确认目录复制完成，没有跳过或失败的文件。
+3. 在原先能运行项目的 Python 环境和项目目录中，执行 `python fetch_update.py --check`，成功后执行 `python fetch_update.py`。检查 `VERSION` 必须为 `2026.09.06`，避免自定义分支或镜像仍返回旧版本。首次升级不要依赖旧 `upgrade.bat`，它仍可能走 Git 更新。
+4. 运行新版 `setup.bat`，确认安装成功且 `.venv\Scripts\python.exe --version` 为 3.11。使用该解释器分别启动 Dashboard 和主 MITM 代理，核对界面版本，再执行少量采集验收；此前保持采集和看门狗停止。
+5. 如果代码更新或依赖安装失败，且尚未恢复采集，关闭相关进程，将第 2 步的完整副本恢复到原项目路径，包括原 `.venv`、`data/` 和本机配置，不复用失败安装留下的文件。此次首跳不能依赖新版 `rollback.py` 自动接收无哈希的旧代码备份。
 
 ### 无人值守采集与报警
 

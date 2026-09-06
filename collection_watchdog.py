@@ -12,6 +12,7 @@ import time
 from datetime import datetime, timezone
 from collection_health import (
     clear_collection_alert,
+    read_alert_status,
     read_collection_heartbeat,
     record_collection_alert,
     write_collection_start_heartbeat,
@@ -71,7 +72,11 @@ def collection_command() -> list[str]:
 
 
 def start_collection_process() -> subprocess.Popen:
-    popen_kwargs = {'cwd': str(BASE_DIR), 'env': os.environ.copy()}
+    popen_kwargs = {
+        'cwd': str(BASE_DIR),
+        'env': os.environ.copy(),
+        'stdin': subprocess.DEVNULL,
+    }
     if sys.platform == 'win32':
         popen_kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
@@ -80,6 +85,9 @@ def start_collection_process() -> subprocess.Popen:
 
 
 def supervision_failure(process: subprocess.Popen) -> tuple[str, str] | None:
+    login_alert = read_alert_status()
+    if login_alert.get('reason') == 'login_required':
+        return 'login_required', login_alert['details']
     free_gb = shutil.disk_usage(BASE_DIR).free / (1024 ** 3)
     if free_gb < WATCHDOG_MIN_FREE_GB:
         return 'disk_space_low', f'磁盘剩余 {free_gb:.2f} GB，阈值 {WATCHDOG_MIN_FREE_GB:.2f} GB'
@@ -119,8 +127,12 @@ def run_supervised_collection() -> int:
             print('[watchdog] 收到停止请求，采集进程树已终止。')
             return 0
         assert failure is not None
-        restart_count += 1
         reason, details = failure
+        if reason == 'login_required':
+            record_collection_alert(reason, details, restart_count)
+            print(f'[watchdog] {details}；等待人工处理，不自动重启。')
+            return 1
+        restart_count += 1
         record_collection_alert(reason, details, restart_count)
         print(f'[watchdog] {details}，准备第 {restart_count} 次重启。')
         if restart_count >= WATCHDOG_MAX_RESTARTS:

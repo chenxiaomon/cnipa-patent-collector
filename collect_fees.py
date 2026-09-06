@@ -12,7 +12,7 @@ import os
 import random
 import sys
 import time
-from datetime import datetime, timezone
+from functools import partial
 
 if sys.platform == 'win32':
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -43,11 +43,17 @@ from cache_utils import (
     clear_cache_key,
     parse_app_no_list,
     poll_cache_for_key,
-    write_json_cache,
 )
 from coordinate_service import CoordinateService
 from db_manager import PatentsDB
 from detection_logger import DetectionLogger
+from detail_attempt import (
+    DetailCollectionFatalError,
+    begin_detail_attempt,
+    clear_matching_detail_attempt,
+    matches_detail_attempt,
+    wait_for_detail_identity,
+)
 from input_service import InputService
 from desktop_collection_lock import (
     DetailCollectionDesktopBusyError,
@@ -71,7 +77,6 @@ from settings import (
     FWXX_POST_SEARCH_WAIT,
     FWXX_STARTUP_COUNTDOWN,
     FWXX_TAB_SWITCH_WAIT,
-    MARKER_FILE,
     PATENT_FEE_CACHE_FILE,
     PATENTS_DB_FILE,
     PYAUTOGUI_FAILSAFE,
@@ -84,7 +89,6 @@ pyautogui.FAILSAFE = PYAUTOGUI_FAILSAFE
 
 SEARCH_PAGE_URL = CNIPA_URL
 PATENT_FEE_CACHE_FILE = str(PATENT_FEE_CACHE_FILE)
-MARKER_FILE = str(MARKER_FILE)
 FEE_UNMATCHED_FILE = str(FEE_UNMATCHED_FILE)
 
 _FEE_PAYLOAD_FIELDS = (
@@ -217,15 +221,6 @@ def _load_standalone_collected() -> set[str]:
         return set()
 
 
-def _mark_current_fee_target(application_no: str) -> None:
-    """在点击费用菜单前刷新 MITM 关联标记。"""
-    written_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
-    write_json_cache(MARKER_FILE, {
-        'application_no': application_no,
-        'written_at': written_at,
-    })
-
-
 def collect_one_fee(
     driver,
     application_no: str,
@@ -238,10 +233,19 @@ def collect_one_fee(
 ) -> dict | None:
     """在详情页采集单个申请号的费用信息。"""
     fee_fields: dict = {}
+    detail_attempt = None
+    detail_handle = None
+    search_handle = None
     try:
         if not is_browser_alive(driver):
             print("    [!] 浏览器已关闭，无法采集")
             return None
+
+        initial_handles = list(driver.window_handles)
+        if len(initial_handles) != 1:
+            raise DetailCollectionFatalError("费用采集开始时不是唯一搜索页，已停止批次")
+        search_handle = initial_handles[0]
+        driver.switch_to.window(search_handle)
 
         print(f"\n  [{application_no}] 开始采集费用信息...")
         try:
@@ -274,27 +278,25 @@ def collect_one_fee(
             pass
 
         print("    [*] 点击申请号链接进入详情页...")
-        _mark_current_fee_target(application_no)
-        print(f"    [*] 预先标记详情请求: {application_no}")
-        tabs_before = len(driver.window_handles)
+        detail_attempt = begin_detail_attempt(application_no)
         InputService.move_and_click(
             link_x,
             link_y,
             post_click_wait=FWXX_DETAIL_CLICK_WAIT,
         )
-        if len(driver.window_handles) <= tabs_before:
-            print("    [!] 搜索结果无效或点击失败（标签数未增加）")
-            return None
+        new_handles = [handle for handle in driver.window_handles if handle != search_handle]
+        if len(new_handles) != 1:
+            raise DetailCollectionFatalError("费用详情页未唯一打开，已停止批次")
 
-        driver.switch_to.window(driver.window_handles[-1])
+        detail_handle = new_handles[0]
+        driver.switch_to.window(detail_handle)
         time.sleep(FWXX_TAB_SWITCH_WAIT)
-        print("    [✓] 已切换到详情页标签")
+        wait_for_detail_identity(detail_attempt)
+        print("    [✓] 官方申请号已确认，开始采集费用")
         fee_menu_x, fee_menu_y = (
             CoordinateService.load_or_record_fee_menu_coordinates()
         )
 
-        _mark_current_fee_target(application_no)
-        print(f"    [*] 标记申请号: {application_no}")
         print("    [*] 点击'费用信息'菜单...")
         InputService.move_and_click(
             fee_menu_x,
@@ -307,6 +309,10 @@ def collect_one_fee(
             PATENT_FEE_CACHE_FILE,
             application_no,
             max_wait=FWXX_CACHE_POLL_TIMEOUT,
+            validate=partial(
+                matches_detail_attempt,
+                expected_attempt_id=detail_attempt['attempt_id'],
+            ),
         )
         if fee_payload is None:
             print("    [!] 未从缓存中获得费用信息")
@@ -323,54 +329,55 @@ def collect_one_fee(
                 else:
                     fee_counts.append(f"{label} 未返回")
             print(f"    [✓] 成功读取费用信息：{'; '.join(fee_counts)}")
-            fee_fields.update(fee_payload)
+            fee_fields.update({
+                field: value for field, value in fee_payload.items()
+                if field != 'detail_attempt_id'
+            })
 
-        if len(driver.window_handles) > 1:
-            print("    [*] 关闭详情页标签...")
-            pyautogui.hotkey('ctrl', 'w')
-            time.sleep(FWXX_DETAIL_CLOSE_WAIT)
-            driver.switch_to.window(driver.window_handles[0])
-            time.sleep(FWXX_TAB_SWITCH_WAIT)
-            print("    [✓] 已回到搜索页")
         return fee_fields or None
 
+    except DetailCollectionFatalError:
+        raise
     except Exception as error:
         print(f"    [!] 采集失败: {str(error)[:100]}")
-        try:
-            while len(driver.window_handles) > 1:
-                driver.switch_to.window(driver.window_handles[-1])
-                pyautogui.hotkey('ctrl', 'w')
-                time.sleep(FWXX_TAB_SWITCH_WAIT)
-            driver.switch_to.window(driver.window_handles[0])
-        except Exception:
-            pass
         return fee_fields or None
+    finally:
+        if detail_attempt is not None:
+            clear_matching_detail_attempt(detail_attempt['attempt_id'])
+        if detail_handle is not None:
+            try:
+                if detail_handle in driver.window_handles:
+                    driver.switch_to.window(detail_handle)
+                    driver.close()
+                    time.sleep(FWXX_DETAIL_CLOSE_WAIT)
+                if list(driver.window_handles) != [search_handle]:
+                    raise DetailCollectionFatalError("费用详情页关闭后未恢复唯一搜索页")
+                driver.switch_to.window(search_handle)
+                time.sleep(FWXX_TAB_SWITCH_WAIT)
+            except DetailCollectionFatalError:
+                raise
+            except Exception as error:
+                raise DetailCollectionFatalError("无法确认费用详情页已关闭，已停止批次") from error
 
 
-def persist_fee_fields(application_no: str, fee_fields: dict) -> bool:
-    """字段级写入费用快照，不改变案件状态的 `timestamp`。"""
+def persist_fee_fields(application_no: str, fee_fields: dict) -> dict | None:
+    """按版本写入费用并返回主库实际保留的快照；失败时备份本次响应。"""
     try:
         db = PatentsDB(PATENTS_DB_FILE)
-        if db.get_record(application_no) is None:
-            print(f"    [!] {application_no} 不在 DB 中，写入 {FEE_UNMATCHED_FILE}")
-            _append_unmatched_fee(application_no, fee_fields, reason='not_found_in_db')
-            return False
-
         persisted_fields = {
             field: fee_fields[field]
             for field in _FEE_PAYLOAD_FIELDS
             if field in fee_fields
         }
-        updated_rows = db.update_fields(application_no, persisted_fields)
-        if updated_rows != 1:
+        stored_snapshot = db.update_fee_snapshot(application_no, persisted_fields)
+        if stored_snapshot is None:
             print(f"    [!] {application_no} 的费用字段未更新到主库")
             _append_unmatched_fee(
                 application_no,
                 fee_fields,
-                reason=f'unexpected_updated_rows: {updated_rows}',
+                reason='not_found_in_db',
             )
-            return False
-        return True
+        return stored_snapshot
     except Exception as error:
         print(f"    [!] 费用字段更新失败: {error}")
         _append_unmatched_fee(
@@ -378,7 +385,7 @@ def persist_fee_fields(application_no: str, fee_fields: dict) -> bool:
             fee_fields,
             reason=f'update_failed: {error}',
         )
-        return False
+        return None
 
 
 def _append_unmatched_fee(
@@ -498,7 +505,8 @@ def _run_fee_collection(args) -> None:
             )
 
             if fee_fields:
-                if not persist_fee_fields(application_no, fee_fields):
+                stored_snapshot = persist_fee_fields(application_no, fee_fields)
+                if stored_snapshot is None:
                     print(f"  ⚠️  主库未更新，费用信息已备份到 {FEE_UNMATCHED_FILE}")
                     failure_db.record_collection_failure(
                         FEE_COLLECTION_KIND,
@@ -508,9 +516,9 @@ def _run_fee_collection(args) -> None:
                     failed_count += 1
                     failure_streak.record_failure()
                 elif not all(
-                    field in fee_fields for field in _REQUIRED_FEE_PAYLOAD_FIELDS
+                    stored_snapshot[field] is not None for field in _REQUIRED_FEE_PAYLOAD_FIELDS
                 ):
-                    print("  ⚠️  已保存部分费用栏目，完整数据仍需重试")
+                    print("  ⚠️  主库费用栏目仍不完整，需重试")
                     failure_db.record_collection_failure(
                         FEE_COLLECTION_KIND,
                         application_no,
@@ -519,7 +527,7 @@ def _run_fee_collection(args) -> None:
                     failed_count += 1
                     failure_streak.record_failure()
                 else:
-                    print("  ✅ 已成功采集并更新费用字段")
+                    print("  ✅ 主库费用栏目已完整")
                     failure_db.clear_collection_failure(
                         FEE_COLLECTION_KIND,
                         application_no,
