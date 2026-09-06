@@ -102,6 +102,21 @@ class TestOperatorApiToken(unittest.TestCase):
                     self.assertEqual(json.loads(config_path.read_text(encoding='utf-8')), search_config)
                     self.assertEqual(json.loads(detail_config_path.read_text(encoding='utf-8')), detail_config)
 
+                    with self.assertRaises(urllib.error.HTTPError) as invalid_save:
+                        post('/api/config', {
+                            'search_text': json.dumps({
+                                'input_x': 11, 'input_y': 21,
+                                'button_x': 31, 'button_y': 41,
+                            }),
+                            'detail_text': json.dumps({
+                                **detail_config,
+                                'fee_menu_x': True,
+                            }),
+                        })
+                    self.assertEqual(invalid_save.exception.code, 400)
+                    self.assertEqual(json.loads(config_path.read_text(encoding='utf-8')), search_config)
+                    self.assertEqual(json.loads(detail_config_path.read_text(encoding='utf-8')), detail_config)
+
                     reset_response = post('/api/config/reset', {})
                     self.assertFalse(config_path.exists())
                     self.assertFalse(detail_config_path.exists())

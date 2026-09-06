@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import argparse
+import errno
 import json
 import os
 import shutil
@@ -11,25 +13,58 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from cache_utils import normalize_app_no
-from db_manager import SYNC_CURSOR_FIELD, PatentsDB
+from db_manager import SYNC_CURSOR_FIELD, PatentsDB, normalize_sync_cursor
 from machine_identity import MachineRoleConfigurationError, require_replica_pull_role
 from settings import (
     BASE_DIR,
     DETECTION_LOG_JSONL_FILE,
     MASTER_SYNC_CONFIG_FILE,
+    MASTER_SYNC_LOCK_FILE,
     MASTER_SYNC_STATE_FILE,
     PATENTS_DB_FILE,
 )
 from update_readme_stats import update_readme_statistics
 
 INITIAL_SYNC_TIMESTAMP = '1970-01-01T00:00:00Z'
-_MASTER_SNAPSHOT_IMPORT_VERSION = 1
+_MASTER_SNAPSHOT_IMPORT_VERSION = 2
 
 
 class MasterSyncConfigurationError(RuntimeError):
     """Raised when the replica cannot safely identify its master endpoint."""
+
+
+class MasterSyncBusyError(RuntimeError):
+    """Another process is already updating this replica from its master."""
+
+
+@contextmanager
+def reserve_master_sync():
+    """Serialize cursor reads, replica writes and cursor commits across processes."""
+    MASTER_SYNC_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # Keep one stable file; deleting it on release would allow locking different inodes.
+    with MASTER_SYNC_LOCK_FILE.open('a+b') as lock_stream:
+        lock_stream.seek(0, os.SEEK_END)
+        if lock_stream.tell() == 0:
+            lock_stream.write(b'\0')
+            lock_stream.flush()
+        lock_stream.seek(0)
+        try:
+            if os.name == 'nt':
+                import msvcrt
+
+                msvcrt.locking(lock_stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK} and getattr(exc, 'winerror', None) not in {33, 36}:
+                raise
+            raise MasterSyncBusyError('已有从 master 同步的任务正在运行，请等待该任务结束。') from exc
+        yield
 
 
 def load_master_url() -> str:
@@ -52,7 +87,7 @@ def load_sync_cursor(master_url: str) -> str:
     payload = json.loads(MASTER_SYNC_STATE_FILE.read_text(encoding='utf-8'))
     if str(payload.get('master_url', '')).rstrip('/') != master_url.rstrip('/'):
         return INITIAL_SYNC_TIMESTAMP
-    # Older imports skipped explicit NULL values even after advancing the cursor.
+    # Reconcile rows missed by historic timestamp ordering or NULL-preserving imports.
     if payload.get('snapshot_import_version') != _MASTER_SNAPSHOT_IMPORT_VERSION:
         return INITIAL_SYNC_TIMESTAMP
     timestamp = str(payload.get('last_sync_updated_at', '')).strip()
@@ -77,10 +112,12 @@ def fetch_master_delta(master_url: str, since: str) -> tuple[list[dict], int]:
             except json.JSONDecodeError:
                 bad_lines += 1
                 continue
+            if not isinstance(record, dict):
+                bad_lines += 1
+                continue
             app_no = normalize_app_no(record.get('application_no'))
-            sync_updated_at = str(record.get(SYNC_CURSOR_FIELD, '')).strip()
             try:
-                datetime.fromisoformat(sync_updated_at.replace('Z', '+00:00'))
+                sync_updated_at = normalize_sync_cursor(record.get(SYNC_CURSOR_FIELD))
             except ValueError:
                 sync_updated_at = ''
             if not app_no or not sync_updated_at:
@@ -142,30 +179,35 @@ def save_sync_cursor(master_url: str, timestamp: str) -> None:
     temporary_path.replace(MASTER_SYNC_STATE_FILE)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--full', action='store_true', help='忽略本地游标，重新合并 master 的全部专利记录')
+    args = parser.parse_args(argv)
     try:
         require_replica_pull_role()
-        master_url = load_master_url()
-        since = load_sync_cursor(master_url)
-        print(f"[replica] master: {master_url}")
-        print(f"[replica] 拉取起点: {since}")
-        records, bad_lines = fetch_master_delta(master_url, since)
-        if bad_lines:
-            raise RuntimeError(f"增量响应包含 {bad_lines} 行无效记录，已拒绝导入。")
-        if not records:
-            print("[✓] master 没有新记录，本地游标保持不变。")
-            return
-        summary = merge_master_delta(records)
-        update_readme_statistics()
-        committed = commit_patent_backup(summary)
-        latest_sync_updated_at = max(str(record[SYNC_CURSOR_FIELD]) for record in records)
-        save_sync_cursor(master_url, latest_sync_updated_at)
-        print(
-            f"[✓] 已合并 {summary['records']} 条：新增 {summary['new_applications']}，"
-            f"更新 {summary['updated_applications']}。"
-        )
-        print("[✓] 已创建数据提交。" if committed else "[✓] 数据未产生新的 Git 差异。")
-        print("下一步请检查提交后执行: git push")
+        with reserve_master_sync():
+            master_url = load_master_url()
+            since = INITIAL_SYNC_TIMESTAMP if args.full else load_sync_cursor(master_url)
+            print(f"[replica] master: {master_url}")
+            print(f"[replica] 拉取起点: {since}")
+            records, bad_lines = fetch_master_delta(master_url, since)
+            if bad_lines:
+                raise RuntimeError(f"增量响应包含 {bad_lines} 行无效记录，已拒绝导入。")
+            if not records:
+                save_sync_cursor(master_url, since)
+                print("[✓] master 没有新记录，已保存同步起点。")
+                return
+            summary = merge_master_delta(records)
+            update_readme_statistics()
+            committed = commit_patent_backup(summary)
+            latest_sync_updated_at = max(str(record[SYNC_CURSOR_FIELD]) for record in records)
+            save_sync_cursor(master_url, latest_sync_updated_at)
+            print(
+                f"[✓] 已合并 {summary['records']} 条：新增 {summary['new_applications']}，"
+                f"更新 {summary['updated_applications']}。"
+            )
+            print("[✓] 已创建数据提交。" if committed else "[✓] 数据未产生新的 Git 差异。")
+            print("下一步请检查提交后执行: git push")
     except (MachineRoleConfigurationError, MasterSyncConfigurationError, urllib.error.URLError,
             OSError, subprocess.CalledProcessError, RuntimeError, json.JSONDecodeError) as exc:
         print(f"[✗] 从 master 拉取失败: {exc}")

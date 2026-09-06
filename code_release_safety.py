@@ -9,10 +9,11 @@ import os
 import re
 import shutil
 import tempfile
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from settings import BASE_DIR
+from settings import BASE_DIR, RELEASE_REVISION_FILE, VERSION_FILE
 
 BACKUPS_DIR = BASE_DIR / 'backups'
 _EXCLUDED_DIRECTORIES = {
@@ -44,17 +45,44 @@ def parse_calendar_version(version_text: str) -> tuple[int, int, int]:
     return year, month, day
 
 
-def _read_calendar_version_file(version_path: Path) -> tuple[str, tuple[int, int, int]]:
-    try:
-        version_text = version_path.read_text(encoding='utf-8').strip()
-    except OSError as exc:
-        raise CodeReleaseVerificationError(
-            f'Unable to read release version from {version_path}: {exc}'
-        ) from exc
-    try:
-        return version_text, parse_calendar_version(version_text)
-    except CodeReleaseVerificationError as exc:
-        raise CodeReleaseVerificationError(f'{version_path}: {exc}') from exc
+@dataclass(frozen=True, order=True)
+class CodeReleaseVersion:
+    """Keep calendar versions compatible with old installers; order same-day revisions."""
+    version: str
+    revision: int = 0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.version, str):
+            raise CodeReleaseVerificationError('Release version must be a calendar date.')
+        parse_calendar_version(self.version)
+        if type(self.revision) is not int or self.revision < 0:
+            raise CodeReleaseVerificationError('Release revision must be a non-negative integer.')
+
+    def __str__(self) -> str:
+        return f'{self.version} r{self.revision}'
+
+    @classmethod
+    def read(cls, project_root: Path = BASE_DIR) -> CodeReleaseVersion:
+        try:
+            version = (project_root / VERSION_FILE.name).read_text(encoding='utf-8').strip()
+            try:
+                revision = json.loads((project_root / RELEASE_REVISION_FILE.name).read_text(encoding='utf-8'))
+            except FileNotFoundError:
+                # Releases predating revision support are revision zero.
+                revision = 0
+            return cls(version, revision)
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise CodeReleaseVerificationError(f'Unable to read release version from {project_root}: {exc}') from exc
+
+    @classmethod
+    def from_manifest(cls, manifest: dict) -> CodeReleaseVersion:
+        release = manifest.get('release')
+        if not isinstance(release, dict) or 'revision' not in release:
+            raise CodeReleaseVerificationError('发布清单缺少版本或修订信息。')
+        identity_paths = {entry['path'] for entry in manifest['files']}
+        if not {VERSION_FILE.name, RELEASE_REVISION_FILE.name}.issubset(identity_paths):
+            raise CodeReleaseVerificationError('发布清单缺少版本或修订文件。')
+        return cls(release.get('version'), release['revision'])
 
 
 def verify_staged_release_version(
@@ -62,13 +90,11 @@ def verify_staged_release_version(
     project_root: Path = BASE_DIR,
 ) -> None:
     """Reject a staged release whose version is missing, invalid, or older."""
-    installed_version, installed_version_order = _read_calendar_version_file(
-        project_root / 'VERSION'
-    )
-    staged_version, staged_version_order = _read_calendar_version_file(
-        staging_root / 'VERSION'
-    )
-    if staged_version_order < installed_version_order:
+    installed_version = CodeReleaseVersion.read(project_root)
+    staged_version = CodeReleaseVersion.read(staging_root)
+    if installed_version.revision and not (staging_root / RELEASE_REVISION_FILE.name).is_file():
+        raise CodeReleaseVerificationError('发布包缺少修订文件，拒绝遗留旧修订号。')
+    if staged_version < installed_version:
         raise CodeReleaseVerificationError(
             f'Refusing release downgrade: installed {installed_version}, staged {staged_version}'
         )
@@ -142,14 +168,14 @@ def _safe_relative_path(raw_path: str) -> Path:
 
 
 def validate_release_manifest(payload: dict) -> list[dict[str, str]]:
-    if payload.get('manifest_version') != 1 or not isinstance(payload.get('files'), list):
+    if not isinstance(payload, dict) or payload.get('manifest_version') != 1 or not isinstance(payload.get('files'), list):
         raise CodeReleaseVerificationError('发布清单格式或版本无效。')
     verified_entries: list[dict[str, str]] = []
     seen_paths: set[str] = set()
     for entry in payload['files']:
         if not isinstance(entry, dict):
             raise CodeReleaseVerificationError('发布清单的文件条目无效。')
-        relative_path = _safe_relative_path(str(entry.get('path', ''))).as_posix()
+        relative_path = _safe_relative_path(entry.get('path', '')).as_posix()
         expected_hash = str(entry.get('sha256', '')).lower()
         if len(expected_hash) != 64 or any(char not in '0123456789abcdef' for char in expected_hash):
             raise CodeReleaseVerificationError(f'{relative_path} 的 SHA-256 无效。')
@@ -179,7 +205,10 @@ def install_staged_release(
     manifest_entries: list[dict[str, str]],
     project_root: Path = BASE_DIR,
 ) -> None:
-    for entry in manifest_entries:
+    # Publish the installed identity after the code files, so the Dashboard
+    # does not report a completed update during a partial installation.
+    identity_order = {VERSION_FILE.name: 1, RELEASE_REVISION_FILE.name: 2}
+    for entry in sorted(manifest_entries, key=lambda entry: identity_order.get(entry['path'], 0)):
         source_path = staging_root / entry['path']
         destination = project_root / entry['path']
         destination.parent.mkdir(parents=True, exist_ok=True)

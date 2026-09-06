@@ -10,6 +10,7 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
+import db_manager
 from db_manager import SYNC_CURSOR_FIELD, PatentsDB
 
 
@@ -37,6 +38,52 @@ class TestPatentsDBUpdateFields(unittest.TestCase):
             record = db.get_record("202310411762X")
             self.assertEqual(record["fwxx_list"], fwxx_list)
             self.assertEqual(record["bhsjtzs_data"], bhsjtzs_data)
+
+    def test_fwxx_collection_time_does_not_change_status_time(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = PatentsDB(Path(tmpdir) / "patents.db")
+            status_time = "2026-01-01T00:00:00Z"
+            fwxx_time = "2026-09-06T12:00:00Z"
+            db.upsert({
+                "application_no": "202310411762X",
+                "timestamp": status_time,
+                "status_code": 200,
+            })
+
+            db.update_fields("202310411762X", {
+                "fwxx_list": [],
+                "fwxx_collected_at": fwxx_time,
+            })
+
+            record = db.get_record("202310411762X")
+            self.assertEqual(record["timestamp"], status_time)
+            self.assertEqual(record["fwxx_collected_at"], fwxx_time)
+            cursor = db.export_delta("1970-01-01T00:00:00Z")[-1]
+            self.assertEqual(cursor["fwxx_collected_at"], fwxx_time)
+
+    def test_existing_database_adds_fwxx_collection_time_column(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "patents.db"
+            legacy_schema = db_manager._CREATE_TABLE.replace(
+                "    fwxx_collected_at   TEXT,\n", ""
+            )
+            with closing(sqlite3.connect(database_path)) as connection:
+                connection.execute(legacy_schema)
+                connection.execute(
+                    "INSERT INTO patents (application_no, timestamp) VALUES (?, ?)",
+                    ("202310411762X", "2026-01-01T00:00:00Z"),
+                )
+                connection.commit()
+
+            reopened = PatentsDB(database_path)
+            reopened.update_fields(
+                "202310411762X",
+                {"fwxx_collected_at": "2026-09-06T12:00:00Z"},
+            )
+
+            record = reopened.get_record("202310411762X")
+            self.assertEqual(record["timestamp"], "2026-01-01T00:00:00Z")
+            self.assertEqual(record["fwxx_collected_at"], "2026-09-06T12:00:00Z")
 
     def test_update_fields_round_trips_fee_records(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -161,11 +208,13 @@ class TestPatentsDBUpdateFields(unittest.TestCase):
             late_fee_schedule_records = [{"zongji": "1260"}]
             paid_fee_records = [{"yijiaofpjhm": "0026303067"}]
             fee_receipt_dispatch_records = [{"shoujufwsjh": "0026303067"}]
+            fwxx_collected_at = "2026-07-18T07:30:00Z"
             db.upsert({
                 "application_no": "2023000000001",
                 "status_code": -1,
                 "fwxx_list": fwxx_list,
                 "bhsjtzs_xiazaisj": "2026-06-18",
+                "fwxx_collected_at": fwxx_collected_at,
                 "payable_fee_records": payable_fee_records,
                 "late_fee_schedule_records": late_fee_schedule_records,
                 "paid_fee_records": paid_fee_records,
@@ -179,6 +228,7 @@ class TestPatentsDBUpdateFields(unittest.TestCase):
                 "zhuanlimc": "补采成功的专利",
                 "fwxx_list": None,
                 "bhsjtzs_xiazaisj": None,
+                "fwxx_collected_at": None,
                 "payable_fee_records": None,
                 "late_fee_schedule_records": None,
                 "paid_fee_records": None,
@@ -191,6 +241,7 @@ class TestPatentsDBUpdateFields(unittest.TestCase):
             self.assertEqual(record["zhuanlimc"], "补采成功的专利")
             self.assertEqual(record["fwxx_list"], fwxx_list)
             self.assertEqual(record["bhsjtzs_xiazaisj"], "2026-06-18")
+            self.assertEqual(record["fwxx_collected_at"], fwxx_collected_at)
             self.assertEqual(record["payable_fee_records"], payable_fee_records)
             self.assertEqual(record["late_fee_schedule_records"], late_fee_schedule_records)
             self.assertEqual(record["paid_fee_records"], paid_fee_records)
@@ -210,19 +261,28 @@ class TestMasterDeltaImport(unittest.TestCase):
                 'application_no': '202310411762X',
                 'status_code': 200,
                 'fwxx_list': [{'tongzhismc': 'old notice'}],
+                'fwxx_collected_at': '2026-08-01T00:00:00Z',
                 'daili_jg': 'known agency',
             })
             imported = db.apply_master_delta([
                 {'application_no': '202310411762X', 'status_code': None, 'fwxx_list': None},
-                {'application_no': '2023000000001', 'status_code': 200, 'fwxx_list': []},
+                {
+                    'application_no': '2023000000001',
+                    'status_code': 200,
+                    'fwxx_list': [],
+                    'fwxx_collected_at': '2026-09-06T12:00:00Z',
+                },
             ])
 
             self.assertEqual(imported, 2)
             existing_patent = db.get_record('202310411762X')
             self.assertIsNone(existing_patent['status_code'])
             self.assertIsNone(existing_patent['fwxx_list'])
+            self.assertEqual(existing_patent['fwxx_collected_at'], '2026-08-01T00:00:00Z')
             self.assertEqual(existing_patent['daili_jg'], 'known agency')
-            self.assertEqual(db.get_record('2023000000001')['fwxx_list'], [])
+            imported_patent = db.get_record('2023000000001')
+            self.assertEqual(imported_patent['fwxx_list'], [])
+            self.assertEqual(imported_patent['fwxx_collected_at'], '2026-09-06T12:00:00Z')
             self.assertEqual(db.get_processed_app_nos(), {'2023000000001'})
 
     def test_failed_master_delta_rolls_back_earlier_records(self):

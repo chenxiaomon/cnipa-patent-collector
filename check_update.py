@@ -4,7 +4,7 @@
 网络更新检查脚本
 
 按 HTTP 发布版本检查更新，输出结构化 JSON 供 Dashboard 解析。
-HTTP 安装不会推进 Git HEAD，因此控制台按已安装 VERSION 判断。
+HTTP 安装不会推进 Git HEAD，因此控制台按已安装日期版本和修订号判断。
 显式 Git 提交检查仍可使用 python upgrade.py --check。
 
 用法：
@@ -35,7 +35,7 @@ if sys.platform == 'win32':
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from settings import BASE_DIR, VERSION_FILE, GITHUB_BRANCH, raw_file_urls
-from code_release_safety import CodeReleaseVerificationError, parse_calendar_version
+from code_release_safety import CodeReleaseVerificationError, CodeReleaseVersion, validate_release_manifest
 
 _BRANCH = GITHUB_BRANCH
 _CWD = str(BASE_DIR)
@@ -119,52 +119,39 @@ def check_via_git(git: str) -> dict:
 
 
 def check_via_http() -> dict:
-    """HTTP 模式：拉取远端 VERSION 与本地对比（无 git 环境的兜底）。
-
-    依次尝试 GitHub 原站和国内镜像，任一成功即返回；全部失败才报错。
-    """
-    local = _read_local_version()
-    remote = None
+    """Compare the installed identity with one coherent remote release manifest."""
+    comparison = {
+        'has_update': False, 'method': 'http',
+        'local_version': _read_local_version(), 'local_revision': None,
+        'remote_version': None, 'remote_revision': None,
+        'pending_commits': [], 'error': None,
+    }
+    try:
+        installed_release = CodeReleaseVersion.read(BASE_DIR)
+    except CodeReleaseVerificationError as exc:
+        comparison['error'] = str(exc)
+        return comparison
+    comparison['local_version'] = installed_release.version
+    comparison['local_revision'] = installed_release.revision
     last_error = None
-    for url in raw_file_urls('VERSION'):
+    for url in raw_file_urls('release_manifest.json'):
         try:
             req = urllib.request.Request(url, headers={'Cache-Control': 'no-cache'})
             with urllib.request.urlopen(req, timeout=10) as resp:
-                remote = resp.read().decode('utf-8').strip()
-            if remote:
-                break
-
-        except (urllib.error.URLError, OSError) as exc:
+                manifest = json.loads(resp.read().decode('utf-8'))
+            validate_release_manifest(manifest)
+            remote_release = CodeReleaseVersion.from_manifest(manifest)
+        except (urllib.error.URLError, OSError, UnicodeError, json.JSONDecodeError, CodeReleaseVerificationError) as exc:
             last_error = exc
             continue
-
-    if not remote:
-        return {
-            "has_update": False, "method": "http",
-            "local_version": local, "remote_version": None,
-            "pending_commits": [],
-            "error": f"所有更新源均无法访问（最后错误：{last_error}）",
-        }
-
-    try:
-        local_version_order = parse_calendar_version(local)
-        remote_version_order = parse_calendar_version(remote)
-    except CodeReleaseVerificationError as exc:
-        return {
-            "has_update": False, "method": "http",
-            "local_version": local, "remote_version": remote,
-            "pending_commits": [],
-            "error": str(exc),
-        }
-
-    return {
-        "has_update": remote_version_order > local_version_order,
-        "method": "http",
-        "local_version": local,
-        "remote_version": remote,
-        "pending_commits": [],
-        "error": None,
-    }
+        comparison.update(
+            has_update=remote_release > installed_release,
+            remote_version=remote_release.version,
+            remote_revision=remote_release.revision,
+        )
+        return comparison
+    comparison['error'] = f'所有更新源均未返回有效发布清单（最后错误：{last_error}）'
+    return comparison
 
 
 def check_update() -> dict:
@@ -184,9 +171,9 @@ def main() -> None:
             for line in result["pending_commits"][:10]:
                 print(f"    {line}")
         else:
-            print(f"[✓] 发现新版本：{result['local_version']} → {result['remote_version']}")
+            print(f"[✓] 发现新版本：{result['local_version']} r{result['local_revision']} → {result['remote_version']} r{result['remote_revision']}")
     else:
-        print(f"[✓] 已是最新版本（{result['local_version']}）")
+        print(f"[✓] 已是最新版本（{result['local_version']} r{result['local_revision']}）")
 
     # 最后一行输出 JSON，供 Dashboard 解析
     print(json.dumps(result, ensure_ascii=False))

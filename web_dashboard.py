@@ -60,13 +60,20 @@ from machine_identity import MASTER_ROLE, read_machine_role
 from collection_health import read_alert_status
 from operator_api_token import api_token_matches, ensure_api_token
 from manual_fwxx_requests import create_manual_fwxx_request
+from code_release_safety import CodeReleaseVerificationError, CodeReleaseVersion
+from collection_checkpoint import list_collection_batches, read_collection_batch
+from environment_diagnostics import run_environment_diagnostics
+from coordinate_config import validate_coordinate_config
 
 _patents_db = PatentsDB(PATENTS_DB_FILE)
+_RUNNING_CODE_RELEASE = CodeReleaseVersion.read()
+_ENVIRONMENT_DIAGNOSTICS_LOCK = threading.Lock()
 
 
 APP_NAME = "CNIPA 采集控制台"
 SERVER_VERSION = "CNIPADashboard/0.2"
 MAX_LOG_LINES = 1600
+MAX_COMPLETED_JOBS = 40
 # 传给采集子进程的登录等待时间，与 settings.CNIPA_LOGIN_WAIT_SECONDS 保持一致
 DEFAULT_LOGIN_WAIT_SECONDS = str(int(CNIPA_LOGIN_WAIT_SECONDS))
 MAX_BODY_BYTES = 1 * 1024 * 1024   # 1 MB：防止超大请求体撑爆内存
@@ -74,6 +81,7 @@ MAX_REQUEST_APP_NOS = 500           # 单次提交申请号上限
 MAX_NOTE_LEN = 500                  # 备注字段长度上限
 _SAFE_ID_RE = re.compile(r'^[0-9a-f\-]{8,36}$')
 DESKTOP_BROWSER_ACTIONS = {
+    "resume_collection_batch",
     "main_full",
     "main_test",
     "main_update_dynamic",
@@ -98,6 +106,8 @@ PUBLIC_BROWSER_COMPANION_ACTIONS = {
     "public_browser",
     "public_auto_paginate",
 }
+
+CODE_MAINTENANCE_ACTIONS = {"upgrade_code", "fetch_update"}
 
 DOWNLOADS = {
     "excel": PATENTS_EXCEL_FILE,
@@ -281,48 +291,77 @@ class JobManager:
 
     def list_jobs(self) -> list[dict[str, Any]]:
         with self._lock:
-            jobs = sorted(self._jobs.values(), key=lambda item: item.started_at, reverse=True)
-            return [job.to_dict() for job in jobs[:40]]
+            active_jobs = [
+                job for job in self._jobs.values()
+                if job.status in {"running", "stopping"}
+            ]
+            completed_jobs = sorted(
+                (
+                    job for job in self._jobs.values()
+                    if job.status not in {"running", "stopping"}
+                ),
+                key=lambda item: item.finished_at or item.started_at,
+                reverse=True,
+            )
+            for expired_job in completed_jobs[MAX_COMPLETED_JOBS:]:
+                self._jobs.pop(expired_job.id, None)
+            visible_jobs = sorted(
+                [*active_jobs, *completed_jobs[:MAX_COMPLETED_JOBS]],
+                key=lambda item: item.started_at,
+                reverse=True,
+            )
+            return [job.to_dict() for job in visible_jobs]
 
     def get_job(self, job_id: str) -> Job | None:
         with self._lock:
             return self._jobs.get(job_id)
 
     def start(self, action: str, params: dict[str, Any]) -> Job:
-        spec = build_job_spec(action, params)
-        job = Job(
-            id=uuid.uuid4().hex[:10],
-            action=spec["action"],
-            title=spec["title"],
-            command=spec["command"],
-            env_overrides=spec.get("env", {}),
-        )
-        env = os.environ.copy()
-        env.update(job.env_overrides)
-        env.setdefault("PYTHONUNBUFFERED", "1")
-        env.setdefault("PYTHONIOENCODING", "utf-8")
-
-        requires_desktop = job.action in DESKTOP_BROWSER_ACTIONS
-        # 任务放进独立进程组/会话，停止时 terminate_process_tree 才能连同
-        # 浏览器等孙进程一起清理，而不会波及 Dashboard 自身
-        extra_kwargs = {}
-        if sys.platform == 'win32':
-            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
-            if not requires_desktop:
-                creationflags |= subprocess.CREATE_NO_WINDOW
-            extra_kwargs['creationflags'] = creationflags
-        else:
-            extra_kwargs['start_new_session'] = True
-
+        action = action.strip()
         with self._lock:
-            conflicting_job = self._start_conflict_locked(job.action)
+            conflicting_job = self._start_conflict_locked(action)
             if conflicting_job:
-                if requires_desktop:
+                if (
+                    action in CODE_MAINTENANCE_ACTIONS
+                    or conflicting_job.action in CODE_MAINTENANCE_ACTIONS
+                ):
+                    raise ValueError(
+                        f"“{conflicting_job.title}”正在运行；"
+                        "代码更新与采集不能同时执行"
+                    )
+                if action in DESKTOP_BROWSER_ACTIONS:
                     raise ValueError(
                         f"桌面浏览器正由“{conflicting_job.title}”占用；"
                         "请等待该任务结束或先停止该任务"
                     )
                 raise ValueError(f"{conflicting_job.title} 已在运行")
+
+            # 部分规格会生成一次性采集清单，必须在冲突判断通过后才创建。
+            spec = build_job_spec(action, params)
+            job = Job(
+                id=uuid.uuid4().hex[:10],
+                action=spec["action"],
+                title=spec["title"],
+                command=spec["command"],
+                env_overrides=spec.get("env", {}),
+            )
+            env = os.environ.copy()
+            env.update(job.env_overrides)
+            env.setdefault("PYTHONUNBUFFERED", "1")
+            env.setdefault("PYTHONIOENCODING", "utf-8")
+
+            requires_desktop = job.action in DESKTOP_BROWSER_ACTIONS
+            # 任务放进独立进程组/会话，停止时 terminate_process_tree 才能连同
+            # 浏览器等孙进程一起清理，而不会波及 Dashboard 自身
+            extra_kwargs = {}
+            if sys.platform == 'win32':
+                creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+                if not requires_desktop:
+                    creationflags |= subprocess.CREATE_NO_WINDOW
+                extra_kwargs['creationflags'] = creationflags
+            else:
+                extra_kwargs['start_new_session'] = True
+
             process = subprocess.Popen(
                 job.command,
                 cwd=str(BASE_DIR),
@@ -364,12 +403,20 @@ class JobManager:
         return True
 
     def _start_conflict_locked(self, action: str) -> Job | None:
-        active_jobs = (
+        active_jobs = [
             job for job in self._jobs.values()
             if job.status in {"running", "stopping"}
-        )
+        ]
+        if action in CODE_MAINTENANCE_ACTIONS:
+            return next((
+                job for job in active_jobs
+                if job.action in CODE_MAINTENANCE_ACTIONS
+                or job.action in DESKTOP_BROWSER_ACTIONS
+            ), None)
         if action in DESKTOP_BROWSER_ACTIONS:
             for job in active_jobs:
+                if job.action in CODE_MAINTENANCE_ACTIONS:
+                    return job
                 if job.action not in DESKTOP_BROWSER_ACTIONS:
                     continue
                 is_public_companion_pair = (
@@ -425,10 +472,60 @@ def relative_data_file(value: str | None, default: str) -> str:
     return str(candidate.relative_to(BASE_DIR))
 
 
+def build_filtered_excel(records: list[dict]) -> bytes:
+    """Return a complete workbook and remove its temporary file on every path."""
+    import tempfile
+    from detection_logger import DetectionLogger
+
+    logger = DetectionLogger()
+    original_load_records = logger._load_records
+    temporary_stream = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+    temporary_path = Path(temporary_stream.name)
+    temporary_stream.close()
+    logger._load_records = lambda: records
+    try:
+        if not logger.export_to_excel(str(temporary_path)):
+            raise RuntimeError("Excel 生成失败，请检查项目依赖和任务日志")
+        workbook_bytes = temporary_path.read_bytes()
+        if not workbook_bytes:
+            raise RuntimeError("Excel 生成失败：输出文件为空")
+    except BaseException as export_error:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            if isinstance(export_error, Exception):
+                raise RuntimeError(
+                    f"{export_error}；临时文件清理失败：{cleanup_error}"
+                ) from export_error
+        raise
+    finally:
+        logger._load_records = original_load_records
+    try:
+        temporary_path.unlink(missing_ok=True)
+    except OSError as cleanup_error:
+        raise RuntimeError(f"Excel 已生成，但临时文件清理失败：{cleanup_error}") from cleanup_error
+    return workbook_bytes
+
+
 def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
     py = resolve_task_python()
     action = action.strip()
 
+    if action == "resume_collection_batch":
+        batch = read_collection_batch(params.get("batch_id", ""))
+        if not batch["resumable"]:
+            raise ValueError("该批次正在运行或已全部完成，不能续跑")
+        collector_scripts = {
+            "main": ("main_automation.py", "主采集"),
+            "fwxx": ("collect_fwxx.py", "发文采集"),
+            "fees": ("collect_fees.py", "费用采集"),
+        }
+        script, title = collector_scripts[batch["collector"]]
+        return {
+            "action": action, "title": f"继续{title} {batch['id'][:8]}",
+            "command": [py, "-u", script, "--resume-batch", batch["id"]],
+            "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
+        }
     if action == "mitm_proxy":
         return {"action": action, "title": "主 MITM 代理", "command": [py, "-u", "start_mitm_proxy.py"]}
     if action == "public_mitm_proxy":
@@ -690,6 +787,12 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
             "title": "从 master 拉取增量",
             "command": [py, "-u", "sync_pull_from_master.py"],
         }
+    if action == "sync_reconcile_master":
+        return {
+            "action": action,
+            "title": "从 master 全量对账",
+            "command": [py, "-u", "sync_pull_from_master.py", "--full"],
+        }
     if action == "upgrade_code":
         return {"action": action, "title": "安全更新系统代码", "command": [py, "-u", "fetch_update.py"]}
     if action == "fetch_update":
@@ -698,6 +801,19 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         return {"action": action, "title": "检查更新", "command": [py, "-u", "check_update.py"]}
 
     raise ValueError(f"未知操作: {action}")
+
+
+def dashboard_release_status() -> dict[str, Any]:
+    try:
+        installed_release = CodeReleaseVersion.read()
+    except CodeReleaseVerificationError as exc:
+        return {'running': str(_RUNNING_CODE_RELEASE), 'installed': None, 'restart_required': False, 'error': str(exc)}
+    return {
+        'running': str(_RUNNING_CODE_RELEASE),
+        'installed': str(installed_release),
+        'restart_required': installed_release != _RUNNING_CODE_RELEASE,
+        'error': None,
+    }
 
 
 def build_summary(job_manager: JobManager) -> dict[str, Any]:
@@ -786,6 +902,7 @@ def build_summary(job_manager: JobManager) -> dict[str, Any]:
         "recent": db_summary["recent"],
         "files": {key: file_info(path) for key, path in DOWNLOADS.items()},
         "jobs": active_jobs,
+        "code_release": dashboard_release_status(),
         "warnings": warnings,
         "daily_counts": db_summary["daily_counts"],
         "fwxx_pending_list": db_summary["fwxx_pending_list"],
@@ -942,6 +1059,9 @@ HTML = r"""<!doctype html>
       <span id="updateBannerText">🆕 发现新版本</span>
       <button class="btn primary" id="updateNowBtn">立即更新</button>
       <button class="btn secondary" id="updateDismissBtn">稍后</button>
+    </section>
+    <section id="restartBanner" class="warnings hidden" role="status">
+      已安装 <span id="restartRelease"></span>，Dashboard 待重启。
     </section>
 
     <!-- ═══ Tab 1：概览 ═══ -->
@@ -1445,6 +1565,7 @@ HTML = r"""<!doctype html>
         <div class="button-row">
           <button class="btn secondary" data-action="sync_status">查看同步状态</button>
           <button class="btn primary" data-action="sync_pull_master">从 master 拉取增量</button>
+          <button class="btn secondary" data-action="sync_reconcile_master">从 master 全量对账</button>
         </div>
         <div class="hint" style="margin-top:8px">副本机只从部署机 Dashboard 拉取增量；成功后自动创建数据提交，再由人工执行 git push</div>
       </article>
@@ -1494,6 +1615,44 @@ HTML = r"""<!doctype html>
 
     <!-- ═══ Tab 8：任务日志 ═══ -->
     <div id="tab-logs" class="tab-panel">
+      <section class="operation-section operator-only" aria-labelledby="batchHeading">
+        <div class="panel-head">
+          <h2 id="batchHeading">批次记录</h2>
+          <button class="btn secondary icon-button" id="refreshBatches" title="刷新批次" aria-label="刷新批次">&#x21bb;</button>
+        </div>
+        <div class="batch-toolbar">
+          <label class="field batch-selector"><span>采集批次</span><select id="batchSelect"><option value="">暂无批次记录</option></select></label>
+          <div class="button-row">
+            <button class="btn primary" id="resumeBatch" disabled>继续未完成项</button>
+            <button class="btn secondary" id="downloadBatch" disabled>下载记录</button>
+          </div>
+        </div>
+        <div id="batchFeedback" class="hint" role="status"></div>
+        <div id="batchDetail" class="hidden">
+          <div class="batch-metrics" id="batchMetrics"></div>
+          <p class="hint" id="batchTiming"></p>
+          <details open class="batch-items-disclosure">
+            <summary>申请号明细</summary>
+            <div class="batch-filters">
+              <input id="batchItemSearch" type="search" placeholder="申请号" aria-label="查找批次申请号">
+              <select id="batchItemFilter" aria-label="筛选批次申请号状态">
+                <option value="remaining">未完成</option><option value="all">全部</option>
+                <option value="failed">失败</option><option value="pending">未尝试</option>
+                <option value="success">成功</option><option value="interrupted">中断</option>
+              </select>
+            </div>
+            <div class="table-wrap batch-table-wrap"><table><thead><tr><th>申请号</th><th>状态</th><th>尝试次数</th><th>原因</th></tr></thead><tbody id="batchItems"></tbody></table></div>
+            <div class="batch-pagination">
+              <span id="batchPageLabel" class="hint"></span>
+              <button id="batchPreviousPage" class="btn secondary icon-button" title="上一页" aria-label="上一页">&#8592;</button>
+              <button id="batchNextPage" class="btn secondary icon-button" title="下一页" aria-label="下一页">&#8594;</button>
+            </div>
+          </details>
+          <details class="batch-runs-disclosure"><summary>执行轮次</summary>
+            <div class="table-wrap batch-runs-wrap"><table><thead><tr><th>轮次</th><th>开始</th><th>结束</th><th>本轮目标</th><th>结果</th></tr></thead><tbody id="batchRuns"></tbody></table></div>
+          </details>
+        </div>
+      </section>
       <section class="grid wide-left">
         <article class="panel">
           <div class="panel-head">
@@ -1514,6 +1673,18 @@ HTML = r"""<!doctype html>
 
     <!-- ═══ Tab 9：系统配置 ═══ -->
     <div id="tab-config" class="tab-panel">
+      <section class="operation-section operator-only" aria-labelledby="diagnosticsHeading">
+        <div class="panel-head">
+          <h2 id="diagnosticsHeading">环境诊断</h2>
+          <div class="button-row">
+            <button class="btn primary" id="runDiagnostics">开始诊断</button>
+            <button class="btn secondary" id="downloadDiagnostics" disabled>下载报告</button>
+          </div>
+        </div>
+        <p class="hint" id="diagnosticsFeedback" role="status">尚未诊断</p>
+        <p class="hint" id="diagnosticsTimestamp"></p>
+        <div class="table-wrap diagnostics-table-wrap hidden" id="diagnosticsTable"><table><thead><tr><th>检查项</th><th>状态</th><th>结果</th></tr></thead><tbody id="diagnosticsChecks"></tbody></table></div>
+      </section>
       <section class="grid two" style="margin-bottom:14px">
         <article class="panel">
           <div class="panel-head">
@@ -1549,6 +1720,7 @@ HTML = r"""<!doctype html>
       </section>
       <article class="panel operator-only" style="margin-bottom:14px">
         <div class="panel-head"><h2>代码更新</h2><span class="hint">check_update / upgrade / fetch_update</span></div>
+        <div class="hint" style="margin-bottom:8px">正在运行：<span id="runningCodeRelease">-</span>；已安装：<span id="installedCodeRelease">-</span></div>
         <div class="button-row">
           <button class="btn secondary" id="checkUpdateBtn">🔎 检查更新</button>
           <button class="btn primary" data-action="upgrade_code">🔄 更新系统代码（HTTP）</button>
@@ -1801,6 +1973,42 @@ h3 { font-size: 13px; }
   gap: 12px;
   margin-bottom: 14px;
 }
+
+.operation-section { margin-bottom: 20px; padding: 4px 0 20px; border-bottom: 1px solid var(--line); }
+.operation-section .panel-head { flex-wrap: wrap; }
+.operation-section button:disabled { opacity: .5; cursor: not-allowed; }
+.operation-section .icon-button { width: 36px; min-width: 36px; height: 34px; padding: 0; font-size: 18px; }
+.batch-toolbar { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 10px; }
+.batch-selector { flex: 1 1 300px; min-width: 0; }
+.batch-selector select { width: 100%; text-overflow: ellipsis; }
+.batch-metrics { display: flex; flex-wrap: wrap; gap: 12px 28px; margin: 14px 0 8px; }
+.batch-metrics div { min-width: 62px; }
+.batch-metrics strong { display: block; font-size: 19px; line-height: 26px; }
+.batch-metrics span { color: var(--muted); font-size: 12px; }
+.batch-items-disclosure, .batch-runs-disclosure { margin-top: 12px; }
+.operation-section summary { cursor: pointer; font-weight: 600; font-size: 13px; padding: 8px 0; }
+.batch-filters { display: flex; gap: 8px; margin: 8px 0; }
+.batch-filters input { flex: 1; min-width: 0; }
+.batch-filters select { width: 125px; flex: 0 0 125px; }
+.batch-table-wrap table { min-width: 540px; table-layout: fixed; }
+.batch-table-wrap th:first-child { width: 150px; }
+.batch-table-wrap th:nth-child(2) { width: 76px; }
+.batch-table-wrap th:nth-child(3) { width: 78px; }
+.batch-table-wrap td { white-space: normal; overflow-wrap: anywhere; }
+.batch-pagination { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 8px; }
+.batch-pagination .hint { margin-right: auto; }
+.batch-runs-wrap { max-height: 260px; }
+.batch-runs-wrap table { min-width: 620px; }
+.diagnostics-table-wrap { margin-top: 12px; }
+.diagnostics-table-wrap table { min-width: 0; table-layout: fixed; width: 100%; }
+.diagnostics-table-wrap th:first-child { width: 115px; }
+.diagnostics-table-wrap th:nth-child(2) { width: 64px; }
+.diagnostics-table-wrap td { white-space: normal; overflow-wrap: anywhere; vertical-align: top; }
+.diagnostic-details { margin-top: 5px; color: var(--muted); font-size: 12px; }
+.diagnostic-suggestion { margin-top: 5px; color: var(--amber); }
+.check-ok { color: var(--accent-dark); }
+.check-warning, .check-unknown { color: var(--amber); }
+.check-error { color: var(--red); }
 
 /* ── Buttons ── */
 .top-actions, .button-row, .downloads {
@@ -2116,6 +2324,9 @@ td .clip { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-sp
   .main { margin-left: 0; padding: 0 14px 40px; }
   .topbar { position: static; flex-direction: column; align-items: flex-start; }
   .top-left { flex-wrap: wrap; }
+  .diagnostics-table-wrap th:first-child { width: 82px; }
+  .diagnostics-table-wrap th:nth-child(2) { width: 48px; }
+  .diagnostics-table-wrap td, .diagnostics-table-wrap th { padding: 8px 5px; }
 }
 """
 
@@ -2126,6 +2337,12 @@ JS = r"""const state = {
   followJobLog: true,
   jobLogRequestSequence: 0,
   jobLogAppliedSequence: 0,
+  selectedBatchId: '',
+  selectedBatch: null,
+  batchItemPage: 0,
+  batchListRefreshing: false,
+  batchDetailRequestSequence: 0,
+  diagnosticReport: null,
   searchLoaded: false,
   configLoaded: false,
   roleDetermined: false,
@@ -2222,12 +2439,145 @@ function switchTab(tab) {
   if (nav) nav.classList.add('active');
   location.hash = tab;
   state.currentTab = tab;
+  if (tab === 'logs' && state.roleDetermined) refreshCollectionBatches();
 }
 
 function initTabRouting() {
   $$('.nav-item').forEach(item => item.addEventListener('click', () => switchTab(item.dataset.tab)));
   const hash = location.hash.replace('#', '') || 'overview';
   switchTab(hash);
+}
+
+const COLLECTION_LABELS = { main: '主采集', fwxx: '发文', fees: '费用' };
+const BATCH_STATUS_LABELS = {
+  running: '运行中', completed: '已完成', paused: '已暂停', failed: '失败',
+  interrupted: '已中断', pending: '未尝试', success: '成功', unreadable: '记录损坏',
+};
+
+async function refreshCollectionBatches() {
+  if (state.batchListRefreshing || document.body.classList.contains('viewer-mode')) return;
+  state.batchListRefreshing = true;
+  try {
+    const response = await api('/api/collection-batches');
+    const batches = response.batches;
+    const selection = $('#batchSelect');
+    const selectedId = state.selectedBatchId;
+    selection.innerHTML = batches.length ? batches.map(batch =>
+      `<option value="${escHtml(batch.id)}">${escHtml(shortTime(batch.created_at))} | ${escHtml(COLLECTION_LABELS[batch.collector] || '采集')} | ${escHtml(BATCH_STATUS_LABELS[batch.status])} | ${escHtml(batch.id.slice(0, 8))}</option>`
+    ).join('') : '<option value="">暂无批次记录</option>';
+    state.selectedBatchId = batches.some(batch => batch.id === selectedId) ? selectedId : (batches[0]?.id || '');
+    selection.value = state.selectedBatchId;
+    selection.disabled = !batches.length;
+    await refreshSelectedBatch();
+  } catch (error) {
+    $('#batchFeedback').textContent = '读取批次失败：' + error.message;
+    $('#resumeBatch').disabled = true;
+  } finally {
+    state.batchListRefreshing = false;
+  }
+}
+
+async function refreshSelectedBatch() {
+  const batchId = state.selectedBatchId;
+  const requestSequence = ++state.batchDetailRequestSequence;
+  $('#resumeBatch').disabled = true;
+  $('#downloadBatch').disabled = true;
+  if (!batchId) {
+    state.selectedBatch = null;
+    $('#batchDetail').classList.add('hidden');
+    $('#batchFeedback').textContent = '暂无批次记录';
+    return;
+  }
+  try {
+    const response = await api('/api/collection-batches/' + encodeURIComponent(batchId));
+    if (requestSequence !== state.batchDetailRequestSequence || batchId !== state.selectedBatchId) return;
+    state.selectedBatch = response.batch;
+    renderBatchDetail();
+  } catch (error) {
+    if (requestSequence !== state.batchDetailRequestSequence) return;
+    state.selectedBatch = null;
+    $('#batchDetail').classList.add('hidden');
+    $('#batchFeedback').textContent = '读取批次失败：' + error.message;
+  }
+}
+
+function renderBatchDetail() {
+  const batch = state.selectedBatch;
+  $('#batchDetail').classList.remove('hidden');
+  $('#batchFeedback').textContent = BATCH_STATUS_LABELS[batch.status] + (batch.current_application ? ' · ' + batch.current_application : '');
+  $('#resumeBatch').disabled = !batch.resumable;
+  $('#downloadBatch').disabled = false;
+  $('#batchMetrics').innerHTML = [
+    ['总数', batch.total], ['成功', batch.succeeded], ['失败', batch.failed], ['剩余', batch.remaining],
+  ].map(([label, count]) => `<div><strong>${fmtNumber(count)}</strong><span>${label}</span></div>`).join('');
+  $('#batchTiming').textContent = '创建：' + shortTime(batch.created_at) + ' · 更新：' + shortTime(batch.updated_at);
+  renderBatchItems();
+  $('#batchRuns').innerHTML = batch.runs.map((run, index) => `<tr>
+    <td>${index + 1}</td><td>${escHtml(shortTime(run.started_at))}</td><td>${escHtml(shortTime(run.finished_at))}</td>
+    <td>${fmtNumber(run.selected_count)}</td><td>${escHtml(BATCH_STATUS_LABELS[run.status])}${run.stop_reason ? '<div class="hint">' + escHtml(run.stop_reason) + '</div>' : ''}</td>
+  </tr>`).join('');
+}
+
+function renderBatchItems() {
+  const batch = state.selectedBatch;
+  if (!batch) return;
+  const query = $('#batchItemSearch').value.trim().toUpperCase();
+  const status = $('#batchItemFilter').value;
+  const matchingItems = batch.items.filter(item =>
+    item.application_no.toUpperCase().includes(query) &&
+    (status === 'all' || (status === 'remaining' ? item.status !== 'success' : item.status === status))
+  );
+  const pageCount = Math.max(1, Math.ceil(matchingItems.length / 20));
+  state.batchItemPage = Math.min(state.batchItemPage, pageCount - 1);
+  const visibleItems = matchingItems.slice(state.batchItemPage * 20, (state.batchItemPage + 1) * 20);
+  $('#batchItems').innerHTML = visibleItems.length ? visibleItems.map(item => `<tr>
+    <td>${escHtml(item.application_no)}</td><td>${escHtml(BATCH_STATUS_LABELS[item.status])}</td>
+    <td>${fmtNumber(item.attempt_count)}</td><td>${escHtml(item.reason || '-')}</td>
+  </tr>`).join('') : '<tr><td colspan="4">无匹配记录</td></tr>';
+  $('#batchPageLabel').textContent = `${fmtNumber(matchingItems.length)} 条 · ${state.batchItemPage + 1} / ${pageCount}`;
+  $('#batchPreviousPage').disabled = state.batchItemPage === 0;
+  $('#batchNextPage').disabled = state.batchItemPage + 1 >= pageCount;
+}
+
+function downloadJsonReport(report, filename) {
+  const blob = new Blob([JSON.stringify(report, null, 2) + '\n'], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function diagnoseEnvironment() {
+  const button = $('#runDiagnostics');
+  state.diagnosticReport = null;
+  $('#diagnosticsTable').classList.add('hidden');
+  $('#diagnosticsTimestamp').textContent = '';
+  button.disabled = true;
+  button.textContent = '诊断中...';
+  $('#downloadDiagnostics').disabled = true;
+  $('#diagnosticsFeedback').textContent = '正在检查运行环境...';
+  try {
+    const report = await api('/api/environment-diagnostics', { method: 'POST', body: '{}' });
+    state.diagnosticReport = report;
+    const statusLabels = { ok: '正常', warning: '注意', error: '异常', unknown: '未确认' };
+    const attentionCount = report.checks.filter(check => check.status !== 'ok').length;
+    $('#diagnosticsFeedback').textContent = attentionCount ? `诊断完成，${attentionCount} 项需要关注` : '诊断完成，各项检查正常';
+    $('#diagnosticsTimestamp').textContent = '检查位置：Dashboard 所在电脑 · ' + shortTime(report.generated_at);
+    $('#diagnosticsChecks').innerHTML = report.checks.map(check => `<tr>
+      <td>${escHtml(check.title)}</td><td class="check-${escHtml(check.status)}">${statusLabels[check.status]}</td>
+      <td>${escHtml(check.summary)}${check.details.map(detail => '<div class="diagnostic-details">' + escHtml(detail) + '</div>').join('')}
+      ${check.suggestion ? '<div class="diagnostic-suggestion">' + escHtml(check.suggestion) + '</div>' : ''}</td>
+    </tr>`).join('');
+    $('#diagnosticsTable').classList.remove('hidden');
+    $('#downloadDiagnostics').disabled = false;
+  } catch (error) {
+    $('#diagnosticsFeedback').textContent = '诊断失败：' + error.message;
+  } finally {
+    button.disabled = false;
+    button.textContent = '开始诊断';
+  }
 }
 
 // ── Job Control ───────────────────────────────────────────────────────
@@ -2314,6 +2664,13 @@ async function refreshSummary() {
 }
 
 function renderSummary(data) {
+  const release = data.code_release;
+  if (release) {
+    $('#runningCodeRelease').textContent = release.running;
+    $('#installedCodeRelease').textContent = release.error || release.installed;
+    $('#restartRelease').textContent = release.installed || '';
+    $('#restartBanner').classList.toggle('hidden', !release.restart_required);
+  }
   // 顶部栏
   $('#clock').textContent = '当前 ' + shortTime(data.now);
   const pp = $('#proxyPill');
@@ -2708,6 +3065,28 @@ async function loadSearchList() {
 
 // ── Event Binding ────────────────────────────────────────────────────
 function bindEvents() {
+  $('#refreshBatches').addEventListener('click', refreshCollectionBatches);
+  $('#batchSelect').addEventListener('change', () => {
+    state.selectedBatchId = $('#batchSelect').value;
+    state.batchItemPage = 0;
+    refreshSelectedBatch();
+  });
+  $('#resumeBatch').addEventListener('click', async () => {
+    $('#resumeBatch').disabled = true;
+    await startJob('resume_collection_batch', { batch_id: state.selectedBatchId });
+    await refreshCollectionBatches();
+  });
+  $('#downloadBatch').addEventListener('click', () => downloadJsonReport(state.selectedBatch, 'collection_batch_' + state.selectedBatchId + '.json'));
+  for (const selector of ['#batchItemSearch', '#batchItemFilter']) {
+    $(selector).addEventListener(selector === '#batchItemSearch' ? 'input' : 'change', () => {
+      state.batchItemPage = 0;
+      renderBatchItems();
+    });
+  }
+  $('#batchPreviousPage').addEventListener('click', () => { state.batchItemPage -= 1; renderBatchItems(); });
+  $('#batchNextPage').addEventListener('click', () => { state.batchItemPage += 1; renderBatchItems(); });
+  $('#runDiagnostics').addEventListener('click', diagnoseEnvironment);
+  $('#downloadDiagnostics').addEventListener('click', () => downloadJsonReport(state.diagnosticReport, 'cnipa_environment_diagnostics.json'));
   // data-action 全局代理
   $$('[data-action]').forEach(btn => {
     btn.addEventListener('click', () => startJob(btn.dataset.action));
@@ -3138,13 +3517,13 @@ async function checkUpdate(showNoUpdateToast = false) {
       if (text) {
         text.textContent = d.method === 'git'
           ? `🆕 发现新版本：${d.pending_commits.length} 个新提交待更新`
-          : `🆕 发现新版本：${d.local_version} → ${d.remote_version}`;
+          : `🆕 发现新版本：${d.local_version} r${d.local_revision} → ${d.remote_version} r${d.remote_revision}`;
       }
       if (banner) banner.classList.remove('hidden');
     } else {
       if (banner) banner.classList.add('hidden');
       if (showNoUpdateToast) {
-        showToast(d.error ? ('检查失败：' + d.error) : `已是最新版本（${d.local_version}）`);
+        showToast(d.error ? ('检查失败：' + d.error) : `已是最新版本（${d.local_version} r${d.local_revision}）`);
       }
     }
     return d;
@@ -3257,6 +3636,8 @@ async function boot() {
   bindEvents();
   await loadOperatorToken();
   await Promise.all([refreshSummary(), refreshJobs(), loadSearchList(), loadCredentials()]);
+  if (state.currentTab === 'logs') await refreshCollectionBatches();
+  setInterval(() => { if (state.currentTab === 'logs') refreshCollectionBatches(); }, 5000);
   setInterval(refreshSummary, 5000);
   setInterval(refreshJobs, 2500);
   checkUpdate();                              // 启动时检查一次
@@ -3360,6 +3741,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"requests": reqs})
             elif path == "/api/jobs":
                 self.send_json({"jobs": self.job_manager.list_jobs()})
+            elif path == "/api/collection-batches" or path.startswith("/api/collection-batches/"):
+                if not self.is_operator and not api_token_matches(self.headers.get('X-CNIPA-Token')):
+                    self.send_json({"error": "批次记录需要操作员权限"}, status=403)
+                    return
+                try:
+                    if path == "/api/collection-batches":
+                        self.send_json({"batches": list_collection_batches()})
+                    else:
+                        self.send_json({"batch": read_collection_batch(path.removeprefix("/api/collection-batches/"))})
+                except FileNotFoundError:
+                    self.send_json({"error": "批次不存在"}, status=404)
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, status=400)
             elif path.startswith("/api/jobs/"):
                 self.handle_get_job(path)
             elif path == "/api/search-list":
@@ -3451,11 +3845,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self.send_json({"error": "缺少 since 参数（格式：2026-05-01T00:00:00Z）"}, status=400)
                     return
                 try:
-                    datetime.fromisoformat(since.replace('Z', '+00:00'))
+                    records = _patents_db.export_delta(since)
                 except ValueError:
                     self.send_json({"error": "since 不是有效的 ISO 时间戳"}, status=400)
                     return
-                records = _patents_db.export_delta(since)
                 lines = "\n".join(json.dumps(r, ensure_ascii=False) for r in records)
                 data = lines.encode("utf-8")
                 self.send_response(HTTPStatus.OK)
@@ -3478,7 +3871,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "写操作需要有效的 X-CNIPA-Token"}, status=401)
             return
         try:
-            if path == "/api/jobs":
+            if path == "/api/environment-diagnostics":
+                self.read_json_body()
+                if not _ENVIRONMENT_DIAGNOSTICS_LOCK.acquire(blocking=False):
+                    self.send_json({"error": "已有环境诊断正在运行"}, status=409)
+                    return
+                try:
+                    self.send_json(run_environment_diagnostics(resolve_task_python()))
+                finally:
+                    _ENVIRONMENT_DIAGNOSTICS_LOCK.release()
+            elif path == "/api/jobs":
                 payload = self.read_json_body()
                 job = self.job_manager.start(payload.get("action", ""), payload.get("params") or {})
                 self.send_json({"job": job.to_dict(include_logs=True)}, status=201)
@@ -3581,6 +3983,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     raise ValueError("搜索页坐标配置必须是 JSON 对象")
                 if detail_config is not None and not isinstance(detail_config, dict):
                     raise ValueError("详情页坐标配置必须是 JSON 对象")
+                validate_coordinate_config(search_config)
+                if detail_config is not None:
+                    validate_coordinate_config(detail_config)
                 CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
                 _write_text_atomic(CONFIG_FILE, json.dumps(search_config, ensure_ascii=False, indent=2) + "\n")
                 if detail_config is not None:
@@ -3653,22 +4058,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self.send_json({"count": len(records)})
                     return
 
-                # 生成 Excel 并返回文件下载
-                import tempfile
-                from detection_logger import DetectionLogger
-                logger = DetectionLogger()
-                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
-                tmp.close()
-                # 临时替换 _load_records 让 export_to_excel 使用筛选后的记录
-                orig_load = logger._load_records
-                logger._load_records = lambda: records
-                try:
-                    logger.export_to_excel(tmp.name)
-                finally:
-                    logger._load_records = orig_load
-
-                excel_data = Path(tmp.name).read_bytes()
-                os.unlink(tmp.name)
+                excel_data = build_filtered_excel(records)
 
                 ts_label = datetime.now().strftime("%Y%m%d_%H%M%S")
                 self.send_response(HTTPStatus.OK)

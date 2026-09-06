@@ -54,12 +54,15 @@ from collection_health import (
     write_collection_start_heartbeat,
     write_collection_stopped_heartbeat,
 )
+from collection_checkpoint import CollectionBatch, CollectionBatchBusyError
+from desktop_collection_lock import DetailCollectionDesktopBusyError, reserve_detail_collection_desktop
 from input_service import InputService
+from main_collection_targets import select_main_collection_targets
 from settings import (
-    CNIPA_URL, SEARCH_LIST_FILE, FORCE_UPDATE_FLAG,
+    CNIPA_URL, FORCE_UPDATE_FLAG,
     PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE, MITM_TIMEOUT, MITM_POLL_INTERVAL,
     PATENT_CACHE_FILE, USE_MITM_PROXY, PATENTS_DB_FILE, DETECTION_LOG_JSONL_FILE,
-    DATA_DIR,
+    MAIN_COLLECTION_CHECKPOINT_FILE,
     AUTOMATION_CONFIG_LOAD_WAIT, AUTOMATION_STARTUP_COUNTDOWN,
     AUTOMATION_ANTI_CRAWL_BATCH_SIZE, AUTOMATION_STATS_PRINT_INTERVAL,
     AUTOMATION_ANTI_CRAWL_WAIT_MIN, AUTOMATION_ANTI_CRAWL_WAIT_MAX,
@@ -69,19 +72,6 @@ from db_manager import PatentsDB
 # PyAutoGUI 配置
 pyautogui.PAUSE = PYAUTOGUI_PAUSE
 pyautogui.FAILSAFE = PYAUTOGUI_FAILSAFE
-
-
-def load_search_list() -> list:
-    """加载申请号列表"""
-    if not os.path.exists(SEARCH_LIST_FILE):
-        print(f"❌ 找不到搜索列表: {SEARCH_LIST_FILE}")
-        sys.exit(1)
-
-    with open(SEARCH_LIST_FILE, 'r', encoding='utf-8') as f:
-        applications = parse_app_no_list(f.read())
-
-    print(f"✓ 已加载 {len(applications)} 个申请号")
-    return applications
 
 
 def _is_patent_data_complete(data: dict) -> bool:
@@ -217,6 +207,7 @@ def search_application(
     except Exception as e:
         record = DetectionRecord(
             application_no=normalize_app_no(application_no),
+            status_code=0,
             error_message=str(e),
             response_summary=f'Error: {str(e)[:50]}'
         )
@@ -232,6 +223,18 @@ def search_application(
 
 
 def run_automation(test_count: int = None, update_list: str = None) -> None:
+    """Hold the shared desktop through target selection, collection, and exports."""
+    with reserve_detail_collection_desktop('主采集'):
+        _run_automation(test_count, update_list)
+
+
+def resume_automation(batch_id: str, test_count: int = None) -> None:
+    with reserve_detail_collection_desktop('主采集'):
+        with CollectionBatch.resume('main', MAIN_COLLECTION_CHECKPOINT_FILE, batch_id) as checkpoint:
+            _collect_main_batch(checkpoint, DetectionLogger(), test_count, str(MAIN_COLLECTION_CHECKPOINT_FILE))
+
+
+def _run_automation(test_count: int = None, update_list: str = None) -> None:
     """
     运行自动化程序
 
@@ -268,19 +271,21 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
         print(f"⏳ 强制更新: {len(pending)} 个申请号")
     else:
         # 正常模式：跳过已处理
-        all_applications = load_search_list()
-        pending = logger.get_pending_applications(all_applications)
-        print(f"✓ 已处理: {len(all_applications) - len(pending)} 个")
-        print(f"⏳ 待处理: {len(pending)} 个")
-
-    if test_count:
-        pending = pending[:test_count]
-        print(f"📌 测试模式: 仅处理前 {test_count} 个")
+        pending = select_main_collection_targets()
 
     if not pending:
         print("✓ 所有申请号都已处理！")
         logger.print_summary()
         return
+
+    with CollectionBatch.create('main', MAIN_COLLECTION_CHECKPOINT_FILE, pending) as checkpoint:
+        _collect_main_batch(checkpoint, logger, test_count, update_list)
+
+
+def _collect_main_batch(checkpoint: CollectionBatch, logger: DetectionLogger, test_count: int, update_list: str) -> None:
+    pending = checkpoint.select_pending(test_count)
+    if test_count:
+        print(f"📌 测试模式: 仅处理前 {test_count} 个")
 
     driver = None
     run_total = 0
@@ -320,14 +325,10 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
                 remaining = pending[i - 1:]
                 print("\n⚠️  浏览器已关闭，停止采集")
                 print(f"已采集 {i-1} 条，还有 {len(remaining)} 条未采集")
-                if remaining:
-                    checkpoint = DATA_DIR / 'checkpoint_resume.txt'
-                    checkpoint.write_text('\n'.join(remaining) + '\n', encoding='utf-8')
-                    print(f"[*] 未完成列表已写入: {checkpoint}")
-                    print(f"    续跑命令: python main_automation.py --update-list {checkpoint}")
                 raise RuntimeError('浏览器进程意外退出')
 
             print(f"\n[{i}/{len(pending)}]")
+            checkpoint.record_started(app_no)
             record = search_application(
                 driver,
                 app_no,
@@ -344,12 +345,16 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
                     run_total += 1
                     if record.status_code == 200:
                         run_success += 1
+                        checkpoint.record_success(app_no)
                         failure_streak.record_success()
                     else:
                         run_failed += 1
+                        checkpoint.record_failure(
+                            app_no, record.error_message or record.response_summary or '未采集到有效专利数据'
+                        )
                         failure_streak.record_failure()
                 else:
-                    failure_streak.record_failure()
+                    raise RuntimeError('浏览器已关闭，本条未采集，批次已中断')
             finally:
                 write_collection_progress_heartbeat(
                     app_no,
@@ -371,7 +376,11 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
 
     except KeyboardInterrupt:
         print("\n\n⚠️  用户中断")
+        raise
     finally:
+        if checkpoint.remaining_count:
+            print(f"\n[*] 未完成 {checkpoint.remaining_count} 条，清单已保存: {MAIN_COLLECTION_CHECKPOINT_FILE}")
+            print(f'    续跑命令: python main_automation.py --resume-batch {checkpoint.id}')
         write_collection_stopped_heartbeat(run_total, len(pending))
         if update_list:
             try:
@@ -417,6 +426,11 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
             PatentsDB(PATENTS_DB_FILE).export_to_jsonl(DETECTION_LOG_JSONL_FILE)
             print(f"✓ JSONL 备份已刷新: {DETECTION_LOG_JSONL_FILE}")
 
+    if run_failed:
+        raise RuntimeError(
+            f'本批采集失败 {run_failed} 条，未完成清单: {MAIN_COLLECTION_CHECKPOINT_FILE}'
+        )
+
 
 if __name__ == '__main__':
     # 默认模式：处理全部（跳过已处理）
@@ -433,12 +447,20 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--test', type=int, default=None, metavar='N',
                         help='仅处理前 N 个申请号')
-    parser.add_argument('--update-list', type=str, default=None, metavar='FILE',
-                        help='强制更新模式：从文件读取申请号并重新检索')
+    target_source = parser.add_mutually_exclusive_group()
+    target_source.add_argument('--update-list', type=str, default=None, metavar='FILE',
+                               help='强制更新模式：从文件读取申请号并重新检索')
+    target_source.add_argument('--resume-batch', metavar='ID', help='继续指定的未完成采集批次')
     args = parser.parse_args()
 
     try:
-        run_automation(test_count=args.test, update_list=args.update_list)
+        if args.resume_batch:
+            resume_automation(args.resume_batch, test_count=args.test)
+        else:
+            run_automation(test_count=args.test, update_list=args.update_list)
+    except (DetailCollectionDesktopBusyError, CollectionBatchBusyError, ValueError) as error:
+        print(f"\n[!] {error}")
+        sys.exit(2)
     except CollectionFailureStreakExceeded as error:
         print(f"\n⛔ {error}")
         sys.exit(3)

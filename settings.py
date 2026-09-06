@@ -50,6 +50,16 @@ _load_env_file_into_environment(BASE_DIR / '.env')
 
 # 本地版本标记文件（随代码 git 提交，供网络更新检查对比）
 VERSION_FILE = BASE_DIR / 'VERSION'
+RELEASE_REVISION_FILE = BASE_DIR / 'RELEASE_REVISION'
+
+# 本机只读环境诊断使用的手工驱动目录；不触发驱动下载或浏览器启动。
+MANUAL_CHROMEDRIVER_DIRS = tuple(
+    BASE_DIR / directory_name
+    for directory_name in (
+        'chromedriver-win64', 'chromedriver-mac-arm64',
+        'chromedriver-mac-x64', 'chromedriver-linux64',
+    )
+)
 
 # 数据目录
 DATA_DIR = BASE_DIR / 'data'
@@ -69,6 +79,10 @@ SEARCH_LIST_FILE = DATA_DIR / 'search_list.txt'
 FWXX_LIST_FILE = DATA_DIR / 'fwxx_list.txt'
 FWXX_MANUAL_LIST_DIR = DATA_DIR / 'manual_fwxx_lists'
 RETRY_FAILED_FILE = DATA_DIR / 'retry_failed.txt'
+MAIN_COLLECTION_CHECKPOINT_FILE = DATA_DIR / 'checkpoint_resume.txt'
+FWXX_COLLECTION_CHECKPOINT_FILE = DATA_DIR / 'checkpoint_fwxx.txt'
+FEE_COLLECTION_CHECKPOINT_FILE = DATA_DIR / 'checkpoint_fees.txt'
+COLLECTION_BATCHES_DIR = DATA_DIR / 'collection_batches'
 
 # ============================================================================
 # 配置文件（鼠标坐标等）
@@ -80,6 +94,7 @@ FORCE_UPDATE_FLAG = DATA_DIR / 'force_update.flag'
 MACHINE_ROLE_FILE = DATA_DIR / 'machine_role.txt'
 MASTER_SYNC_CONFIG_FILE = DATA_DIR / 'master_sync.json'
 MASTER_SYNC_STATE_FILE = DATA_DIR / 'master_sync_state.json'
+MASTER_SYNC_LOCK_FILE = DATA_DIR / 'master_sync.lock'
 COLLECTION_HEARTBEAT_FILE = DATA_DIR / 'collection_heartbeat.json'
 ALERT_STATUS_FILE = DATA_DIR / 'alert_status.json'
 WATCHDOG_EVENTS_FILE = DATA_DIR / 'watchdog_events.jsonl'
@@ -123,6 +138,10 @@ FWXX_UNMATCHED_FILE = DATA_DIR / 'fwxx_unmatched.json'
 FEE_UNMATCHED_FILE = DATA_DIR / 'fee_unmatched.json'
 AGENCY_UNMATCHED_FILE = DATA_DIR / 'agency_unmatched.json'
 DETAIL_COLLECTION_LOCK_FILE = DATA_DIR / 'detail_collection.lock'
+SUPERVISED_COLLECTION_LOCK_FILE = DATA_DIR / 'supervised_collection.lock'
+PHASE0_BROWSER_LOCK_FILE = DATA_DIR / 'phase0_browser.lock'
+PUBLIC_BROWSER_LOCK_FILE = DATA_DIR / 'public_browser.lock'
+PUBLIC_PAGINATION_LOCK_FILE = DATA_DIR / 'public_pagination.lock'
 LOGIN_READY_FLAG_FILE = DATA_DIR / 'login_ready.flag'
 
 # 补采独立模式的结果

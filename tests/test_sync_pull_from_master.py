@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import json
+import multiprocessing
 import subprocess
 import tempfile
 import threading
@@ -26,7 +27,113 @@ class _FakeResponse:
         return False
 
 
+def _hold_master_sync(lock_path, lock_acquired, release_lock):
+    with patch.object(sync_pull_from_master, 'MASTER_SYNC_LOCK_FILE', Path(lock_path)):
+        with sync_pull_from_master.reserve_master_sync():
+            lock_acquired.set()
+            if not release_lock.wait(15):
+                raise RuntimeError('Timed out waiting to release synchronization lock')
+
+
+def _attempt_master_sync(lock_path, cli_arguments, attempts):
+    with patch.object(sync_pull_from_master, 'MASTER_SYNC_LOCK_FILE', Path(lock_path)), patch.object(
+        sync_pull_from_master, 'require_replica_pull_role'
+    ), patch.object(
+        sync_pull_from_master, 'load_master_url', return_value='http://master:8765'
+    ), patch.object(
+        sync_pull_from_master, 'load_sync_cursor', return_value=sync_pull_from_master.INITIAL_SYNC_TIMESTAMP
+    ) as read_cursor, patch.object(
+        sync_pull_from_master, 'fetch_master_delta', return_value=([], 0)
+    ) as fetch_delta, patch.object(sync_pull_from_master, 'save_sync_cursor') as save_cursor:
+        exit_code = 0
+        try:
+            sync_pull_from_master.main(cli_arguments)
+        except SystemExit as exc:
+            exit_code = exc.code
+        attempts.put((exit_code, read_cursor.call_count, fetch_delta.call_count, save_cursor.call_count))
+
+
 class TestSyncPullFromMaster(unittest.TestCase):
+    def test_concurrent_processes_reject_incremental_and_full_before_reading_cursor(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            lock_path = str(Path(tmpdir) / 'master_sync.lock')
+            context = multiprocessing.get_context('spawn')
+            lock_acquired = context.Event()
+            release_lock = context.Event()
+            attempts = context.Queue()
+            owner = context.Process(target=_hold_master_sync, args=(lock_path, lock_acquired, release_lock))
+            owner.start()
+            try:
+                self.assertTrue(lock_acquired.wait(10))
+                for cli_arguments in ([], ['--full']):
+                    with self.subTest(cli_arguments=cli_arguments):
+                        contender = context.Process(target=_attempt_master_sync, args=(lock_path, cli_arguments, attempts))
+                        contender.start()
+                        try:
+                            contender.join(timeout=10)
+                            self.assertEqual(contender.exitcode, 0)
+                            self.assertEqual(attempts.get(timeout=2), (1, 0, 0, 0))
+                        finally:
+                            if contender.is_alive():
+                                contender.terminate()
+                            contender.join(timeout=5)
+            finally:
+                release_lock.set()
+                owner.join(timeout=5)
+                if owner.is_alive():
+                    owner.terminate()
+                    owner.join(timeout=5)
+            self.assertEqual(owner.exitcode, 0)
+            successor = context.Process(target=_attempt_master_sync, args=(lock_path, [], attempts))
+            successor.start()
+            try:
+                successor.join(timeout=10)
+                self.assertEqual(successor.exitcode, 0)
+                self.assertEqual(attempts.get(timeout=2), (0, 1, 1, 1))
+            finally:
+                if successor.is_alive():
+                    successor.terminate()
+                successor.join(timeout=5)
+                attempts.close()
+                attempts.join_thread()
+
+    def test_sync_lock_releases_when_the_operation_raises(self):
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            sync_pull_from_master, 'MASTER_SYNC_LOCK_FILE', Path(tmpdir) / 'master_sync.lock'
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'network failed'):
+                with sync_pull_from_master.reserve_master_sync():
+                    raise RuntimeError('network failed')
+            with sync_pull_from_master.reserve_master_sync():
+                pass
+
+    def test_sync_remains_exclusive_until_the_cursor_is_saved(self):
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            sync_pull_from_master, 'MASTER_SYNC_LOCK_FILE', Path(tmpdir) / 'master_sync.lock'
+        ), patch.object(
+            sync_pull_from_master, 'require_replica_pull_role'
+        ), patch.object(
+            sync_pull_from_master, 'load_master_url', return_value='http://master:8765'
+        ), patch.object(
+            sync_pull_from_master, 'fetch_master_delta', return_value=([
+                {'application_no': '2024110065970', SYNC_CURSOR_FIELD: '2026-09-06T00:00:00.000000Z'},
+            ], 0)
+        ), patch.object(
+            sync_pull_from_master, 'merge_master_delta', return_value={
+                'records': 1, 'new_applications': 1, 'updated_applications': 0,
+            }
+        ), patch.object(sync_pull_from_master, 'update_readme_statistics'), patch.object(
+            sync_pull_from_master, 'commit_patent_backup', return_value=False
+        ), patch.object(sync_pull_from_master, 'save_sync_cursor') as save_cursor:
+            def verify_exclusive_before_save(master_url, timestamp):
+                with self.assertRaises(sync_pull_from_master.MasterSyncBusyError):
+                    with sync_pull_from_master.reserve_master_sync():
+                        self.fail('A second synchronization entered before the cursor was saved')
+
+            save_cursor.side_effect = verify_exclusive_before_save
+            sync_pull_from_master.main(['--full'])
+            save_cursor.assert_called_once_with('http://master:8765', '2026-09-06T00:00:00.000000Z')
+
     def test_fetch_master_delta_normalizes_application_numbers(self):
         payload = json.dumps({
             'application_no': 'CN202411006597.0',
@@ -39,6 +146,27 @@ class TestSyncPullFromMaster(unittest.TestCase):
             )
         self.assertEqual(bad_lines, 0)
         self.assertEqual(records[0]['application_no'], '2024110065970')
+        self.assertEqual(records[0][SYNC_CURSOR_FIELD], '2026-07-02T00:00:00.000000Z')
+
+    def test_fetch_normalizes_mixed_precision_before_selecting_latest_cursor(self):
+        payloads = [
+            json.dumps({'application_no': '2024110065970', SYNC_CURSOR_FIELD: cursor}).encode('utf-8')
+            for cursor in ('2026-07-02T00:00:00Z', '2026-07-02T08:00:00.1+08:00')
+        ]
+        with patch.object(sync_pull_from_master.urllib.request, 'urlopen', return_value=_FakeResponse(payloads)):
+            records, bad_lines = sync_pull_from_master.fetch_master_delta('http://master:8765', '1970-01-01T00:00:00Z')
+        self.assertEqual(bad_lines, 0)
+        self.assertEqual(max(record[SYNC_CURSOR_FIELD] for record in records), '2026-07-02T00:00:00.100000Z')
+
+    def test_fetch_counts_invalid_cursors_and_non_record_json(self):
+        payloads = [
+            b'[]', b'null', b'not json',
+            json.dumps({'application_no': '2024110065970', SYNC_CURSOR_FIELD: 'invalid'}).encode('utf-8'),
+        ]
+        with patch.object(sync_pull_from_master.urllib.request, 'urlopen', return_value=_FakeResponse(payloads)):
+            records, bad_lines = sync_pull_from_master.fetch_master_delta('http://master:8765', '1970-01-01T00:00:00Z')
+        self.assertEqual(records, [])
+        self.assertEqual(bad_lines, 4)
 
     def test_load_master_url_rejects_missing_configuration(self):
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
@@ -155,7 +283,30 @@ class TestSyncPullFromMaster(unittest.TestCase):
                     sync_pull_from_master.INITIAL_SYNC_TIMESTAMP,
                 )
 
-    def test_two_delta_runs_create_two_separate_data_commits(self):
+    def test_timestamp_cursor_upgrade_reconciles_even_when_master_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / 'master_sync_state.json'
+            state_path.write_text(json.dumps({
+                'master_url': 'http://master:8765',
+                'last_sync_updated_at': '2026-07-01T00:00:00Z',
+                'snapshot_import_version': 1,
+            }), encoding='utf-8')
+            with patch.object(sync_pull_from_master, 'MASTER_SYNC_STATE_FILE', state_path), patch.object(
+                sync_pull_from_master, 'MASTER_SYNC_LOCK_FILE', Path(tmpdir) / 'master_sync.lock'
+            ), patch.object(
+                sync_pull_from_master, 'require_replica_pull_role'
+            ), patch.object(
+                sync_pull_from_master, 'load_master_url', return_value='http://master:8765'
+            ), patch.object(
+                sync_pull_from_master, 'fetch_master_delta', return_value=([], 0)
+            ) as fetch_delta:
+                sync_pull_from_master.main([])
+                fetch_delta.assert_called_once_with('http://master:8765', sync_pull_from_master.INITIAL_SYNC_TIMESTAMP)
+            state = json.loads(state_path.read_text(encoding='utf-8'))
+            self.assertEqual(state['snapshot_import_version'], 2)
+            self.assertEqual(state['last_sync_updated_at'], sync_pull_from_master.INITIAL_SYNC_TIMESTAMP)
+
+    def test_incremental_runs_commit_and_full_reconciliation_repairs_replica(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             master_db = PatentsDB(root / 'master.db')
@@ -209,13 +360,15 @@ class TestSyncPullFromMaster(unittest.TestCase):
                 ), patch.object(
                     sync_pull_from_master, 'MASTER_SYNC_STATE_FILE', state_path
                 ), patch.object(
+                    sync_pull_from_master, 'MASTER_SYNC_LOCK_FILE', root / 'data' / 'master_sync.lock'
+                ), patch.object(
                     sync_pull_from_master, 'require_replica_pull_role', return_value=None
                 ), patch.object(
                     sync_pull_from_master, 'update_readme_statistics', return_value=None
                 ), patch.dict(
                     sync_pull_from_master.os.environ, {'CNIPA_MASTER_URL': master_url}
                 ):
-                    sync_pull_from_master.main()
+                    sync_pull_from_master.main([])
                     first_cursor = json.loads(state_path.read_text(encoding='utf-8'))[
                         'last_sync_updated_at'
                     ]
@@ -224,7 +377,11 @@ class TestSyncPullFromMaster(unittest.TestCase):
                     master_db.update_fields(
                         '2023000000001', {'zhuanlimc': '第二天补充的字段'}
                     )
-                    sync_pull_from_master.main()
+                    sync_pull_from_master.main([])
+                    PatentsDB(replica_db_path).update_fields(
+                        '2023000000001', {'zhuanlimc': 'stale local value'}
+                    )
+                    sync_pull_from_master.main(['--full'])
 
                 commit_count = subprocess.run(
                     ['git', 'rev-list', '--count', 'HEAD'],
@@ -237,6 +394,7 @@ class TestSyncPullFromMaster(unittest.TestCase):
                 self.assertEqual(served_batches, [
                     ['2023000000001', '2023000000002'],
                     ['2023000000001'],
+                    ['2023000000002', '2023000000001'],
                 ])
                 self.assertEqual(commit_count, '3')
                 self.assertGreater(final_cursor, first_cursor)

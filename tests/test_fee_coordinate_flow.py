@@ -4,6 +4,8 @@
 import io
 from argparse import Namespace
 from contextlib import redirect_stderr
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import unittest
 from unittest.mock import MagicMock, call, patch
@@ -138,7 +140,12 @@ class TestFeeCoordinateFlow(unittest.TestCase):
             url="https://example.invalid",
         )
 
-        collect_fees._run_fee_collection(arguments)
+        with TemporaryDirectory() as temporary_directory:
+            with (
+                patch.object(collect_fees, 'FEE_COLLECTION_CHECKPOINT_FILE', Path(temporary_directory) / 'resume.txt'),
+                self.assertRaisesRegex(RuntimeError, '采集失败 1 条'),
+            ):
+                collect_fees._run_fee_collection(arguments)
 
         coordinate_service.load_or_record_search_coordinates.assert_called_once_with()
         coordinate_service.load_or_record_detail_link_coordinates.assert_called_once_with()

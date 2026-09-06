@@ -26,10 +26,14 @@ import time
 
 from browser_service import BrowserService
 from browser_utils import check_mitm_proxy, raise_system_exit_on_sigterm
+from desktop_collection_lock import (
+    DetailCollectionDesktopBusyError,
+    reserve_phase0_browser,
+)
 from settings import MITM_HOST, MITM_PORT, CNIPA_URL
 
 
-def main():
+def run_phase0_browser_session():
     raise_system_exit_on_sigterm()
     print("\n" + "=" * 70)
     print("🌐 Phase 0 浏览器启动程序")
@@ -98,9 +102,17 @@ def main():
 """)
 
 
+def main():
+    with reserve_phase0_browser("Phase 0 浏览器"):
+        run_phase0_browser_session()
+
+
 if __name__ == '__main__':
     try:
         main()
+    except DetailCollectionDesktopBusyError as e:
+        print(f"\n[!] {e}")
+        sys.exit(2)
     except Exception as e:
         print(f"\n[!] 程序错误: {e}")
         import traceback

@@ -216,6 +216,7 @@ class TestFeeSnapshotVersions(unittest.TestCase):
 
     def _run_collection_for_payload(self, fee_payload):
         with (
+            patch.object(collect_fees, 'FEE_COLLECTION_CHECKPOINT_FILE', self.temporary_path / 'resume.txt'),
             patch.object(collect_fees, "load_fee_dataset_targets", return_value=[APPLICATION_NO]),
             patch.object(collect_fees, "CoordinateService") as coordinate_service,
             patch.object(collect_fees, "BrowserService"),
@@ -239,12 +240,13 @@ class TestFeeSnapshotVersions(unittest.TestCase):
         })
         self.database.record_collection_failure("fees", APPLICATION_NO, "incomplete_fee_payload")
 
-        self._run_collection_for_payload({
-            "payable_fee_records": [],
-            "paid_fee_records": [],
-            "fee_receipt_dispatch_records": [],
-            "fee_snapshot_at": OLDER_SNAPSHOT_AT,
-        })
+        with self.assertRaisesRegex(RuntimeError, '采集失败 1 条'):
+            self._run_collection_for_payload({
+                "payable_fee_records": [],
+                "paid_fee_records": [],
+                "fee_receipt_dispatch_records": [],
+                "fee_snapshot_at": OLDER_SNAPSHOT_AT,
+            })
 
         stored_patent = self.database.get_record(APPLICATION_NO)
         self.assertEqual(stored_patent["fee_snapshot_at"], RECENT_SNAPSHOT_AT)

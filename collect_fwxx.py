@@ -63,6 +63,7 @@ if os.getenv('USE_VIRTUAL_DISPLAY', '').lower() in ('true', '1', 'yes') \
 
 # PyAutoGUI 和 Selenium
 import pyautogui
+from selenium.common.exceptions import WebDriverException
 
 # 导入现有模块
 sys.path.insert(0, os.path.dirname(__file__))
@@ -77,6 +78,7 @@ from detail_attempt import (
 )
 from browser_utils import is_browser_alive, raise_system_exit_on_sigterm
 from collection_health import CollectionFailureStreak, CollectionFailureStreakExceeded
+from collection_checkpoint import CollectionBatch, CollectionBatchBusyError
 from coordinate_service import CoordinateService
 from browser_service import BrowserService
 from input_service import InputService
@@ -95,6 +97,7 @@ from settings import (
     FWXX_UNMATCHED_FILE, PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE,
     USE_MITM_PROXY,
     PATENTS_DB_FILE,
+    FWXX_COLLECTION_CHECKPOINT_FILE,
     FWXX_PAGE_LOAD_WAIT, FWXX_STARTUP_COUNTDOWN,
     FWXX_INPUT_DELAY_MIN, FWXX_INPUT_DELAY_MAX, FWXX_INPUT_PAUSE_PROB,
     FWXX_POST_SEARCH_WAIT, FWXX_DETAIL_CLICK_WAIT, FWXX_TAB_SWITCH_WAIT,
@@ -290,8 +293,7 @@ def collect_one_fwxx(
     try:
         # 检测浏览器是否还活着
         if not is_browser_alive(driver):
-            print(f"    [!] 浏览器已关闭，无法采集")
-            return None
+            raise DetailCollectionFatalError('浏览器已关闭，本条未采集，发文批次已中断')
 
         initial_handles = list(driver.window_handles)
         if len(initial_handles) != 1:
@@ -393,6 +395,8 @@ def collect_one_fwxx(
 
     except DetailCollectionFatalError:
         raise
+    except WebDriverException as error:
+        raise DetailCollectionFatalError('浏览器连接失效，发文批次已中断') from error
     except Exception as e:
         print(f"    [!] 采集失败: {str(e)[:100]}")
         return collected_fields or None
@@ -423,8 +427,8 @@ def persist_fwxx_fields(application_no: str, fwxx_fields: dict) -> bool:
     """将本次采集成功的发文字段写回 PatentsDB。
 
     使用 update_fields（字段级更新）而非 upsert（整行覆盖），
-    避免与 main_automation.py 的并发写入互相覆盖。
-    发文采集保留原有 timestamp 刷新语义。
+    避免与 main_automation.py 的并发写入互相覆盖。基础状态的 timestamp
+    只由主采集更新，发文采集使用独立时间，避免推迟策略复查。
     """
     try:
         db = PatentsDB(PATENTS_DB_FILE)
@@ -442,7 +446,7 @@ def persist_fwxx_fields(application_no: str, fwxx_fields: dict) -> bool:
             )
             if field in fwxx_fields
         }
-        persisted_fields['timestamp'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        persisted_fields['fwxx_collected_at'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
         db.update_fields(application_no, persisted_fields)
         return True
     except Exception as e:
@@ -494,7 +498,10 @@ def _run_fwxx_collection(args) -> None:
     Args:
         args: 命令行参数对象
     """
-    test_count = args.test
+    if getattr(args, 'resume_batch', None):
+        with CollectionBatch.resume('fwxx', FWXX_COLLECTION_CHECKPOINT_FILE, args.resume_batch) as checkpoint:
+            _collect_fwxx_batch(args, checkpoint)
+        return
     standalone_mode = bool(getattr(args, 'input', None) or getattr(args, 'app', None))
 
     print("\n" + "="*70)
@@ -526,9 +533,15 @@ def _run_fwxx_collection(args) -> None:
             print("✓ 无需采集，所有驳回案件的发文信息都已采集！")
         return
 
+    with CollectionBatch.create('fwxx', FWXX_COLLECTION_CHECKPOINT_FILE, targets) as checkpoint:
+        _collect_fwxx_batch(args, checkpoint)
+
+
+def _collect_fwxx_batch(args, checkpoint: CollectionBatch) -> None:
+    targets = checkpoint.select_pending(args.test)
+
     # 测试模式
-    if test_count:
-        targets = targets[:test_count]
+    if args.test:
         print(f"📋 测试模式：仅采集前 {len(targets)} 个\n")
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -578,11 +591,12 @@ def _run_fwxx_collection(args) -> None:
             if not is_browser_alive(driver):
                 print("\n⚠️  浏览器已关闭，停止采集")
                 print(f"\n已采集 {success_count} 条，失败 {failed_count} 条，还有 {len(targets) - idx + 1} 条未采集")
-                break
+                raise DetailCollectionFatalError('浏览器进程意外退出，发文采集已中断')
 
             print(f"\n[{idx}/{len(targets)}] 申请号: {application_no}")
 
             # 采集单个申请号
+            checkpoint.record_started(application_no)
             fwxx_fields = collect_one_fwxx(
                 driver=driver,
                 application_no=application_no,
@@ -601,14 +615,17 @@ def _run_fwxx_collection(args) -> None:
                 if persist_fwxx_fields(application_no, fwxx_fields):
                     print(f"  ✅ 已成功采集并更新日志")
                     success_count += 1
+                    checkpoint.record_success(application_no)
                     failure_streak.record_success()
                 else:
                     print(f"  ⚠️  主日志未更新，发文信息已备份到 {FWXX_UNMATCHED_FILE}")
                     failed_count += 1
+                    checkpoint.record_failure(application_no, '发文数据未写入专利主库，已保存未匹配备份')
                     failure_streak.record_failure()
             else:
                 print(f"  ❌ 未采集到数据")
                 failed_count += 1
+                checkpoint.record_failure(application_no, '未采集到有效发文数据')
                 failure_streak.record_failure()
 
             # 申请号之间的随机延迟（防反爬）
@@ -622,7 +639,7 @@ def _run_fwxx_collection(args) -> None:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
         print("\n" + "="*70)
-        print(f"✓ 采集完成！成功: {success_count}, 失败: {failed_count}")
+        print(f"采集批次结束，成功: {success_count}, 失败: {failed_count}")
         print("="*70)
 
         print("\n[*] 导出 Excel...")
@@ -635,6 +652,10 @@ def _run_fwxx_collection(args) -> None:
         from db_manager import PatentsDB
         exported = PatentsDB(PATENTS_DB_FILE).export_to_jsonl(DETECTION_LOG_JSONL_FILE)
         print(f"[✓] JSONL 备份已刷新：{exported} 条（含发文信息）")
+        if failed_count:
+            raise RuntimeError(
+                f'发文采集失败 {failed_count} 条，未完成清单: {FWXX_COLLECTION_CHECKPOINT_FILE}'
+            )
 
     except CollectionFailureStreakExceeded:
         # 熔断信息已由 CollectionFailureStreak 打点并写入报警，无需 traceback
@@ -646,6 +667,9 @@ def _run_fwxx_collection(args) -> None:
         raise
 
     finally:
+        if checkpoint.remaining_count:
+            print(f"\n[*] 未完成 {checkpoint.remaining_count} 条，清单已保存: {FWXX_COLLECTION_CHECKPOINT_FILE}")
+            print(f'    续跑命令: python collect_fwxx.py --resume-batch {checkpoint.id}')
         # 清理
         if driver:
             try:
@@ -676,16 +700,18 @@ if __name__ == "__main__":
         default=SEARCH_PAGE_URL,
         help=f'搜索页 URL（默认：{SEARCH_PAGE_URL}）'
     )
-    parser.add_argument(
+    target_source = parser.add_mutually_exclusive_group()
+    target_source.add_argument(
         '--input',
         type=str,
         help='独立模式：从文件读取申请号列表（一行一个）'
     )
-    parser.add_argument(
+    target_source.add_argument(
         '--app',
         type=str,
         help='独立模式：直接指定申请号（多个用逗号分隔）'
     )
+    target_source.add_argument('--resume-batch', metavar='ID', help='继续指定的未完成发文批次')
     parser.add_argument(
         '--force',
         action='store_true',
@@ -704,7 +730,7 @@ if __name__ == "__main__":
 
     try:
         run_fwxx_collection(args=args)
-    except DetailCollectionDesktopBusyError as error:
+    except (DetailCollectionDesktopBusyError, CollectionBatchBusyError, ValueError) as error:
         print(f"\n[!] {error}")
         sys.exit(2)
     except CollectionFailureStreakExceeded as error:
