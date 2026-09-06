@@ -87,7 +87,7 @@ class TestFeeFailedTargetSource(unittest.TestCase):
 
 
 class TestFeeFailureLifecycle(unittest.TestCase):
-    def _run_one_target(self, fee_fields, persistence_succeeded):
+    def _run_one_target(self, fee_fields, stored_snapshot):
         patches = (
             patch("collect_fees.load_fee_dataset_targets", return_value=[APPLICATION_NO]),
             patch("collect_fees.CoordinateService"),
@@ -95,7 +95,7 @@ class TestFeeFailureLifecycle(unittest.TestCase):
             patch("collect_fees.countdown"),
             patch("collect_fees.is_browser_alive", return_value=True),
             patch("collect_fees.collect_one_fee", return_value=fee_fields),
-            patch("collect_fees.persist_fee_fields", return_value=persistence_succeeded),
+            patch("collect_fees.persist_fee_fields", return_value=stored_snapshot),
             patch("collect_fees.DetectionLogger"),
             patch("collect_fees.PatentsDB"),
         )
@@ -127,7 +127,7 @@ class TestFeeFailureLifecycle(unittest.TestCase):
             return db_class.return_value
 
     def test_no_payload_records_a_retryable_failure(self):
-        db = self._run_one_target(fee_fields=None, persistence_succeeded=False)
+        db = self._run_one_target(fee_fields=None, stored_snapshot=None)
 
         db.record_collection_failure.assert_called_once_with(
             "fees",
@@ -139,7 +139,7 @@ class TestFeeFailureLifecycle(unittest.TestCase):
     def test_persistence_failure_records_a_retryable_failure(self):
         db = self._run_one_target(
             fee_fields=_complete_fee_payload(),
-            persistence_succeeded=False,
+            stored_snapshot=None,
         )
 
         db.record_collection_failure.assert_called_once_with(
@@ -152,7 +152,11 @@ class TestFeeFailureLifecycle(unittest.TestCase):
     def test_partial_payload_is_persisted_but_remains_retryable(self):
         db = self._run_one_target(
             fee_fields={"payable_fee_records": []},
-            persistence_succeeded=True,
+            stored_snapshot={
+                "payable_fee_records": [],
+                "paid_fee_records": None,
+                "fee_receipt_dispatch_records": None,
+            },
         )
 
         db.record_collection_failure.assert_called_once_with(
@@ -165,7 +169,7 @@ class TestFeeFailureLifecycle(unittest.TestCase):
     def test_success_clears_a_previous_failure(self):
         db = self._run_one_target(
             fee_fields=_complete_fee_payload(),
-            persistence_succeeded=True,
+            stored_snapshot=_complete_fee_payload(),
         )
 
         db.clear_collection_failure.assert_called_once_with(

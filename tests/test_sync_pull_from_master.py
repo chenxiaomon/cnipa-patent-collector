@@ -69,6 +69,46 @@ class TestSyncPullFromMaster(unittest.TestCase):
             self.assertEqual(summary['updated_applications'], 1)
             self.assertEqual(len(backup_path.read_text(encoding='utf-8').splitlines()), 2)
 
+    def test_master_reset_restores_pending_status_and_clears_stale_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            master = PatentsDB(root / 'master.db')
+            replica_path = root / 'replica.db'
+            replica = PatentsDB(replica_path)
+            backup_path = root / 'detection_log.jsonl'
+            application_no = '202310411762X'
+            master.upsert({
+                'application_no': application_no,
+                'status_code': 0,
+                'zhuanlimc': 'old title',
+                'anjianywzt': 'old status',
+                'error_message': 'timeout',
+                'fwxx_list': [],
+            })
+            first_delta = master.export_delta(sync_pull_from_master.INITIAL_SYNC_TIMESTAMP)
+            with patch.object(sync_pull_from_master, 'PATENTS_DB_FILE', replica_path), patch.object(
+                sync_pull_from_master, 'DETECTION_LOG_JSONL_FILE', backup_path
+            ):
+                sync_pull_from_master.merge_master_delta(first_delta)
+                master.update_fields(application_no, {
+                    'status_code': None,
+                    'zhuanlimc': None,
+                    'anjianywzt': None,
+                    'error_message': None,
+                })
+                reset_delta = master.export_delta(first_delta[0][SYNC_CURSOR_FIELD])
+                self.assertEqual(len(reset_delta), 1)
+                sync_pull_from_master.merge_master_delta(reset_delta)
+
+            self.assertEqual(replica.get_record(application_no), master.get_record(application_no))
+            self.assertEqual(replica.get_processed_app_nos(), set())
+            self.assertEqual(replica.get_stats()['pending'], 1)
+            self.assertEqual(replica.get_stats()['failed'], 0)
+            self.assertEqual(
+                json.loads(backup_path.read_text(encoding='utf-8')),
+                master.get_record(application_no),
+            )
+
     def test_save_sync_cursor_is_atomic_and_reloadable(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             state_path = Path(tmpdir) / 'master_sync_state.json'
@@ -99,6 +139,19 @@ class TestSyncPullFromMaster(unittest.TestCase):
                 )
                 self.assertEqual(
                     sync_pull_from_master.load_sync_cursor('http://new-master:8765'),
+                    sync_pull_from_master.INITIAL_SYNC_TIMESTAMP,
+                )
+
+    def test_cursor_from_null_preserving_import_forces_full_reconciliation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / 'master_sync_state.json'
+            state_path.write_text(json.dumps({
+                'master_url': 'http://master:8765',
+                'last_sync_updated_at': '2026-07-01T00:00:00Z',
+            }), encoding='utf-8')
+            with patch.object(sync_pull_from_master, 'MASTER_SYNC_STATE_FILE', state_path):
+                self.assertEqual(
+                    sync_pull_from_master.load_sync_cursor('http://master:8765'),
                     sync_pull_from_master.INITIAL_SYNC_TIMESTAMP,
                 )
 

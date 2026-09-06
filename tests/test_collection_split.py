@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import unittest
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import ANY, MagicMock, call, patch
 
 import collect_fwxx
 
@@ -54,20 +54,26 @@ class TestFwxxCollectionBoundaries(unittest.TestCase):
                 driver.window_handles.append("detail")
 
         input_service.move_and_click.side_effect = reveal_detail_tab
-        poll_cache.return_value = {"fwxx_list": []}
+        driver.close.side_effect = lambda: driver.window_handles.remove("detail")
+        poll_cache.return_value = {"fwxx_list": [], "detail_attempt_id": "attempt-current"}
 
-        collected = collect_fwxx.collect_one_fwxx(
-            driver,
-            "A",
-            input_x=1,
-            input_y=2,
-            button_x=3,
-            button_y=4,
-            link_x=5,
-            link_y=6,
-            fwxx_menu_x=7,
-            fwxx_menu_y=8,
-        )
+        with patch("collect_fwxx.begin_detail_attempt", return_value={
+            "application_no": "A", "attempt_id": "attempt-current",
+        }), patch("collect_fwxx.wait_for_detail_identity"), patch(
+            "collect_fwxx.clear_matching_detail_attempt"
+        ):
+            collected = collect_fwxx.collect_one_fwxx(
+                driver,
+                "A",
+                input_x=1,
+                input_y=2,
+                button_x=3,
+                button_y=4,
+                link_x=5,
+                link_y=6,
+                fwxx_menu_x=7,
+                fwxx_menu_y=8,
+            )
 
         self.assertEqual(collected, {"fwxx_list": []})
         clear_cache.assert_called_once_with(collect_fwxx.PATENT_FWXX_CACHE_FILE, "A")
@@ -75,7 +81,10 @@ class TestFwxxCollectionBoundaries(unittest.TestCase):
             collect_fwxx.PATENT_FWXX_CACHE_FILE,
             "A",
             max_wait=collect_fwxx.FWXX_CACHE_POLL_TIMEOUT,
+            validate=ANY,
         )
+        self.assertTrue(poll_cache.call_args.kwargs["validate"](poll_cache.return_value))
+        self.assertFalse(poll_cache.call_args.kwargs["validate"]({"fwxx_list": []}))
         self.assertEqual(
             input_service.move_and_click.call_args_list,
             [

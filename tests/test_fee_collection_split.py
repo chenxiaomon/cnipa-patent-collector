@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import unittest
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import ANY, MagicMock, call, patch
 
 import collect_fees
 
@@ -93,18 +93,24 @@ class TestFeeCollectionBoundaries(unittest.TestCase):
             "fee_receipt_dispatch_records": [],
             "fee_snapshot_at": "2026-07-27T00:00:00Z",
         }
-        poll_cache.return_value = fee_fields
+        poll_cache.return_value = {**fee_fields, "detail_attempt_id": "attempt-current"}
+        driver.close.side_effect = lambda: driver.window_handles.remove("detail")
 
-        collected = collect_fees.collect_one_fee(
-            driver,
-            "A",
-            input_x=1,
-            input_y=2,
-            button_x=3,
-            button_y=4,
-            link_x=5,
-            link_y=6,
-        )
+        with patch("collect_fees.begin_detail_attempt", return_value={
+            "application_no": "A", "attempt_id": "attempt-current",
+        }), patch("collect_fees.wait_for_detail_identity"), patch(
+            "collect_fees.clear_matching_detail_attempt"
+        ):
+            collected = collect_fees.collect_one_fee(
+                driver,
+                "A",
+                input_x=1,
+                input_y=2,
+                button_x=3,
+                button_y=4,
+                link_x=5,
+                link_y=6,
+            )
 
         self.assertEqual(collected, fee_fields)
         clear_cache.assert_called_once_with(collect_fees.PATENT_FEE_CACHE_FILE, "A")
@@ -112,6 +118,7 @@ class TestFeeCollectionBoundaries(unittest.TestCase):
             collect_fees.PATENT_FEE_CACHE_FILE,
             "A",
             max_wait=collect_fees.FWXX_CACHE_POLL_TIMEOUT,
+            validate=ANY,
         )
         self.assertEqual(
             input_service.move_and_click.call_args_list,
@@ -154,8 +161,9 @@ class TestFeeCollectionBoundaries(unittest.TestCase):
     @patch("collect_fees.PatentsDB")
     def test_fee_persistence_ignores_fwxx_fields_and_status_timestamp(self, db_class):
         db = db_class.return_value
-        db.get_record.return_value = {"application_no": "A"}
-        db.update_fields.return_value = 1
+        db.update_fee_snapshot.return_value = {
+            "payable_fee_records": [], "paid_fee_records": [], "fee_receipt_dispatch_records": [],
+        }
 
         persisted = collect_fees.persist_fee_fields(
             "A",
@@ -171,7 +179,7 @@ class TestFeeCollectionBoundaries(unittest.TestCase):
         )
 
         self.assertTrue(persisted)
-        written_fields = db.update_fields.call_args.args[1]
+        written_fields = db.update_fee_snapshot.call_args.args[1]
         self.assertEqual(
             set(written_fields),
             {
@@ -185,11 +193,11 @@ class TestFeeCollectionBoundaries(unittest.TestCase):
         self.assertNotIn("fwxx_list", written_fields)
         self.assertNotIn("timestamp", written_fields)
 
+    @patch("collect_fees._append_unmatched_fee")
     @patch("collect_fees.PatentsDB")
-    def test_fee_persistence_requires_an_updated_database_row(self, db_class):
+    def test_fee_persistence_requires_an_updated_database_row(self, db_class, unmatched_fee):
         db = db_class.return_value
-        db.get_record.return_value = {"application_no": "A"}
-        db.update_fields.return_value = 0
+        db.update_fee_snapshot.return_value = None
 
         persisted = collect_fees.persist_fee_fields(
             "A",
@@ -201,6 +209,7 @@ class TestFeeCollectionBoundaries(unittest.TestCase):
         )
 
         self.assertFalse(persisted)
+        self.assertEqual(unmatched_fee.call_args.kwargs['reason'], 'not_found_in_db')
 
 
 if __name__ == "__main__":

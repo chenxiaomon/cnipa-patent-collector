@@ -202,6 +202,44 @@ class TestPatentsDBUpdateFields(unittest.TestCase):
             self.assertIsNone(record["error_message"])
 
 
+class TestMasterDeltaImport(unittest.TestCase):
+    def test_explicit_nulls_replace_local_values_but_omitted_fields_survive(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = PatentsDB(Path(tmpdir) / 'patents.db')
+            db.upsert({
+                'application_no': '202310411762X',
+                'status_code': 200,
+                'fwxx_list': [{'tongzhismc': 'old notice'}],
+                'daili_jg': 'known agency',
+            })
+            imported = db.apply_master_delta([
+                {'application_no': '202310411762X', 'status_code': None, 'fwxx_list': None},
+                {'application_no': '2023000000001', 'status_code': 200, 'fwxx_list': []},
+            ])
+
+            self.assertEqual(imported, 2)
+            existing_patent = db.get_record('202310411762X')
+            self.assertIsNone(existing_patent['status_code'])
+            self.assertIsNone(existing_patent['fwxx_list'])
+            self.assertEqual(existing_patent['daili_jg'], 'known agency')
+            self.assertEqual(db.get_record('2023000000001')['fwxx_list'], [])
+            self.assertEqual(db.get_processed_app_nos(), {'2023000000001'})
+
+    def test_failed_master_delta_rolls_back_earlier_records(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = PatentsDB(Path(tmpdir) / 'patents.db')
+            db.upsert({'application_no': '202310411762X', 'status_code': 200})
+
+            with self.assertRaises(sqlite3.ProgrammingError):
+                db.apply_master_delta([
+                    {'application_no': '202310411762X', 'status_code': None},
+                    {'application_no': '2023000000001', 'status_code': {'invalid': 'status'}},
+                ])
+
+            self.assertEqual(db.get_record('202310411762X')['status_code'], 200)
+            self.assertIsNone(db.get_record('2023000000001'))
+
+
 class TestSnapshotPreviousStatus(unittest.TestCase):
     """采集前状态快照（previous_status）"""
 

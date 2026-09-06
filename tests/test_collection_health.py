@@ -30,6 +30,11 @@ class _FailedProcess:
 
 
 class TestCollectionHealth(unittest.TestCase):
+    def setUp(self):
+        alert_patch = patch.object(collection_watchdog, 'read_alert_status', return_value={'status': 'ok'})
+        alert_patch.start()
+        self.addCleanup(alert_patch.stop)
+
     def test_progress_heartbeat_is_readable(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             heartbeat_path = Path(tmpdir) / 'heartbeat.json'
@@ -102,6 +107,38 @@ class TestCollectionHealth(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertEqual(start_process.call_count, 3)
         self.assertEqual(record_alert.call_args_list[-1].args[0], 'restart_limit_reached')
+
+    def test_watchdog_requires_noninteractive_login_confirmation(self):
+        with patch.object(collection_watchdog.subprocess, 'Popen') as collection_start:
+            collection_watchdog.start_collection_process()
+        self.assertEqual(collection_start.call_args.kwargs['stdin'], subprocess.DEVNULL)
+
+    def test_watchdog_prioritizes_required_login_over_heartbeat_timeout(self):
+        with patch.object(collection_watchdog, 'read_alert_status', return_value={
+            'status': 'alert', 'reason': 'login_required', 'details': 'login not confirmed',
+        }), patch.object(collection_watchdog, 'read_collection_heartbeat') as read_heartbeat:
+            failure = collection_watchdog.supervision_failure(_RunningProcess())
+        self.assertEqual(failure, ('login_required', 'login not confirmed'))
+        read_heartbeat.assert_not_called()
+
+    def test_watchdog_does_not_restart_when_login_requires_operator(self):
+        with patch.object(collection_watchdog, '_stop_requested', False), patch.object(
+            collection_watchdog.signal, 'signal'
+        ), patch.object(collection_watchdog, 'clear_collection_alert'), patch.object(
+            collection_watchdog, 'write_collection_start_heartbeat'
+        ), patch.object(
+            collection_watchdog, 'start_collection_process', return_value=_FailedProcess()
+        ) as collection_start, patch.object(
+            collection_watchdog, 'supervision_failure',
+            return_value=('login_required', 'login not confirmed'),
+        ), patch.object(collection_watchdog, 'terminate_process_tree'), patch.object(
+            collection_watchdog, 'record_collection_alert'
+        ) as record_alert, patch.object(collection_watchdog.time, 'sleep') as retry_delay:
+            exit_code = collection_watchdog.run_supervised_collection()
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(collection_start.call_count, 1)
+        retry_delay.assert_not_called()
+        record_alert.assert_called_once_with('login_required', 'login not confirmed', 0)
 
     @unittest.skipIf(sys.platform == 'win32', 'POSIX process-group behavior')
     def test_terminate_process_tree_stops_process_group(self):

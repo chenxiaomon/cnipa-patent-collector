@@ -41,28 +41,35 @@ class TestFeeCoordinateFlow(unittest.TestCase):
 
         input_service.move_and_click.side_effect = reveal_detail_tab
         def load_fee_menu_coordinates():
-            driver.switch_to.window.assert_called_once_with("detail")
+            driver.switch_to.window.assert_called_with("detail")
             return 7, 8
 
         coordinate_service.load_or_record_fee_menu_coordinates.side_effect = (
             load_fee_menu_coordinates
         )
         poll_cache.return_value = {
+            "detail_attempt_id": "attempt-current",
             "payable_fee_records": [],
             "paid_fee_records": [],
             "fee_receipt_dispatch_records": [],
         }
+        driver.close.side_effect = lambda: driver.window_handles.remove("detail")
 
-        collect_fees.collect_one_fee(
-            driver,
-            "A",
-            input_x=1,
-            input_y=2,
-            button_x=3,
-            button_y=4,
-            link_x=5,
-            link_y=6,
-        )
+        with patch("collect_fees.begin_detail_attempt", return_value={
+            "application_no": "A", "attempt_id": "attempt-current",
+        }), patch("collect_fees.wait_for_detail_identity"), patch(
+            "collect_fees.clear_matching_detail_attempt"
+        ):
+            collect_fees.collect_one_fee(
+                driver,
+                "A",
+                input_x=1,
+                input_y=2,
+                button_x=3,
+                button_y=4,
+                link_x=5,
+                link_y=6,
+            )
 
         coordinate_service.load_or_record_fee_menu_coordinates.assert_called_once_with()
         self.assertEqual(

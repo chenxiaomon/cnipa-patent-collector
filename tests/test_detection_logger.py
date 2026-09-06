@@ -14,6 +14,7 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
+from db_manager import PatentsDB
 from detection_logger import DetectionLogger, DetectionRecord
 
 
@@ -199,7 +200,7 @@ class TestDetectionLoggerWritePath(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             logger = _logger_in(tmpdir)
             logger.add_record(DetectionRecord(application_no='2023000000001', status_code=200))
-            backup_pattern = str(Path(tmpdir) / 'log_backup_*.jsonl')
+            backup_pattern = str(Path(tmpdir) / 'log_backup_*.db')
 
             logger._auto_backup(written=500)
             self.assertEqual(len(glob.glob(backup_pattern)), 1)
@@ -208,6 +209,55 @@ class TestDetectionLoggerWritePath(unittest.TestCase):
             logger._auto_backup(written=1)
             self.assertEqual(len(glob.glob(backup_pattern)), 1)
             self.assertEqual(logger._writes_since_backup, 1)
+
+    def test_auto_backup_includes_upsert_updates_absent_from_jsonl(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = _logger_in(tmpdir)
+            logger.add_record(DetectionRecord(
+                application_no='2023000000001', status_code=0, zhuanlimc='old title',
+            ))
+            logger._writes_since_backup = 499
+
+            logger.upsert_record(DetectionRecord(
+                application_no='2023000000001', status_code=200, zhuanlimc='updated title',
+            ))
+
+            self.assertEqual(json.loads(Path(logger.log_file).read_text())['status_code'], 0)
+            backup_paths = list(Path(tmpdir).glob('log_backup_*.db'))
+            self.assertEqual(len(backup_paths), 1)
+            restored = PatentsDB(backup_paths[0]).get_record('2023000000001')
+            self.assertEqual(restored['status_code'], 200)
+            self.assertEqual(restored['zhuanlimc'], 'updated title')
+
+    def test_failed_auto_backup_keeps_counter_for_retry(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = _logger_in(tmpdir)
+            with mock.patch.object(logger._db, 'backup_to', side_effect=OSError('disk unavailable')):
+                with self.assertRaises(OSError):
+                    logger._auto_backup(written=500)
+
+            self.assertEqual(logger._writes_since_backup, 500)
+            self.assertEqual(list(Path(tmpdir).glob('log_backup_*.db')), [])
+            logger._auto_backup(written=0)
+            self.assertEqual(logger._writes_since_backup, 0)
+            self.assertEqual(len(list(Path(tmpdir).glob('log_backup_*.db'))), 1)
+
+    def test_database_backup_retention_preserves_five_and_historical_jsonl(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = _logger_in(tmpdir)
+            root = Path(tmpdir)
+            historical_backup = root / 'log_backup_20200101_000000.jsonl'
+            historical_backup.write_text('historical backup\n', encoding='utf-8')
+            for sequence in range(7):
+                logger._db.backup_to(root / f'log_backup_20260101_00000{sequence}.db')
+
+            logger._prune_backups()
+
+            self.assertEqual(
+                sorted(backup.name for backup in root.glob('log_backup_*.db')),
+                [f'log_backup_20260101_00000{sequence}.db' for sequence in range(2, 7)],
+            )
+            self.assertEqual(historical_backup.read_text(encoding='utf-8'), 'historical backup\n')
 
     def test_add_records_matches_looped_add_record(self):
         records = [

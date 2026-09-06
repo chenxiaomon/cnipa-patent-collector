@@ -17,7 +17,7 @@ import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -45,6 +45,19 @@ def _make_flow(url, status=200, content_type='application/json', body=b'{}'):
 def _json_body(obj):
     """把 dict 序列化为 bytes（模拟 CNIPA API 响应 body）。"""
     return json.dumps(obj, ensure_ascii=False).encode('utf-8')
+
+
+def _verified_detail_flow(url, application_no, body, attempt_id='attempt-current'):
+    """Build a response fixture whose request has already passed sqxx verification."""
+    flow = _make_flow(url, body=body)
+    flow.metadata = {
+        'cnipa_detail_target_application_no': application_no,
+        'cnipa_detail_attempt': {
+            'application_no': application_no,
+            'attempt_id': attempt_id,
+        },
+    }
+    return flow
 
 
 # ── 公共 fixture ─────────────────────────────────────────────────────
@@ -534,29 +547,21 @@ class TestProcessFwxx(unittest.TestCase):
 
         from patent_mitm_scraper import PatentMITMScraper
         self.scraper = PatentMITMScraper()
+        marker_patcher = patch('patent_mitm_scraper.read_detail_attempt_marker', return_value={
+            'application_no': '2023108272249', 'attempt_id': 'attempt-current',
+        })
+        marker_patcher.start()
+        self.addCleanup(marker_patcher.stop)
 
     @patch('patent_mitm_scraper.write_json_cache')
     @patch('patent_mitm_scraper.read_json_cache')
-    def test_normal_fwxx_with_valid_marker(self, mock_read, mock_write):
-        """有效的 marker 文件 → 正常缓存发文数据。"""
-        now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-        mock_read.side_effect = [
-            # 第一次：_process_fwxx_response 内读 fwxx cache
-            {},
-            # 但实际 _extract_app_no_from_fwxx 先读 marker
-        ]
-        # mock_read 被 _process_fwxx_response 调用，然后 _extract_app_no_from_fwxx 也调
-        # 重设为按顺序返回：marker → fwxx_cache
-        mock_read.side_effect = [
-            {'application_no': '2023108272249', 'written_at': now},  # marker
-            {},  # fwxx cache
-        ]
-
-        flow = _make_flow(
+    def test_normal_fwxx_with_verified_identity(self, mock_read, mock_write):
+        mock_read.return_value = {}
+        flow = _verified_detail_flow(
             'https://cponline.cnipa.gov.cn/api/view/gn/fwxx?token=abc',
+            '2023108272249',
             body=_json_body(FWXX_RESPONSE),
         )
-        self.scraper.request(flow)
         self.scraper._process_fwxx_response(flow)
 
         mock_write.assert_called_once()
@@ -565,11 +570,13 @@ class TestProcessFwxx(unittest.TestCase):
         fwxx = written_data['2023108272249']
         self.assertEqual(len(fwxx['fwxx_list']), 2)
         self.assertEqual(fwxx['bhsjtzs_xiazaisj'], '2025-12-13')
+        self.assertEqual(fwxx['detail_attempt_id'], 'attempt-current')
 
+    @patch('patent_mitm_scraper.read_detail_attempt_marker', return_value=None)
     @patch('patent_mitm_scraper.write_json_cache')
     @patch('patent_mitm_scraper.read_json_cache')
-    def test_skips_expired_marker(self, mock_read, mock_write):
-        """marker 超过 5 秒 TTL → 跳过，不写缓存。"""
+    def test_skips_unverified_marker(self, mock_read, mock_write, _confirmed_attempt):
+        """An application-number marker alone cannot authorize detail caching."""
         mock_read.return_value = {
             'application_no': '2023108272249',
             'written_at': '2020-01-01T00:00:00Z',  # 很久以前
@@ -582,9 +589,10 @@ class TestProcessFwxx(unittest.TestCase):
         self.scraper._process_fwxx_response(flow)
         mock_write.assert_not_called()
 
+    @patch('patent_mitm_scraper.read_detail_attempt_marker', return_value=None)
     @patch('patent_mitm_scraper.write_json_cache')
     @patch('patent_mitm_scraper.read_json_cache', return_value={})
-    def test_skips_empty_marker(self, mock_read, mock_write):
+    def test_skips_empty_marker(self, mock_read, mock_write, _confirmed_attempt):
         """marker 文件为空 → 跳过。"""
         flow = _make_flow(
             'https://cponline.cnipa.gov.cn/api/view/gn/fwxx?token=abc',
@@ -615,24 +623,25 @@ class TestProcessFeeInformation(unittest.TestCase):
 
         from patent_mitm_scraper import PatentMITMScraper
         self.scraper = PatentMITMScraper()
+        marker_patcher = patch('patent_mitm_scraper.read_detail_attempt_marker', return_value={
+            'application_no': '2026102909420', 'attempt_id': 'attempt-current',
+        })
+        marker_patcher.start()
+        self.addCleanup(marker_patcher.stop)
 
     @patch('patent_mitm_scraper.write_json_cache')
     @patch('patent_mitm_scraper.read_json_cache')
     def test_caches_all_sections_without_filtering_raw_fields(self, mock_read, mock_write):
-        now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-        mock_read.side_effect = [
-            {'application_no': '2026102909420', 'written_at': now},
-            {},
-        ]
+        mock_read.return_value = {}
         response_payload = json.loads(json.dumps(FYXX_RESPONSE, ensure_ascii=False))
         payable_record = response_payload['data']['yingjiaofei']['svYingjfList'][0]
         payable_record['cnipaFutureField'] = {'nested': ['value', 3]}
-        flow = _make_flow(
+        flow = _verified_detail_flow(
             'https://cponline.cnipa.gov.cn/api/view/gn/fyxx?token=abc',
+            '2026102909420',
             body=_json_body(response_payload),
         )
 
-        self.scraper.request(flow)
         self.scraper._process_fee_response(flow)
 
         mock_write.assert_called_once()
@@ -677,11 +686,7 @@ class TestProcessFeeInformation(unittest.TestCase):
     @patch('patent_mitm_scraper.write_json_cache')
     @patch('patent_mitm_scraper.read_json_cache')
     def test_empty_tables_are_cached_as_success(self, mock_read, mock_write):
-        now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-        mock_read.side_effect = [
-            {'application_no': '2026102909420', 'written_at': now},
-            {},
-        ]
+        mock_read.return_value = {}
         empty_response = {
             'code': 200,
             'data': {
@@ -691,12 +696,12 @@ class TestProcessFeeInformation(unittest.TestCase):
                 'shoujufawen': {'isShow': False, 'svSjfwList': []},
             },
         }
-        flow = _make_flow(
+        flow = _verified_detail_flow(
             'https://cponline.cnipa.gov.cn/api/view/gn/fyxx?token=abc',
+            '2026102909420',
             body=_json_body(empty_response),
         )
 
-        self.scraper.request(flow)
         self.scraper._process_fee_response(flow)
 
         cache_entry = mock_write.call_args[0][1]['2026102909420']
@@ -709,19 +714,15 @@ class TestProcessFeeInformation(unittest.TestCase):
     @patch('patent_mitm_scraper.write_json_cache')
     @patch('patent_mitm_scraper.read_json_cache')
     def test_missing_late_fee_section_preserves_other_sections(self, mock_read, mock_write):
-        now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-        mock_read.side_effect = [
-            {'application_no': '2026102909420', 'written_at': now},
-            {},
-        ]
+        mock_read.return_value = {}
         incomplete_response = json.loads(json.dumps(FYXX_RESPONSE, ensure_ascii=False))
         del incomplete_response['data']['zhinajin']
-        flow = _make_flow(
+        flow = _verified_detail_flow(
             'https://cponline.cnipa.gov.cn/api/view/gn/fyxx?token=abc',
+            '2026102909420',
             body=_json_body(incomplete_response),
         )
 
-        self.scraper.request(flow)
         self.scraper._process_fee_response(flow)
 
         cache_entry = mock_write.call_args[0][1]['2026102909420']
@@ -734,11 +735,7 @@ class TestProcessFeeInformation(unittest.TestCase):
     @patch('patent_mitm_scraper.write_json_cache')
     @patch('patent_mitm_scraper.read_json_cache')
     def test_invalid_sections_only_omit_their_own_fields(self, mock_read, mock_write):
-        now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-        mock_read.side_effect = [
-            {'application_no': '2026102909420', 'written_at': now},
-            {},
-        ]
+        mock_read.return_value = {}
         partial_response = {
             'code': 200,
             'data': {
@@ -748,16 +745,19 @@ class TestProcessFeeInformation(unittest.TestCase):
                 'shoujufawen': None,
             },
         }
-        flow = _make_flow(
+        flow = _verified_detail_flow(
             'https://cponline.cnipa.gov.cn/api/view/gn/fyxx?token=abc',
+            '2026102909420',
             body=_json_body(partial_response),
         )
 
-        self.scraper.request(flow)
         self.scraper._process_fee_response(flow)
 
         cache_entry = mock_write.call_args[0][1]['2026102909420']
-        self.assertEqual(cache_entry, {'paid_fee_records': []})
+        self.assertEqual(cache_entry, {
+            'paid_fee_records': [],
+            'detail_attempt_id': 'attempt-current',
+        })
 
     @patch('patent_mitm_scraper.write_json_cache')
     @patch('patent_mitm_scraper.read_json_cache')
@@ -781,9 +781,10 @@ class TestProcessFeeInformation(unittest.TestCase):
         mock_read.assert_not_called()
         mock_write.assert_not_called()
 
+    @patch('patent_mitm_scraper.read_detail_attempt_marker', return_value=None)
     @patch('patent_mitm_scraper.write_json_cache')
     @patch('patent_mitm_scraper.read_json_cache')
-    def test_expired_marker_does_not_write_fee_cache(self, mock_read, mock_write):
+    def test_unverified_marker_does_not_write_fee_cache(self, mock_read, mock_write, _confirmed_attempt):
         mock_read.return_value = {
             'application_no': '2026102909420',
             'written_at': '2020-01-01T00:00:00Z',
