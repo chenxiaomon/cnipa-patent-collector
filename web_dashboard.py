@@ -1366,6 +1366,10 @@ HTML = r"""<!doctype html>
              style="max-height:160px;overflow-y:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:12px;font-size:13px">
           <span class="hint">加载申请人列表中...</span>
         </div>
+        <div class="button-row" style="margin-bottom:12px;align-items:center">
+          <span id="exportApplicantCount" class="hint" aria-live="polite">已选 0 家</span>
+          <button class="btn secondary" id="clearExportApplicants" disabled>清空选择</button>
+        </div>
         <div class="control-grid">
           <label class="field"><span>采集时间 起</span><input id="exportTsFrom" type="date"></label>
           <label class="field"><span>采集时间 止</span><input id="exportTsTo" type="date"></label>
@@ -2119,6 +2123,9 @@ td .clip { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-sp
 JS = r"""const state = {
   currentTab: 'overview',
   selectedJobId: null,
+  followJobLog: true,
+  jobLogRequestSequence: 0,
+  jobLogAppliedSequence: 0,
   searchLoaded: false,
   configLoaded: false,
   roleDetermined: false,
@@ -2247,18 +2254,32 @@ async function refreshJobs() {
 }
 
 async function refreshJobLog() {
-  if (!state.selectedJobId) { $('#jobLog').textContent = '等待任务启动...'; return; }
+  const requestedJobId = state.selectedJobId;
+  const requestSequence = ++state.jobLogRequestSequence;
+  if (!requestedJobId) { $('#jobLog').textContent = '等待任务启动...'; return; }
   try {
-    const data = await api('/api/jobs/' + state.selectedJobId);
+    const data = await api('/api/jobs/' + requestedJobId);
+    if (requestSequence < state.jobLogAppliedSequence || requestedJobId !== state.selectedJobId) return;
+    state.jobLogAppliedSequence = requestSequence;
     const logs = data.job.logs || [];
     const term = $('#jobLog');
-    term.innerHTML = logs.map(colorLine).join('\n');
-    term.scrollTop = term.scrollHeight;
+    const changedJob = term.dataset.jobId !== requestedJobId;
+    const previousScrollTop = term.scrollTop;
+    if (changedJob) state.followJobLog = true;
+    if (changedJob || term.textContent !== logs.join('\n')) {
+      term.innerHTML = logs.map(colorLine).join('\n');
+    }
+    term.dataset.jobId = requestedJobId;
+    term.scrollTop = state.followJobLog ? term.scrollHeight : previousScrollTop;
     // 检测是否正在等待登录
     const isWaiting = data.job.waiting_for_login;
     const btn = $('#resumeLoginBtn');
     if (btn) btn.classList.toggle('hidden', !isWaiting);
-  } catch { state.selectedJobId = null; }
+  } catch {
+    if (requestSequence === state.jobLogRequestSequence && requestedJobId === state.selectedJobId) {
+      state.selectedJobId = null;
+    }
+  }
 }
 
 function renderJobList(jobs) {
@@ -2744,6 +2765,24 @@ function bindEvents() {
   const exportApplicantSearch = $('#exportApplicantSearch');
   if (exportApplicantSearch) exportApplicantSearch.addEventListener('input', (e) =>
     renderApplicantCheckboxes(e.target.value));
+  $('#exportApplicantList').addEventListener('change', (event) => {
+    const checkbox = event.target;
+    if (checkbox.type !== 'checkbox') return;
+    if (checkbox.checked) selectedExportApplicants.add(checkbox.value);
+    else selectedExportApplicants.delete(checkbox.value);
+    renderExportSelection();
+  });
+  $('#clearExportApplicants').addEventListener('click', () => {
+    selectedExportApplicants.clear();
+    renderApplicantCheckboxes($('#exportApplicantSearch').value);
+    renderExportSelection();
+  });
+  $('#jobLog').addEventListener('scroll', (event) => {
+    const term = event.target;
+    if (term.clientHeight) {
+      state.followJobLog = term.scrollHeight - term.scrollTop - term.clientHeight <= 24;
+    }
+  });
   const exportPreviewBtn = $('#exportPreviewBtn');
   if (exportPreviewBtn) exportPreviewBtn.addEventListener('click', previewExport);
   const exportFilteredBtn = $('#exportFilteredBtn');
@@ -3117,6 +3156,12 @@ async function checkUpdate(showNoUpdateToast = false) {
 
 // ── 筛选导出 ──────────────────────────────────────────────────────────
 let allApplicants = [];  // [{name, count}, ...]
+const selectedExportApplicants = new Set();
+
+function renderExportSelection() {
+  $('#exportApplicantCount').textContent = '已选 ' + selectedExportApplicants.size + ' 家';
+  $('#clearExportApplicants').disabled = selectedExportApplicants.size === 0;
+}
 
 async function loadApplicants() {
   const root = $('#exportApplicantList');
@@ -3134,26 +3179,21 @@ function renderApplicantCheckboxes(filter) {
   const root = $('#exportApplicantList');
   if (!root) return;
   const kw = (filter || '').trim().toLowerCase();
-  // 记住已勾选的，过滤后保持选中状态
-  const checked = new Set(
-    Array.from(root.querySelectorAll('input:checked')).map(c => c.value)
-  );
   const list = kw
     ? allApplicants.filter(a => a.name.toLowerCase().includes(kw))
     : allApplicants;
   if (!list.length) { root.innerHTML = '<span class="hint">无匹配申请人</span>'; return; }
   root.innerHTML = list.slice(0, 300).map(a =>
-    '<label style="display:block;padding:2px 0;cursor:pointer">' +
-    '<input type="checkbox" value="' + escHtml(a.name) + '"' +
-      (checked.has(a.name) ? ' checked' : '') + '> ' +
-    escHtml(a.name) + ' <span class="hint">(' + a.count + ')</span></label>'
+    '<label style="display:flex;align-items:flex-start;gap:6px;padding:4px 0;cursor:pointer">' +
+    '<input type="checkbox" style="width:16px;height:16px;padding:0;margin:2px 0 0;flex-shrink:0" value="' + escHtml(a.name) + '"' +
+      (selectedExportApplicants.has(a.name) ? ' checked' : '') + '>' +
+    '<span style="min-width:0;overflow-wrap:anywhere">' + escHtml(a.name) +
+    ' <span class="hint">(' + a.count + ')</span></span></label>'
   ).join('') + (list.length > 300 ? '<div class="hint">仅显示前 300 项，请用关键词缩小范围</div>' : '');
 }
 
 function collectExportFilters() {
-  const applicants = Array.from(
-    $('#exportApplicantList').querySelectorAll('input:checked')
-  ).map(c => c.value);
+  const applicants = Array.from(selectedExportApplicants);
   // date input 是 YYYY-MM-DD；采集时间转 ISO（含 Z），业务日期保持 YYYY-MM-DD
   const tsFrom = $('#exportTsFrom').value;
   const tsTo = $('#exportTsTo').value;
@@ -3173,12 +3213,10 @@ async function previewExport() {
   const hint = $('#exportFilterHint');
   if (hint) hint.textContent = '统计中...';
   try {
-    const res = await fetch('/api/export/excel-filtered?preview=true', {
+    const d = await api('/api/export/excel-filtered?preview=true', {
       method: 'POST',
-      headers: writeHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(collectExportFilters()),
     });
-    const d = await res.json();
     if (hint) hint.textContent = '符合条件：' + d.count + ' 件专利';
   } catch (e) {
     if (hint) hint.textContent = '统计失败：' + e.message;
