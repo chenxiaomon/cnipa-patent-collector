@@ -43,6 +43,7 @@ from settings import (
     DETECTION_LOG_FILE,
     DETECTION_LOG_JSONL_FILE,
     FWXX_MANUAL_LIST_DIR,
+    LOGIN_READY_FLAG_FILE,
     MITM_HOST,
     MITM_PORT,
     PATENTS_DB_FILE,
@@ -244,11 +245,13 @@ class Job:
         lines_list = list(self.lines)
         waiting = (
             self.status == "running"
-            and any("[WAITING_FOR_LOGIN]" in ln for ln in lines_list)
-            and not any(
-                "收到登录完成信号" in ln or "秒超时，继续执行" in ln
-                for ln in lines_list
-            )
+            and next((
+                "[WAITING_FOR_LOGIN]" in line
+                for line in reversed(lines_list)
+                if any(marker in line for marker in (
+                    "[WAITING_FOR_LOGIN]", "[LOGIN_CONFIRMED]", "[LOGIN_REQUIRED]",
+                ))
+            ), False)
         )
         data = {
             "id": self.id,
@@ -1544,8 +1547,7 @@ HTML = r"""<!doctype html>
         <div class="panel-head"><h2>代码更新</h2><span class="hint">check_update / upgrade / fetch_update</span></div>
         <div class="button-row">
           <button class="btn secondary" id="checkUpdateBtn">🔎 检查更新</button>
-          <button class="btn primary" data-action="upgrade_code">🔄 更新系统代码（git）</button>
-          <button class="btn secondary" data-action="fetch_update">📥 无 git 更新（HTTP）</button>
+          <button class="btn primary" data-action="upgrade_code">🔄 更新系统代码（HTTP）</button>
         </div>
         <div class="hint" style="margin-top:6px">发现新版本时顶部会自动提示；有网络时从 GitHub 拉取最新代码，无 git 环境可用 HTTP 方式</div>
       </article>
@@ -2253,9 +2255,7 @@ async function refreshJobLog() {
     term.innerHTML = logs.map(colorLine).join('\n');
     term.scrollTop = term.scrollHeight;
     // 检测是否正在等待登录
-    const isWaiting = data.job.status === 'running' &&
-      logs.some(l => l.includes('[WAITING_FOR_LOGIN]')) &&
-      !logs.some(l => l.includes('收到登录完成信号') || l.includes('秒超时，继续执行'));
+    const isWaiting = data.job.waiting_for_login;
     const btn = $('#resumeLoginBtn');
     if (btn) btn.classList.toggle('hidden', !isWaiting);
   } catch { state.selectedJobId = null; }
@@ -3561,7 +3561,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     backups["detail"] = str(detail_backup)
                 self.send_json({"ok": True, "backups": backups})
             elif path == "/api/login-ready":
-                flag = DATA_DIR / "login_ready.flag"
+                flag = LOGIN_READY_FLAG_FILE
                 flag.parent.mkdir(parents=True, exist_ok=True)
                 flag.touch()
                 self.send_json({"ok": True})

@@ -10,7 +10,6 @@
 
 import json
 import os
-import shutil
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -178,7 +177,7 @@ class DetectionLogger:
     def add_record(self, record: DetectionRecord) -> None:
         """
         追加一条新记录。
-        - DB：ON CONFLICT upsert（O(1)，传入 NULL 不擦除已有业务字段）
+        - DB：普通业务字段忽略 NULL；费用按独立快照时间合并，旧快照不回退新费用
         - JSONL：追加（双写备份，用于 git 追踪，O(1)）
         """
         d = record.to_dict()
@@ -200,6 +199,7 @@ class DetectionLogger:
         更新已有记录（按 application_no），不存在则插入。
         - 仅写 SQLite，O(1)，彻底消除旧方案 O(n) JSONL 重写瓶颈
         - 用于强制重查模式
+        - 费用版本由 DB 在同一事务中判断，基础案件重查不会清除已有费用
         """
         d = record.to_dict()
         d['application_no'] = _normalize_app_no(d['application_no'])
@@ -223,26 +223,26 @@ class DetectionLogger:
         return len(rows)
 
     # ------------------------------------------------------------------
-    # 备份（本进程每写 500 条自动备份一次 JSONL）
+    # 备份（本进程每写 500 条生成一次完整 SQLite 快照）
     # ------------------------------------------------------------------
 
     def _auto_backup(self, written: int = 1, interval: int = 500) -> None:
         self._writes_since_backup += written
         if self._writes_since_backup < interval:
             return
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+        log_path = Path(self.log_file)
+        backup_path = log_path.with_name(f'{log_path.stem}_backup_{timestamp}.db')
+        self._db.backup_to(backup_path)
         self._writes_since_backup = 0
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        backup = self.log_file.replace('.jsonl', f'_backup_{timestamp}.jsonl')
-        shutil.copy2(self.log_file, backup)
-        print(f"[✓] 自动备份: {os.path.basename(backup)} ({self._db.count()} 条)")
+        print(f"[✓] SQLite 完整备份: {backup_path.name}")
         self._prune_backups()
 
     def _prune_backups(self, keep: int = 5) -> None:
-        import glob
-        pattern = self.log_file.replace('.jsonl', '_backup_*.jsonl')
-        for old in sorted(glob.glob(pattern))[:-keep]:
+        log_path = Path(self.log_file)
+        for old in sorted(log_path.parent.glob(f'{log_path.stem}_backup_*.db'))[:-keep]:
             try:
-                os.remove(old)
+                old.unlink()
             except OSError:
                 pass
 

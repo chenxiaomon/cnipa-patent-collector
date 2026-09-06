@@ -1,3 +1,4 @@
+# 部署和 CI 使用 uv.lock；这里保留与 pyproject.toml 一致的直接依赖约束。
 undetected-chromedriver>=3.5.3,<4.0.0
 selenium>=4.0.0,<5.0.0
 pyautogui>=0.9.53,<1.0.0
@@ -5,6 +6,5 @@ mitmproxy>=10.0.0,<11.0.0
 pandas>=2.0.0,<3.0.0
 openpyxl>=3.1.0,<4.0.0
 pyvirtualdisplay>=3.0; sys_platform != 'win32'
-# Python 3.12 移除了 distutils，undetected_chromedriver 仍 import 它；
-# setuptools<81 提供 distutils 兼容垫片（>=81 已移除）
+# 保留已采用的 setuptools 上界，避免部署时隐式切换兼容组件。
 setuptools<81

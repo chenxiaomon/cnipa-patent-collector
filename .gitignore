@@ -25,6 +25,7 @@ data/agency_unmatched.json
 data/current_fwxx_target.json
 data/current_agency_attempt.json
 data/detail_collection.lock
+data/patent_detail_identity_cache.json
 data/fwxx_list.txt
 data/manual_fwxx_lists/
 data/failed_applications.txt
@@ -79,5 +80,6 @@ outputs/
 data/public_query_ready.flag
 data/raw_responses_imported/
 data/results/*_backup_*.jsonl
+data/results/*_backup_*.db*
 data/results/dashboard_*.log
 data/results/public_search_results.json

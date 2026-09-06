@@ -11,14 +11,19 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
+from urllib.parse import urlparse
 
 from browser_utils import (
     load_credentials, auto_fill_login, create_driver_with_retry, fill_vue_input,
 )
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from collection_health import record_collection_alert
 
 from settings import (
     BROWSER_PAGE_LOAD_TIMEOUT,
+    CNIPA_LOGIN_WAIT_SECONDS, CNIPA_URL, LOGIN_READY_FLAG_FILE,
     USE_VIRTUAL_DISPLAY, VIRTUAL_DISPLAY_WIDTH, VIRTUAL_DISPLAY_HEIGHT,
 )
 
@@ -26,6 +31,10 @@ from settings import (
 _virtual_display = None
 # 启动虚拟显示器前保存的真实 DISPLAY（用于在物理桌面弹出截图）
 _original_display = None
+
+
+class LoginConfirmationRequired(RuntimeError):
+    """Private collection must not start without an operator-confirmed login."""
 
 
 def start_virtual_display() -> None:
@@ -81,30 +90,41 @@ class BrowserService:
             已完成登录的 WebDriver 实例
         """
         driver = create_driver_with_retry()
-        driver.set_page_load_timeout(BROWSER_PAGE_LOAD_TIMEOUT)
         try:
-            driver.get(url)
-        except TimeoutException as error:
-            raise RuntimeError(
-                f"{url} 在 {BROWSER_PAGE_LOAD_TIMEOUT:.0f} 秒内未加载完成；"
-                "检查网络，以及 MITM 代理是否正常转发"
-            ) from error
-        time.sleep(page_load_wait)
-        print("\n✓ 浏览器已打开")
+            driver.set_page_load_timeout(BROWSER_PAGE_LOAD_TIMEOUT)
+            try:
+                driver.get(url)
+            except TimeoutException as error:
+                raise RuntimeError(
+                    f"{url} 在 {BROWSER_PAGE_LOAD_TIMEOUT:.0f} 秒内未加载完成；"
+                    "检查网络，以及 MITM 代理是否正常转发"
+                ) from error
+            time.sleep(page_load_wait)
+            print("\n✓ 浏览器已打开")
 
-        BrowserService._do_login(driver)
-        return driver
+            BrowserService._do_login(driver)
+            return driver
+        except BaseException as error:
+            # The caller has not received the driver yet, so startup owns cleanup.
+            try:
+                driver.quit()
+            except Exception:
+                pass
+            if isinstance(error, LoginConfirmationRequired):
+                print(f"[LOGIN_REQUIRED] {error}")
+                record_collection_alert('login_required', str(error), 0)
+            raise
 
     @staticmethod
     def _do_login(driver) -> None:
         """自动填写账密，等待用户完成验证码后按 Enter"""
+        LOGIN_READY_FLAG_FILE.unlink(missing_ok=True)
         username, password = load_credentials()
         if username and password:
             filled = auto_fill_login(driver, username, password)
             if filled:
                 if USE_VIRTUAL_DISPLAY:
                     BrowserService._virtual_display_captcha(driver)
-                    return
                 print("\n" + "="*60)
                 print("请在浏览器中完成验证码，然后点击【登录】按钮")
                 print("登录成功后，回到这里按 Enter 继续...")
@@ -119,28 +139,54 @@ class BrowserService:
             if USE_VIRTUAL_DISPLAY:
                 BrowserService._show_virtual_screenshot(driver, "login_page.png")
 
-        if sys.stdin.isatty():
-            input("登录完成后按 Enter 继续...")
-        else:
-            from settings import CNIPA_LOGIN_WAIT_SECONDS as _login_wait
-            wait_seconds = _login_wait
-            if wait_seconds > 0:
-                from settings import DATA_DIR as _DATA_DIR
-                flag_file = _DATA_DIR / 'login_ready.flag'
-                flag_file.unlink(missing_ok=True)
-                deadline = time.time() + wait_seconds
-                print(f"⏳ [WAITING_FOR_LOGIN] 等待登录完成（最多 {int(wait_seconds)} 秒）...")
-                print("💡 在控制台点击【我已完成验证码】即可继续，或等待自动超时")
-                while time.time() < deadline:
-                    if flag_file.exists():
-                        flag_file.unlink(missing_ok=True)
-                        print("✅ 收到登录完成信号，继续采集...")
-                        break
-                    time.sleep(0.8)
-                else:
-                    print(f"⏰ 等待 {int(wait_seconds)} 秒超时，继续执行...")
+        print("[WAITING_FOR_LOGIN] 等待操作员确认登录完成")
+        try:
+            if sys.stdin.isatty():
+                try:
+                    input("登录完成后按 Enter 继续...")
+                except EOFError as error:
+                    raise LoginConfirmationRequired("未收到登录确认，已停止采集") from error
             else:
-                print("⏭️  跳过登录等待（非交互模式）")
+                deadline = time.monotonic() + CNIPA_LOGIN_WAIT_SECONDS
+                print(f"请在控制台确认登录（最多 {int(CNIPA_LOGIN_WAIT_SECONDS)} 秒）")
+                while not LOGIN_READY_FLAG_FILE.exists():
+                    if time.monotonic() >= deadline:
+                        raise LoginConfirmationRequired(
+                            "等待登录确认超时，已停止采集；请重新启动任务并完成登录"
+                        )
+                    time.sleep(0.8)
+            BrowserService._verify_confirmed_login(driver)
+            print("[LOGIN_CONFIRMED] 登录已由操作员确认，登录表单已退出")
+        finally:
+            LOGIN_READY_FLAG_FILE.unlink(missing_ok=True)
+
+    @staticmethod
+    def _verify_confirmed_login(driver) -> None:
+        # Absence of a password field is only a veto check after human confirmation,
+        # never evidence that an unattended session has authenticated successfully.
+        def confirmed_page_ready(browser):
+            if urlparse(browser.current_url).hostname != urlparse(CNIPA_URL).hostname:
+                return False
+            if not browser.execute_script(
+                "return document.readyState === 'complete' && "
+                "!!document.body && document.body.innerText.trim().length > 0;"
+            ):
+                return False
+            login_inputs = browser.find_elements(
+                By.CSS_SELECTOR,
+                'input[type="password"], input[placeholder="请输入密码"], '
+                'input[placeholder="代理机构代码"]',
+            )
+            return not any(element.is_displayed() for element in login_inputs)
+
+        try:
+            WebDriverWait(
+                driver, 10, ignored_exceptions=(StaleElementReferenceException,)
+            ).until(confirmed_page_ready)
+        except TimeoutException as error:
+            raise LoginConfirmationRequired(
+                "登录确认后仍停留在登录页或页面未就绪，已停止采集"
+            ) from error
 
     @staticmethod
     def _show_virtual_screenshot(driver, filename: str = "screenshot.png") -> None:
@@ -169,6 +215,8 @@ class BrowserService:
         让用户在终端输入验证码，再自动填入并提交。
         """
         BrowserService._show_virtual_screenshot(driver, "captcha.png")
+        if not sys.stdin.isatty():
+            return
 
         print("\n" + "="*60)
         print("请查看弹出的截图，找到图片验证码���4 位字母数字）")
@@ -177,10 +225,6 @@ class BrowserService:
 
         if captcha_code:
             BrowserService._fill_captcha_and_submit(driver, captcha_code)
-        else:
-            # 用户直接回车跳过，等他们在其他方式完成
-            if sys.stdin.isatty():
-                input("验证码留空，请通过其他方式完成登录后按 Enter 继续...")
 
     @staticmethod
     def _fill_captcha_and_submit(driver, captcha_code: str) -> None:
@@ -234,8 +278,3 @@ class BrowserService:
                     break
             except Exception:
                 continue
-
-        if sys.stdin.isatty():
-            input("登录成功后按 Enter 继续（如有二次验证请先完成）...")
-        else:
-            print("⏭️  跳过登录确认（非交互模式）")

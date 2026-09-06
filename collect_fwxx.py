@@ -46,6 +46,7 @@ import time
 import random
 import argparse
 from datetime import datetime, timezone
+from functools import partial
 
 # 虚拟显示器必须在 pyautogui / Xlib 任何 import 之前启动
 if os.getenv('USE_VIRTUAL_DISPLAY', '').lower() in ('true', '1', 'yes') \
@@ -67,13 +68,19 @@ import pyautogui
 sys.path.insert(0, os.path.dirname(__file__))
 from atomic_write import write_json_atomic
 from detection_logger import DetectionLogger
+from detail_attempt import (
+    DetailCollectionFatalError,
+    begin_detail_attempt,
+    clear_matching_detail_attempt,
+    matches_detail_attempt,
+    wait_for_detail_identity,
+)
 from browser_utils import is_browser_alive, raise_system_exit_on_sigterm
 from collection_health import CollectionFailureStreak, CollectionFailureStreakExceeded
 from coordinate_service import CoordinateService
 from browser_service import BrowserService
 from input_service import InputService
 from cache_utils import (
-    write_json_cache,
     poll_cache_for_key,
     clear_cache_key,
     parse_app_no_list,
@@ -84,7 +91,7 @@ from desktop_collection_lock import (
 )
 from settings import (
     CNIPA_URL, DETECTION_LOG_JSONL_FILE, CONFIG_FILE, CONFIG_FWXX_FILE,
-    PATENT_CACHE_FILE, PATENT_FWXX_CACHE_FILE, MARKER_FILE,
+    PATENT_CACHE_FILE, PATENT_FWXX_CACHE_FILE,
     FWXX_UNMATCHED_FILE, PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE,
     USE_MITM_PROXY,
     PATENTS_DB_FILE,
@@ -112,7 +119,6 @@ CONFIG_FILE = str(CONFIG_FILE)
 CONFIG_FWXX_FILE = str(CONFIG_FWXX_FILE)
 PATENT_CACHE_FILE = str(PATENT_CACHE_FILE)
 PATENT_FWXX_CACHE_FILE = str(PATENT_FWXX_CACHE_FILE)
-MARKER_FILE = str(MARKER_FILE)
 FWXX_UNMATCHED_FILE = str(FWXX_UNMATCHED_FILE)
 
 # ============================================================================
@@ -244,15 +250,6 @@ def _load_standalone_collected() -> set:
 # Part 4: 单个申请号采集流程
 # ============================================================================
 
-def _mark_current_detail_target(application_no: str) -> None:
-    """刷新 MITM 关联标记；每次点击详情菜单前调用。"""
-    written_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
-    write_json_cache(MARKER_FILE, {
-        'application_no': application_no,
-        'written_at': written_at,
-    })
-
-
 def collect_one_fwxx(
     driver,
     application_no: str,
@@ -287,11 +284,20 @@ def collect_one_fwxx(
         本次成功采集到的字段，或 None
     """
     collected_fields = {}
+    detail_attempt = None
+    detail_handle = None
+    search_handle = None
     try:
         # 检测浏览器是否还活着
         if not is_browser_alive(driver):
             print(f"    [!] 浏览器已关闭，无法采集")
             return None
+
+        initial_handles = list(driver.window_handles)
+        if len(initial_handles) != 1:
+            raise DetailCollectionFatalError("发文采集开始时不是唯一搜索页，已停止批次")
+        search_handle = initial_handles[0]
+        driver.switch_to.window(search_handle)
 
         print(f"\n  [{application_no}] 开始采集发文信息...")
 
@@ -334,29 +340,19 @@ def collect_one_fwxx(
 
         # 自动点击申请号链接
         print(f"    [*] 点击申请号链接进入详情页...")
-        _mark_current_detail_target(application_no)
-        print(f"    [*] 预先标记详情请求: {application_no}")
-        tabs_before = len(driver.window_handles)
+        detail_attempt = begin_detail_attempt(application_no)
 
         InputService.move_and_click(link_x, link_y, post_click_wait=FWXX_DETAIL_CLICK_WAIT)
 
-        if len(driver.window_handles) <= tabs_before:
-            print(f"    [!] 搜索结果无效或点击失败（标签数未增加）")
-            print(f"    [*] 跳过此申请号，继续下一个...")
-            return None
+        new_handles = [handle for handle in driver.window_handles if handle != search_handle]
+        if len(new_handles) != 1:
+            raise DetailCollectionFatalError("发文详情页未唯一打开，已停止批次")
 
-        driver.switch_to.window(driver.window_handles[-1])
+        detail_handle = new_handles[0]
+        driver.switch_to.window(detail_handle)
         time.sleep(FWXX_TAB_SWITCH_WAIT)
-        print(f"    [✓] 已切换到详情页标签")
-
-
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # 步骤 3：写入申请号标记文件（解决 MITM 关联问题）
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-        # ⚠️ 点击详情菜单前标记申请号，MITM 端通过 TTL 丢弃陈旧标记。
-        _mark_current_detail_target(application_no)
-        print(f"    [*] 标记申请号: {application_no}")
+        wait_for_detail_identity(detail_attempt)
+        print("    [✓] 官方申请号已确认，开始采集发文")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 步骤 4：点击"发文信息"菜单
@@ -374,39 +370,49 @@ def collect_one_fwxx(
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
         print(f"    [*] 从 MITM 缓存读取发文信息...")
-        fwxx_data = poll_cache_for_key(PATENT_FWXX_CACHE_FILE, application_no, max_wait=FWXX_CACHE_POLL_TIMEOUT)
+        fwxx_data = poll_cache_for_key(
+            PATENT_FWXX_CACHE_FILE,
+            application_no,
+            max_wait=FWXX_CACHE_POLL_TIMEOUT,
+            validate=partial(
+                matches_detail_attempt,
+                expected_attempt_id=detail_attempt['attempt_id'],
+            ),
+        )
 
         if not fwxx_data:
             print(f"    [!] 未从缓存中获得发文信息")
             # 降级处理：关闭标签但继续
         else:
             print(f"    [✓] 成功读取发文信息")
-            collected_fields.update(fwxx_data)
-
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # 步骤 5：关闭详情页标签，回到搜索页
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-        if len(driver.window_handles) > 1:
-            print(f"    [*] 关闭详情页标签...")
-            pyautogui.hotkey('ctrl', 'w')
-            time.sleep(FWXX_DETAIL_CLOSE_WAIT)
-            driver.switch_to.window(driver.window_handles[0])
-            time.sleep(FWXX_TAB_SWITCH_WAIT)
-            print(f"    [✓] 已回到搜索页")
+            collected_fields.update({
+                field: value for field, value in fwxx_data.items()
+                if field != 'detail_attempt_id'
+            })
         return collected_fields or None
 
+    except DetailCollectionFatalError:
+        raise
     except Exception as e:
         print(f"    [!] 采集失败: {str(e)[:100]}")
-        try:
-            while len(driver.window_handles) > 1:
-                driver.switch_to.window(driver.window_handles[-1])
-                pyautogui.hotkey('ctrl', 'w')
-                time.sleep(FWXX_TAB_SWITCH_WAIT)
-            driver.switch_to.window(driver.window_handles[0])
-        except Exception:
-            pass
         return collected_fields or None
+    finally:
+        if detail_attempt is not None:
+            clear_matching_detail_attempt(detail_attempt['attempt_id'])
+        if detail_handle is not None:
+            try:
+                if detail_handle in driver.window_handles:
+                    driver.switch_to.window(detail_handle)
+                    driver.close()
+                    time.sleep(FWXX_DETAIL_CLOSE_WAIT)
+                if list(driver.window_handles) != [search_handle]:
+                    raise DetailCollectionFatalError("发文详情页关闭后未恢复唯一搜索页")
+                driver.switch_to.window(search_handle)
+                time.sleep(FWXX_TAB_SWITCH_WAIT)
+            except DetailCollectionFatalError:
+                raise
+            except Exception as error:
+                raise DetailCollectionFatalError("无法确认发文详情页已关闭，已停止批次") from error
 
 
 # ============================================================================

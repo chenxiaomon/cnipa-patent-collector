@@ -1,19 +1,16 @@
 @echo off
-echo.
-echo ======================================================================
-echo Starting Chrome browser with MITM proxy (127.0.0.1:8080)
-echo ======================================================================
-echo.
-echo [*] Make sure MITM proxy is running in terminal 1
-echo [*] python start_mitm_public_search.py
-echo.
-echo [*] Browser will start in 3 seconds...
-echo.
-timeout /t 3 /nobreak
+chcp 65001 > nul
+setlocal
+cd /d "%~dp0"
 
-"C:\Program Files\Google\Chrome\Application\chrome.exe" --proxy-server=http://127.0.0.1:8080 --ignore-certificate-errors https://cponline.cnipa.gov.cn/publicSearch
+set "PROJECT_PYTHON=%~dp0.venv\Scripts\python.exe"
+if not exist "%PROJECT_PYTHON%" (
+    echo [ERROR] 项目环境不存在，请先运行 setup.bat。
+    pause
+    exit /b 1
+)
 
-echo.
-echo [*] Browser closed
-echo.
+"%PROJECT_PYTHON%" launch_browser_with_proxy.py %*
+set "BROWSER_EXIT_CODE=%ERRORLEVEL%"
 pause
+exit /b %BROWSER_EXIT_CODE%

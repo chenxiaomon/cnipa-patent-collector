@@ -11,15 +11,19 @@ REM   run.bat --test 5                      测试模式，仅采集前 5 条
 REM   run.bat --update-list data\retry.txt  强制重采指定列表
 REM   run.bat collect-fwxx                  发文补采
 
-if not defined MITM_PORT set MITM_PORT=8082
-set MITM_LOG=%~dp0.mitm.log
+set "PROJECT_PYTHON=%~dp0.venv\Scripts\python.exe"
+if not exist "%PROJECT_PYTHON%" (
+    echo [ERROR] 项目环境不存在，请先运行 setup.bat。
+    exit /b 1
+)
+set "MITM_LOG=%~dp0.mitm.log"
 
 echo ============================================================
-echo ^>  启动 MITM 代理（端口 %MITM_PORT%）...
+echo ^>  启动 MITM 代理...
 echo ============================================================
 
 REM 启动 MITM 代理（后台，输出重定向到日志）
-start "MITM Proxy" /B python start_mitm_proxy.py > "%MITM_LOG%" 2>&1
+start "MITM Proxy" /B "%PROJECT_PYTHON%" start_mitm_proxy.py > "%MITM_LOG%" 2>&1
 
 REM 等待代理就绪（最多 10 秒）
 set READY=0
@@ -43,14 +47,15 @@ set MODE=%1
 if "%MODE%"=="collect-fwxx" (
     echo ^>  启动发文补采...
     set USE_MITM_PROXY=true
-    python collect_fwxx.py %2 %3 %4 %5
+    "%PROJECT_PYTHON%" collect_fwxx.py %2 %3 %4 %5
 ) else (
     echo ^>  启动主采集...
     set USE_MITM_PROXY=true
-    python main_automation.py %*
+    "%PROJECT_PYTHON%" main_automation.py %*
 )
+set "COLLECTION_EXIT_CODE=%ERRORLEVEL%"
 
 REM 停止 MITM 代理
 taskkill /FI "WINDOWTITLE eq MITM Proxy" /F >nul 2>&1
 
-endlocal
+exit /b %COLLECTION_EXIT_CODE%
