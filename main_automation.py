@@ -57,8 +57,9 @@ from collection_health import (
 from collection_checkpoint import CollectionBatch, CollectionBatchBusyError
 from desktop_collection_lock import DetailCollectionDesktopBusyError, reserve_detail_collection_desktop
 from input_service import InputService
+from main_collection_targets import select_main_collection_targets
 from settings import (
-    CNIPA_URL, SEARCH_LIST_FILE, FORCE_UPDATE_FLAG,
+    CNIPA_URL, FORCE_UPDATE_FLAG,
     PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE, MITM_TIMEOUT, MITM_POLL_INTERVAL,
     PATENT_CACHE_FILE, USE_MITM_PROXY, PATENTS_DB_FILE, DETECTION_LOG_JSONL_FILE,
     MAIN_COLLECTION_CHECKPOINT_FILE,
@@ -71,19 +72,6 @@ from db_manager import PatentsDB
 # PyAutoGUI 配置
 pyautogui.PAUSE = PYAUTOGUI_PAUSE
 pyautogui.FAILSAFE = PYAUTOGUI_FAILSAFE
-
-
-def load_search_list() -> list:
-    """加载申请号列表"""
-    if not os.path.exists(SEARCH_LIST_FILE):
-        print(f"❌ 找不到搜索列表: {SEARCH_LIST_FILE}")
-        sys.exit(1)
-
-    with open(SEARCH_LIST_FILE, 'r', encoding='utf-8') as f:
-        applications = parse_app_no_list(f.read())
-
-    print(f"✓ 已加载 {len(applications)} 个申请号")
-    return applications
 
 
 def _is_patent_data_complete(data: dict) -> bool:
@@ -283,10 +271,7 @@ def _run_automation(test_count: int = None, update_list: str = None) -> None:
         print(f"⏳ 强制更新: {len(pending)} 个申请号")
     else:
         # 正常模式：跳过已处理
-        all_applications = load_search_list()
-        pending = logger.get_pending_applications(all_applications)
-        print(f"✓ 已处理: {len(all_applications) - len(pending)} 个")
-        print(f"⏳ 待处理: {len(pending)} 个")
+        pending = select_main_collection_targets()
 
     if not pending:
         print("✓ 所有申请号都已处理！")

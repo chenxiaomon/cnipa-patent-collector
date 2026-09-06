@@ -427,8 +427,8 @@ def persist_fwxx_fields(application_no: str, fwxx_fields: dict) -> bool:
     """将本次采集成功的发文字段写回 PatentsDB。
 
     使用 update_fields（字段级更新）而非 upsert（整行覆盖），
-    避免与 main_automation.py 的并发写入互相覆盖。
-    发文采集保留原有 timestamp 刷新语义。
+    避免与 main_automation.py 的并发写入互相覆盖。基础状态的 timestamp
+    只由主采集更新，发文采集使用独立时间，避免推迟策略复查。
     """
     try:
         db = PatentsDB(PATENTS_DB_FILE)
@@ -446,7 +446,7 @@ def persist_fwxx_fields(application_no: str, fwxx_fields: dict) -> bool:
             )
             if field in fwxx_fields
         }
-        persisted_fields['timestamp'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        persisted_fields['fwxx_collected_at'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
         db.update_fields(application_no, persisted_fields)
         return True
     except Exception as e:

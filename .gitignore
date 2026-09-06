@@ -26,6 +26,10 @@ data/agency_unmatched.json
 data/current_fwxx_target.json
 data/current_agency_attempt.json
 data/detail_collection.lock
+data/supervised_collection.lock
+data/phase0_browser.lock
+data/public_browser.lock
+data/public_pagination.lock
 data/patent_detail_identity_cache.json
 data/fwxx_list.txt
 data/manual_fwxx_lists/

@@ -109,7 +109,9 @@ if len(collected_fields) < 14 or timeout:
 2. 点击"发文信息"标签
 3. MITM 拦截对应 API 响应
 4. 解析 `fwxx_list`、`bhsjtzs_xiazaisj`、`bhsjtzs_data`
-5. 只更新发文字段；批次完成后刷新 JSONL 备份和 Excel
+5. 只更新发文字段和独立的 `fwxx_collected_at`；批次完成后刷新 JSONL 备份和 Excel
+
+**时间口径**：`timestamp` 表示基础案件状态的最近采集时间，更新策略只读取该字段。发文补采不得修改 `timestamp`，否则会无故推迟案件状态复查；发文最近采集时间单独记录在 UTC 字段 `fwxx_collected_at`。`updated_at` 仍随任何数据库写入刷新，仅作为跨机增量同步游标。
 
 ### 费用信息（4 类明细 - 由 `collect_fees.py` 负责）
 
@@ -142,7 +144,7 @@ python collect_fwxx.py  # 只补采发文（可选）
 python collect_fees.py  # 只补采费用（可选）
 ```
 
-两个脚本的数据计划互相独立，但共用桌面浏览器、PyAutoGUI 坐标和当前申请号标记，因此不可并行运行。两个采集入口统一通过 `desktop_collection_lock.py` 持有跨进程文件锁；无论从 Dashboard 还是命令行启动，第二个发文/费用任务都会在控制浏览器前被自动拒绝，不再仅依赖操作者人工协调。
+两个脚本的数据计划互相独立，但共用桌面浏览器、PyAutoGUI 坐标和当前申请号标记，因此不可并行运行。详情采集入口统一通过 `desktop_collection_lock.py` 持有跨进程文件锁；Phase 0 与公开查询的长任务各自保留运行锁，使公开浏览器和配套翻页仍可同时运行。代码更新和回滚必须先取得全部运行锁；无论从 Dashboard 还是命令行启动，冲突操作都会在控制浏览器或替换代码前被自动拒绝。
 
 **覆盖率**:
 - 驳回复审案件：1403 条
@@ -262,5 +264,5 @@ python collect_fwxx.py  # 补采脚本
 
 ---
 
-*更新时间*: 2026-07-27
+*更新时间*: 2026-09-06
 *验证完成*: falvzt vs anjianywzt - 已确认 falvzt 不可用，anjianywzt 为准

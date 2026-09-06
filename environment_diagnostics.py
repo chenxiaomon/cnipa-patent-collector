@@ -15,6 +15,9 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from coordinate_config import (
+    DETAIL_COORDINATE_PAIRS, SEARCH_COORDINATE_PAIRS, coordinate_configuration_issues,
+)
 from settings import (
     CONFIG_FILE, CONFIG_FWXX_FILE, MANUAL_CHROMEDRIVER_DIRS,
     MITM_HOST, MITM_PORT, PATENTS_DB_FILE, PUBLIC_MITM_PORT,
@@ -322,14 +325,7 @@ def _inspect_coordinates(check_id: str, title: str, coordinate_path: Path, pairs
     issues = []
     try:
         coordinate_config = json.loads(coordinate_path.read_text(encoding='utf-8'))
-        if not isinstance(coordinate_config, dict):
-            raise ValueError('Expected a coordinate object')
-        for coordinate_x, coordinate_y in pairs:
-            coordinates = (coordinate_config.get(coordinate_x), coordinate_config.get(coordinate_y))
-            if not all(type(value) is int for value in coordinates):
-                issues.append(coordinate_x.removesuffix('_x') + ' 坐标缺失或不是整数')
-            elif coordinates == (0, 0):
-                issues.append(coordinate_x.removesuffix('_x') + ' 仍是 (0, 0) 占位值')
+        issues = coordinate_configuration_issues(coordinate_config, pairs)
     except FileNotFoundError:
         issues.append('坐标配置文件不存在')
     except (OSError, ValueError, UnicodeError):
@@ -393,12 +389,8 @@ def run_environment_diagnostics(python_executable: str) -> dict:
         _inspect_chromedriver(chrome_check['details'].get('version'), cache_directory),
         _inspect_proxy('proxy_main', '主 MITM 代理', MITM_PORT),
         _inspect_proxy('proxy_public', '公开查询代理', PUBLIC_MITM_PORT),
-        _inspect_coordinates('coordinates_search', '搜索页坐标', CONFIG_FILE, (
-            ('input_x', 'input_y'), ('button_x', 'button_y'),
-        )),
-        _inspect_coordinates('coordinates_detail', '详情页坐标', CONFIG_FWXX_FILE, (
-            ('link_x', 'link_y'), ('fwxx_menu_x', 'fwxx_menu_y'), ('fee_menu_x', 'fee_menu_y'),
-        )),
+        _inspect_coordinates('coordinates_search', '搜索页坐标', CONFIG_FILE, SEARCH_COORDINATE_PAIRS),
+        _inspect_coordinates('coordinates_detail', '详情页坐标', CONFIG_FWXX_FILE, DETAIL_COORDINATE_PAIRS),
         _inspect_database_storage(),
     ])
     for check in checks:

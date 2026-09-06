@@ -96,6 +96,39 @@ class TestCollectionBatches(unittest.TestCase):
             with CollectionBatch.resume('main', self.checkpoint_file, batch_id):
                 self.fail('completed batch was resumed')
 
+    def test_prepare_freezes_deduplicated_targets_for_later_resume(self):
+        batch_id = CollectionBatch.prepare('main', ['A', 'A', 'B'])
+
+        prepared = read_collection_batch(batch_id)
+        self.assertEqual(prepared['status'], 'pending')
+        self.assertEqual([item['application_no'] for item in prepared['items']], ['A', 'B'])
+        self.assertEqual(prepared['runs'], [])
+        self.assertTrue(prepared['resumable'])
+
+        with CollectionBatch.resume('main', self.checkpoint_file, batch_id) as batch:
+            self.assertEqual(batch.select_pending(None), ['A', 'B'])
+            for application_no in ('A', 'B'):
+                batch.record_started(application_no)
+                batch.record_success(application_no)
+
+        completed = read_collection_batch(batch_id)
+        self.assertEqual((completed['status'], completed['remaining']), ('completed', 0))
+
+    def test_prepare_rejects_empty_target_list_without_creating_record(self):
+        with self.assertRaisesRegex(ValueError, '空采集批次'):
+            CollectionBatch.prepare('main', [])
+
+        self.assertEqual(list(self.batch_directory.glob('*.json')), [])
+
+    def test_failed_prepare_does_not_publish_a_resumable_batch(self):
+        with patch.object(Path, 'replace', side_effect=OSError('disk full')):
+            with self.assertRaisesRegex(OSError, 'disk full'):
+                CollectionBatch.prepare('main', ['A'])
+
+        self.assertEqual(list_collection_batches(), [])
+        self.assertEqual(list(self.batch_directory.glob('*.json')), [])
+        self.assertEqual(list(self.batch_directory.glob('*.tmp')), [])
+
     def test_failure_interruption_and_unattempted_targets_stay_distinct(self):
         with self.assertRaisesRegex(RuntimeError, 'browser closed'):
             with CollectionBatch.create('fees', self.checkpoint_file, ['A', 'B', 'C']) as batch:

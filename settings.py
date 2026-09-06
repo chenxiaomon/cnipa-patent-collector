@@ -138,6 +138,10 @@ FWXX_UNMATCHED_FILE = DATA_DIR / 'fwxx_unmatched.json'
 FEE_UNMATCHED_FILE = DATA_DIR / 'fee_unmatched.json'
 AGENCY_UNMATCHED_FILE = DATA_DIR / 'agency_unmatched.json'
 DETAIL_COLLECTION_LOCK_FILE = DATA_DIR / 'detail_collection.lock'
+SUPERVISED_COLLECTION_LOCK_FILE = DATA_DIR / 'supervised_collection.lock'
+PHASE0_BROWSER_LOCK_FILE = DATA_DIR / 'phase0_browser.lock'
+PUBLIC_BROWSER_LOCK_FILE = DATA_DIR / 'public_browser.lock'
+PUBLIC_PAGINATION_LOCK_FILE = DATA_DIR / 'public_pagination.lock'
 LOGIN_READY_FLAG_FILE = DATA_DIR / 'login_ready.flag'
 
 # 补采独立模式的结果

@@ -12,6 +12,10 @@ import sys
 import time
 import undetected_chromedriver as uc
 from pathlib import Path
+from desktop_collection_lock import (
+    DetailCollectionDesktopBusyError,
+    reserve_public_pagination,
+)
 from settings import MITM_HOST, PUBLIC_MITM_PORT, DATA_DIR, CNIPA_PUBLIC_SEARCH_URL
 from browser_utils import _get_chrome_major_version, raise_system_exit_on_sigterm
 from selenium.webdriver.common.by import By
@@ -167,7 +171,7 @@ def paginate_loop(driver, delay: float, max_pages: int):
     print()
 
 
-def main():
+def run_public_pagination_session():
     raise_system_exit_on_sigterm()
     parser = argparse.ArgumentParser(description="CNIPA 公开搜索自动翻页脚本")
     parser.add_argument(
@@ -249,5 +253,14 @@ def main():
             pass
 
 
+def main():
+    with reserve_public_pagination("公开查询自动翻页"):
+        run_public_pagination_session()
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except DetailCollectionDesktopBusyError as error:
+        print(f"\n[!] {error}")
+        sys.exit(2)

@@ -192,6 +192,22 @@ class TestEnvironmentDiagnostics(unittest.TestCase):
         check = diagnostics._inspect_coordinates('coordinates_search', 'Search', self.search_path, pairs)
         self.assertEqual(check['status'], 'ok')
 
+    def test_detail_diagnostic_checks_every_supported_coordinate_pair(self):
+        detail_coordinates = {
+            'link_x': 100, 'link_y': 200,
+            'fwxx_menu_x': 300, 'fwxx_menu_y': 400,
+            'fee_menu_x': 0, 'fee_menu_y': 0,
+        }
+        self.detail_path.write_text(json.dumps(detail_coordinates), encoding='utf-8')
+
+        check = diagnostics._inspect_coordinates(
+            'coordinates_detail', 'Detail', self.detail_path,
+            diagnostics.DETAIL_COORDINATE_PAIRS,
+        )
+
+        self.assertEqual(check['status'], 'warning')
+        self.assertIn('fee_menu', check['summary'])
+
     def test_storage_probe_preserves_database_and_leaves_no_temporary_file(self):
         original_bytes = b'not a sqlite database: must never be opened by sqlite'
         self.database_path.write_bytes(original_bytes)

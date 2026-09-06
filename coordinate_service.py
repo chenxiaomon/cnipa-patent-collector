@@ -10,21 +10,11 @@ import pyautogui
 
 from settings import CONFIG_FILE, CONFIG_FWXX_FILE
 from atomic_write import write_json_atomic
-
-
-def _recorded_coordinates(coordinate_config: dict, coordinate_keys: tuple) -> tuple | None:
-    """返回配置里已录制的坐标，缺键或仍是 example 模板的全 0 占位值时返回 None。
-
-    example 配置用 0 占位，而 (0, 0) 同时是 PyAutoGUI 的 failsafe 角，任何屏幕上
-    都不可能是有效点击目标 —— 直接拷 example 当配置用时必须重新录制，否则点击全部
-    落在屏幕左上角，且 PYAUTOGUI_FAILSAFE 默认关闭，连异常都不会抛。
-    """
-    if not set(coordinate_keys) <= coordinate_config.keys():
-        return None
-    coordinates = tuple(coordinate_config[key] for key in coordinate_keys)
-    if not any(coordinates):
-        return None
-    return coordinates
+from coordinate_config import (
+    DETAIL_LINK_COORDINATE_PAIRS, FEE_MENU_COORDINATE_PAIRS,
+    FWXX_COORDINATE_PAIRS, SEARCH_COORDINATE_PAIRS,
+    recorded_coordinates, validate_coordinate_config,
+)
 
 
 class CoordinateService:
@@ -42,15 +32,13 @@ class CoordinateService:
             try:
                 with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                     config = json.load(f)
-                recorded = _recorded_coordinates(
-                    config, ('input_x', 'input_y', 'button_x', 'button_y')
-                )
+                recorded = recorded_coordinates(config, SEARCH_COORDINATE_PAIRS)
                 if recorded:
                     print("\n✓ 从配置文件加载鼠标位置")
                     print(f"  输入框: ({recorded[0]}, {recorded[1]})")
                     print(f"  按钮: ({recorded[2]}, {recorded[3]})")
                     return recorded
-                print("\n⚠️  搜索页坐标仍是占位值，需要重新录制")
+                print("\n⚠️  搜索页坐标缺失、格式无效或仍是占位值，需要重新录制")
             except Exception as e:
                 print(f"⚠️  配置文件读取失败: {e}")
 
@@ -82,6 +70,7 @@ class CoordinateService:
             'button_y': button_y,
             'last_updated': datetime.now().isoformat()
         }
+        validate_coordinate_config(config)
         try:
             write_json_atomic(CONFIG_FILE, config)
             print("\n✓ 位置已保存到配置文件")
@@ -98,12 +87,12 @@ class CoordinateService:
             try:
                 with open(CONFIG_FWXX_FILE, 'r', encoding='utf-8') as config_stream:
                     coordinate_config = json.load(config_stream)
-                recorded = _recorded_coordinates(coordinate_config, ('link_x', 'link_y'))
+                recorded = recorded_coordinates(coordinate_config, DETAIL_LINK_COORDINATE_PAIRS)
                 if recorded:
                     print("\n✓ 从配置文件加载详情链接位置")
                     print(f"  详情链接: ({recorded[0]}, {recorded[1]})")
                     return recorded
-                print("\n⚠️  详情链接坐标仍是占位值，需要重新录制")
+                print("\n⚠️  详情链接坐标缺失、格式无效或仍是占位值，需要重新录制")
             except Exception as error:
                 print(f"⚠️  配置文件读取失败: {error}")
 
@@ -123,16 +112,18 @@ class CoordinateService:
         link_x, link_y = pyautogui.position()
         print(f"  ✓ 详情链接坐标: ({link_x}, {link_y})   ")
 
+        new_coordinates = {
+            'link_x': link_x,
+            'link_y': link_y,
+            'last_updated': datetime.now().isoformat(),
+        }
+        validate_coordinate_config(new_coordinates)
         updated_coordinates = (
             dict(coordinate_config)
             if isinstance(coordinate_config, dict)
             else {}
         )
-        updated_coordinates.update({
-            'link_x': link_x,
-            'link_y': link_y,
-            'last_updated': datetime.now().isoformat(),
-        })
+        updated_coordinates.update(new_coordinates)
         try:
             write_json_atomic(CONFIG_FWXX_FILE, updated_coordinates)
             print("\n✓ 详情链接位置已保存")
@@ -154,15 +145,13 @@ class CoordinateService:
             try:
                 with open(CONFIG_FWXX_FILE, 'r', encoding='utf-8') as f:
                     coordinate_config = json.load(f)
-                recorded = _recorded_coordinates(
-                    coordinate_config, ('link_x', 'link_y', 'fwxx_menu_x', 'fwxx_menu_y')
-                )
+                recorded = recorded_coordinates(coordinate_config, FWXX_COORDINATE_PAIRS)
                 if recorded:
                     print("\n✓ 从配置文件加载发文信息页鼠标位置")
                     print(f"  发文链接: ({recorded[0]}, {recorded[1]})")
                     print(f"  菜单: ({recorded[2]}, {recorded[3]})")
                     return recorded
-                print("\n⚠️  发文信息页坐标仍是占位值，需要重新录制")
+                print("\n⚠️  发文信息页坐标缺失、格式无效或仍是占位值，需要重新录制")
             except Exception as e:
                 print(f"⚠️  配置文件读取失败: {e}")
 
@@ -189,18 +178,20 @@ class CoordinateService:
         print(f"  ✓ 菜单坐标: ({fwxx_menu_x}, {fwxx_menu_y})   ")
 
         # 保存到配置文件
+        new_coordinates = {
+            'link_x': link_x,
+            'link_y': link_y,
+            'fwxx_menu_x': fwxx_menu_x,
+            'fwxx_menu_y': fwxx_menu_y,
+            'last_updated': datetime.now().isoformat(),
+        }
+        validate_coordinate_config(new_coordinates)
         updated_coordinates = (
             dict(coordinate_config)
             if isinstance(coordinate_config, dict)
             else {}
         )
-        updated_coordinates.update({
-            'link_x': link_x,
-            'link_y': link_y,
-            'fwxx_menu_x': fwxx_menu_x,
-            'fwxx_menu_y': fwxx_menu_y,
-            'last_updated': datetime.now().isoformat()
-        })
+        updated_coordinates.update(new_coordinates)
         try:
             write_json_atomic(CONFIG_FWXX_FILE, updated_coordinates)
             print("\n✓ 位置已保存到配置文件")
@@ -217,12 +208,12 @@ class CoordinateService:
             try:
                 with open(CONFIG_FWXX_FILE, 'r', encoding='utf-8') as f:
                     config = json.load(f)
-                recorded = _recorded_coordinates(config, ('fee_menu_x', 'fee_menu_y'))
+                recorded = recorded_coordinates(config, FEE_MENU_COORDINATE_PAIRS)
                 if recorded:
                     print("\n✓ 从配置文件加载费用信息菜单位置")
                     print(f"  菜单: ({recorded[0]}, {recorded[1]})")
                     return recorded
-                print("\n⚠️  费用信息菜单坐标仍是占位值，需要重新录制")
+                print("\n⚠️  费用信息菜单坐标缺失、格式无效或仍是占位值，需要重新录制")
             except Exception as e:
                 print(f"⚠️  配置文件读取失败: {e}")
 
@@ -240,12 +231,14 @@ class CoordinateService:
         fee_menu_x, fee_menu_y = pyautogui.position()
         print(f"  ✓ 费用信息菜单: ({fee_menu_x}, {fee_menu_y})   ")
 
-        updated_config = dict(config) if isinstance(config, dict) else {}
-        updated_config.update({
+        new_coordinates = {
             'fee_menu_x': fee_menu_x,
             'fee_menu_y': fee_menu_y,
             'last_updated': datetime.now().isoformat(),
-        })
+        }
+        validate_coordinate_config(new_coordinates)
+        updated_config = dict(config) if isinstance(config, dict) else {}
+        updated_config.update(new_coordinates)
         try:
             write_json_atomic(CONFIG_FWXX_FILE, updated_config)
             print("\n✓ 费用信息菜单位置已保存")

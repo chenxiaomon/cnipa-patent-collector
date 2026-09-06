@@ -31,6 +31,34 @@ def _batch_time() -> str:
     return datetime.now(timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z')
 
 
+def _new_batch(collector: str, application_nos: list[str]) -> dict:
+    if collector not in _COLLECTORS:
+        raise ValueError('不支持的采集批次类型')
+    created_at = _batch_time()
+    return {
+        'id': uuid.uuid4().hex, 'collector': collector, 'status': 'pending',
+        'created_at': created_at, 'updated_at': created_at,
+        'items': [
+            {'application_no': application_no, 'status': 'pending', 'attempt_count': 0, 'reason': ''}
+            for application_no in dict.fromkeys(application_nos)
+        ],
+        'runs': [],
+    }
+
+
+def _write_batch_file(batch_file: Path, batch: dict) -> None:
+    temporary_file = batch_file.with_suffix('.json.tmp')
+    try:
+        temporary_file.write_text(json.dumps(batch, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        with _reserve_batch_snapshot(batch_file):
+            temporary_file.replace(batch_file)
+    finally:
+        try:
+            temporary_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _reserve_batch_file(batch_file: Path):
     lock_stream = batch_file.with_suffix('.lock').open('a+b')
     try:
@@ -197,20 +225,21 @@ class CollectionBatch:
     """Own a durable batch and its process lease for one complete collection run."""
 
     @classmethod
+    def prepare(cls, collector: str, application_nos: list[str]) -> str:
+        """Freeze targets before a supervisor launches any collection process."""
+        batch = _new_batch(collector, application_nos)
+        if not batch['items']:
+            raise ValueError('不能准备空采集批次')
+        batch_file = _batch_path(batch['id'])
+        batch_file.parent.mkdir(parents=True, exist_ok=True)
+        with _reserve_batch_file(batch_file):
+            _write_batch_file(batch_file, batch)
+        return batch['id']
+
+    @classmethod
     @contextmanager
     def create(cls, collector: str, checkpoint_file: Path, application_nos: list[str]):
-        if collector not in _COLLECTORS:
-            raise ValueError('不支持的采集批次类型')
-        created_at = _batch_time()
-        batch = {
-            'id': uuid.uuid4().hex, 'collector': collector, 'status': 'pending',
-            'created_at': created_at, 'updated_at': created_at,
-            'items': [
-                {'application_no': application_no, 'status': 'pending', 'attempt_count': 0, 'reason': ''}
-                for application_no in dict.fromkeys(application_nos)
-            ],
-            'runs': [],
-        }
+        batch = _new_batch(collector, application_nos)
         batch_file = _batch_path(batch['id'])
         batch_file.parent.mkdir(parents=True, exist_ok=True)
         with _reserve_batch_file(batch_file):
@@ -327,10 +356,7 @@ class CollectionBatch:
         last_run = batch['runs'][-1]
         last_run['succeeded'] = sum(attempt['status'] == 'success' for attempt in last_run['attempts'])
         last_run['failed'] = sum(attempt['status'] == 'failed' for attempt in last_run['attempts'])
-        temporary_file = self._batch_file.with_suffix('.json.tmp')
-        temporary_file.write_text(json.dumps(batch, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-        with _reserve_batch_snapshot(self._batch_file):
-            temporary_file.replace(self._batch_file)
+        _write_batch_file(self._batch_file, batch)
         self._batch = batch
 
     def _save_resume_list(self) -> None:

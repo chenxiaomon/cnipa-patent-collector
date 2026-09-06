@@ -59,6 +59,17 @@ class TestDetectionRecord(unittest.TestCase):
         self.assertEqual(len(record.fwxx_list), 2)
         self.assertEqual(record.fwxx_list[0]['type'], '驳回')
 
+    def test_record_serializes_independent_fwxx_collection_time(self):
+        record = DetectionRecord(
+            application_no='CN201880002233',
+            fwxx_list=[],
+            fwxx_collected_at='2026-09-06T12:00:00Z',
+        )
+        self.assertEqual(
+            record.to_dict()['fwxx_collected_at'],
+            '2026-09-06T12:00:00Z',
+        )
+
     def test_record_with_complete_fee_snapshot(self):
         payable = [{'yingjiaoffyzlmc': '实用新型专利第6年年费'}]
         late_schedule = [{'zhinajjfsj': '2026年01月06日到2026年02月03日'}]
@@ -332,6 +343,7 @@ class TestFeeExcelExport(unittest.TestCase):
                     'shoujufwghhm': '',
                     'shoujufwtkhcrq': '',
                 }],
+                fwxx_collected_at='2026-07-18T07:30:00Z',
                 fee_snapshot_at='2026-07-18T00:00:00Z',
             ))
             excel_path = Path(tmpdir) / 'fees.xlsx'
@@ -354,6 +366,13 @@ class TestFeeExcelExport(unittest.TestCase):
             late_fee_analysis_sheet = workbook['当前滞纳金']
             paid_sheet = workbook['已缴费信息']
             receipt_sheet = workbook['收据发文信息']
+            patent_sheet = workbook['专利主信息']
+            patent_headers = [cell.value for cell in patent_sheet[1]]
+            fwxx_time_column = patent_headers.index('发文采集时间') + 1
+            self.assertEqual(
+                patent_sheet.cell(row=2, column=fwxx_time_column).value,
+                '2026-07-18T07:30:00Z',
+            )
             self.assertEqual(payable_sheet['A2'].value, '2026102909420')
             self.assertEqual(payable_sheet['A2'].data_type, 's')
             self.assertEqual(payable_sheet['A2'].number_format, '@')

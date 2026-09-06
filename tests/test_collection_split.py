@@ -2,9 +2,12 @@
 # -*- coding: utf-8 -*-
 
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import ANY, MagicMock, call, patch
 
 import collect_fwxx
+from db_manager import PatentsDB
 
 
 class TestFwxxCollectionBoundaries(unittest.TestCase):
@@ -144,9 +147,31 @@ class TestFwxxCollectionBoundaries(unittest.TestCase):
         written_fields = db.update_fields.call_args.args[1]
         self.assertEqual(written_fields["fwxx_list"], [])
         self.assertEqual(written_fields["bhsjtzs_data"], {"name": "驳回决定"})
-        self.assertIn("timestamp", written_fields)
+        self.assertIn("fwxx_collected_at", written_fields)
+        self.assertNotIn("timestamp", written_fields)
         self.assertNotIn("payable_fee_records", written_fields)
         self.assertNotIn("fee_snapshot_at", written_fields)
+
+    def test_fwxx_persistence_keeps_status_time_in_real_database(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / 'patents.db'
+            status_time = '2026-01-01T00:00:00Z'
+            PatentsDB(database_path).upsert({
+                'application_no': '202310411762X',
+                'status_code': 200,
+                'timestamp': status_time,
+            })
+            with patch.object(collect_fwxx, 'PATENTS_DB_FILE', database_path):
+                persisted = collect_fwxx.persist_fwxx_fields(
+                    '202310411762X', {'fwxx_list': []},
+                )
+
+            stored = PatentsDB(database_path).get_record('202310411762X')
+
+        self.assertTrue(persisted)
+        self.assertEqual(stored['timestamp'], status_time)
+        self.assertEqual(stored['fwxx_list'], [])
+        self.assertTrue(stored['fwxx_collected_at'].endswith('Z'))
 
 
 if __name__ == "__main__":

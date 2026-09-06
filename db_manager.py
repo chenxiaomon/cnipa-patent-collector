@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS patents (
     fwxx_list           TEXT,
     bhsjtzs_xiazaisj    TEXT,
     bhsjtzs_data        TEXT,
+    fwxx_collected_at   TEXT,
     payable_fee_records TEXT,
     late_fee_schedule_records TEXT,
     paid_fee_records    TEXT,
@@ -95,7 +96,7 @@ _COLUMNS = [
     'famingzlsqgbg', 'shouquanggh', 'zhuanlimc', 'shenqingrxm',
     'zhuanlilx', 'shenqingr', 'gongkaiggh', 'falvzt', 'gongkaiggr',
     'shouquanggr', 'zhufenlh', 'anjianbh', 'anjianywzt',
-    'fwxx_list', 'bhsjtzs_xiazaisj', 'bhsjtzs_data',
+    'fwxx_list', 'bhsjtzs_xiazaisj', 'bhsjtzs_data', 'fwxx_collected_at',
     'payable_fee_records', 'late_fee_schedule_records', 'paid_fee_records',
     'fee_receipt_dispatch_records', 'fee_snapshot_at', 'previous_status',
     'updated_at', 'daili_jg', 'daili_r',
@@ -255,6 +256,7 @@ class PatentsDB:
                 'paid_fee_records TEXT',
                 'fee_receipt_dispatch_records TEXT',
                 'fee_snapshot_at TEXT',
+                'fwxx_collected_at TEXT',
             ):
                 try:
                     conn.execute(f"ALTER TABLE patents ADD COLUMN {col}")

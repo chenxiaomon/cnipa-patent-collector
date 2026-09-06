@@ -63,6 +63,7 @@ from manual_fwxx_requests import create_manual_fwxx_request
 from code_release_safety import CodeReleaseVerificationError, CodeReleaseVersion
 from collection_checkpoint import list_collection_batches, read_collection_batch
 from environment_diagnostics import run_environment_diagnostics
+from coordinate_config import validate_coordinate_config
 
 _patents_db = PatentsDB(PATENTS_DB_FILE)
 _RUNNING_CODE_RELEASE = CodeReleaseVersion.read()
@@ -72,6 +73,7 @@ _ENVIRONMENT_DIAGNOSTICS_LOCK = threading.Lock()
 APP_NAME = "CNIPA 采集控制台"
 SERVER_VERSION = "CNIPADashboard/0.2"
 MAX_LOG_LINES = 1600
+MAX_COMPLETED_JOBS = 40
 # 传给采集子进程的登录等待时间，与 settings.CNIPA_LOGIN_WAIT_SECONDS 保持一致
 DEFAULT_LOGIN_WAIT_SECONDS = str(int(CNIPA_LOGIN_WAIT_SECONDS))
 MAX_BODY_BYTES = 1 * 1024 * 1024   # 1 MB：防止超大请求体撑爆内存
@@ -104,6 +106,8 @@ PUBLIC_BROWSER_COMPANION_ACTIONS = {
     "public_browser",
     "public_auto_paginate",
 }
+
+CODE_MAINTENANCE_ACTIONS = {"upgrade_code", "fetch_update"}
 
 DOWNLOADS = {
     "excel": PATENTS_EXCEL_FILE,
@@ -287,48 +291,77 @@ class JobManager:
 
     def list_jobs(self) -> list[dict[str, Any]]:
         with self._lock:
-            jobs = sorted(self._jobs.values(), key=lambda item: item.started_at, reverse=True)
-            return [job.to_dict() for job in jobs[:40]]
+            active_jobs = [
+                job for job in self._jobs.values()
+                if job.status in {"running", "stopping"}
+            ]
+            completed_jobs = sorted(
+                (
+                    job for job in self._jobs.values()
+                    if job.status not in {"running", "stopping"}
+                ),
+                key=lambda item: item.finished_at or item.started_at,
+                reverse=True,
+            )
+            for expired_job in completed_jobs[MAX_COMPLETED_JOBS:]:
+                self._jobs.pop(expired_job.id, None)
+            visible_jobs = sorted(
+                [*active_jobs, *completed_jobs[:MAX_COMPLETED_JOBS]],
+                key=lambda item: item.started_at,
+                reverse=True,
+            )
+            return [job.to_dict() for job in visible_jobs]
 
     def get_job(self, job_id: str) -> Job | None:
         with self._lock:
             return self._jobs.get(job_id)
 
     def start(self, action: str, params: dict[str, Any]) -> Job:
-        spec = build_job_spec(action, params)
-        job = Job(
-            id=uuid.uuid4().hex[:10],
-            action=spec["action"],
-            title=spec["title"],
-            command=spec["command"],
-            env_overrides=spec.get("env", {}),
-        )
-        env = os.environ.copy()
-        env.update(job.env_overrides)
-        env.setdefault("PYTHONUNBUFFERED", "1")
-        env.setdefault("PYTHONIOENCODING", "utf-8")
-
-        requires_desktop = job.action in DESKTOP_BROWSER_ACTIONS
-        # 任务放进独立进程组/会话，停止时 terminate_process_tree 才能连同
-        # 浏览器等孙进程一起清理，而不会波及 Dashboard 自身
-        extra_kwargs = {}
-        if sys.platform == 'win32':
-            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
-            if not requires_desktop:
-                creationflags |= subprocess.CREATE_NO_WINDOW
-            extra_kwargs['creationflags'] = creationflags
-        else:
-            extra_kwargs['start_new_session'] = True
-
+        action = action.strip()
         with self._lock:
-            conflicting_job = self._start_conflict_locked(job.action)
+            conflicting_job = self._start_conflict_locked(action)
             if conflicting_job:
-                if requires_desktop:
+                if (
+                    action in CODE_MAINTENANCE_ACTIONS
+                    or conflicting_job.action in CODE_MAINTENANCE_ACTIONS
+                ):
+                    raise ValueError(
+                        f"“{conflicting_job.title}”正在运行；"
+                        "代码更新与采集不能同时执行"
+                    )
+                if action in DESKTOP_BROWSER_ACTIONS:
                     raise ValueError(
                         f"桌面浏览器正由“{conflicting_job.title}”占用；"
                         "请等待该任务结束或先停止该任务"
                     )
                 raise ValueError(f"{conflicting_job.title} 已在运行")
+
+            # 部分规格会生成一次性采集清单，必须在冲突判断通过后才创建。
+            spec = build_job_spec(action, params)
+            job = Job(
+                id=uuid.uuid4().hex[:10],
+                action=spec["action"],
+                title=spec["title"],
+                command=spec["command"],
+                env_overrides=spec.get("env", {}),
+            )
+            env = os.environ.copy()
+            env.update(job.env_overrides)
+            env.setdefault("PYTHONUNBUFFERED", "1")
+            env.setdefault("PYTHONIOENCODING", "utf-8")
+
+            requires_desktop = job.action in DESKTOP_BROWSER_ACTIONS
+            # 任务放进独立进程组/会话，停止时 terminate_process_tree 才能连同
+            # 浏览器等孙进程一起清理，而不会波及 Dashboard 自身
+            extra_kwargs = {}
+            if sys.platform == 'win32':
+                creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+                if not requires_desktop:
+                    creationflags |= subprocess.CREATE_NO_WINDOW
+                extra_kwargs['creationflags'] = creationflags
+            else:
+                extra_kwargs['start_new_session'] = True
+
             process = subprocess.Popen(
                 job.command,
                 cwd=str(BASE_DIR),
@@ -370,12 +403,20 @@ class JobManager:
         return True
 
     def _start_conflict_locked(self, action: str) -> Job | None:
-        active_jobs = (
+        active_jobs = [
             job for job in self._jobs.values()
             if job.status in {"running", "stopping"}
-        )
+        ]
+        if action in CODE_MAINTENANCE_ACTIONS:
+            return next((
+                job for job in active_jobs
+                if job.action in CODE_MAINTENANCE_ACTIONS
+                or job.action in DESKTOP_BROWSER_ACTIONS
+            ), None)
         if action in DESKTOP_BROWSER_ACTIONS:
             for job in active_jobs:
+                if job.action in CODE_MAINTENANCE_ACTIONS:
+                    return job
                 if job.action not in DESKTOP_BROWSER_ACTIONS:
                     continue
                 is_public_companion_pair = (
@@ -429,6 +470,41 @@ def relative_data_file(value: str | None, default: str) -> str:
     if candidate == data_root or data_root not in candidate.parents:
         return default
     return str(candidate.relative_to(BASE_DIR))
+
+
+def build_filtered_excel(records: list[dict]) -> bytes:
+    """Return a complete workbook and remove its temporary file on every path."""
+    import tempfile
+    from detection_logger import DetectionLogger
+
+    logger = DetectionLogger()
+    original_load_records = logger._load_records
+    temporary_stream = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+    temporary_path = Path(temporary_stream.name)
+    temporary_stream.close()
+    logger._load_records = lambda: records
+    try:
+        if not logger.export_to_excel(str(temporary_path)):
+            raise RuntimeError("Excel 生成失败，请检查项目依赖和任务日志")
+        workbook_bytes = temporary_path.read_bytes()
+        if not workbook_bytes:
+            raise RuntimeError("Excel 生成失败：输出文件为空")
+    except BaseException as export_error:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            if isinstance(export_error, Exception):
+                raise RuntimeError(
+                    f"{export_error}；临时文件清理失败：{cleanup_error}"
+                ) from export_error
+        raise
+    finally:
+        logger._load_records = original_load_records
+    try:
+        temporary_path.unlink(missing_ok=True)
+    except OSError as cleanup_error:
+        raise RuntimeError(f"Excel 已生成，但临时文件清理失败：{cleanup_error}") from cleanup_error
+    return workbook_bytes
 
 
 def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -3907,6 +3983,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     raise ValueError("搜索页坐标配置必须是 JSON 对象")
                 if detail_config is not None and not isinstance(detail_config, dict):
                     raise ValueError("详情页坐标配置必须是 JSON 对象")
+                validate_coordinate_config(search_config)
+                if detail_config is not None:
+                    validate_coordinate_config(detail_config)
                 CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
                 _write_text_atomic(CONFIG_FILE, json.dumps(search_config, ensure_ascii=False, indent=2) + "\n")
                 if detail_config is not None:
@@ -3979,22 +4058,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self.send_json({"count": len(records)})
                     return
 
-                # 生成 Excel 并返回文件下载
-                import tempfile
-                from detection_logger import DetectionLogger
-                logger = DetectionLogger()
-                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
-                tmp.close()
-                # 临时替换 _load_records 让 export_to_excel 使用筛选后的记录
-                orig_load = logger._load_records
-                logger._load_records = lambda: records
-                try:
-                    logger.export_to_excel(tmp.name)
-                finally:
-                    logger._load_records = orig_load
-
-                excel_data = Path(tmp.name).read_bytes()
-                os.unlink(tmp.name)
+                excel_data = build_filtered_excel(records)
 
                 ts_label = datetime.now().strftime("%Y%m%d_%H%M%S")
                 self.send_response(HTTPStatus.OK)

@@ -64,7 +64,7 @@ class TestMainCollectionResume(unittest.TestCase):
         self.addCleanup(directory_patch.stop)
         self._patch('MAIN_COLLECTION_CHECKPOINT_FILE', self.checkpoint_file)
         self._patch('FORCE_UPDATE_FLAG', Path(temporary_directory.name) / 'force.flag')
-        self._patch('load_search_list', return_value=['A', 'B'])
+        self.target_selector = self._patch('select_main_collection_targets', return_value=['A', 'B'])
         self.logger_class = self._patch('DetectionLogger')
         self.logger_class.return_value.get_pending_applications.return_value = ['A', 'B']
         self.logger_class.return_value.get_stats.return_value = {'total': 0}
@@ -197,7 +197,7 @@ class TestMainCollectionResume(unittest.TestCase):
 
         main_automation.resume_automation(batch_id)
 
-        self.logger_class.return_value.get_pending_applications.assert_called_once()
+        self.target_selector.assert_called_once_with()
         self.assertEqual([call.args[1] for call in self.search_one.call_args_list], ['A', 'B'])
         self.assertTrue(self.search_one.call_args_list[-1].kwargs['force_update'])
         self.assertEqual(len(list_collection_batches()), 1)

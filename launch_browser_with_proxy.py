@@ -31,6 +31,10 @@ from browser_utils import (
     load_credentials,
     raise_system_exit_on_sigterm,
 )
+from desktop_collection_lock import (
+    DetailCollectionDesktopBusyError,
+    reserve_public_browser,
+)
 from settings import MITM_HOST, PUBLIC_MITM_PORT, CNIPA_PUBLIC_SEARCH_URL
 
 
@@ -140,7 +144,7 @@ def launch_chrome_with_proxy(proxy_url: str = None) -> uc.Chrome:
     return driver
 
 
-def main():
+def run_public_browser_session():
     raise_system_exit_on_sigterm()
     print("\n" + "=" * 70)
     print("🚀 CNIPA 公开查询 - 浏览器启动工具")
@@ -175,5 +179,14 @@ def main():
         print("[✓] 浏览器已关闭")
 
 
+def main():
+    with reserve_public_browser("公开查询浏览器"):
+        run_public_browser_session()
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except DetailCollectionDesktopBusyError as error:
+        print(f"\n[!] {error}")
+        sys.exit(2)

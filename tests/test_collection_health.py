@@ -5,9 +5,10 @@ import os
 import subprocess
 import sys
 import unittest
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import collection_health
 import collection_watchdog
@@ -15,6 +16,7 @@ from collection_watchdog import heartbeat_age_seconds
 
 
 class _RunningProcess:
+    pid = 12345
     returncode = None
 
     def poll(self):
@@ -27,6 +29,15 @@ class _FailedProcess:
 
     def poll(self):
         return self.returncode
+
+
+class _SuccessfulProcess(_FailedProcess):
+    returncode = 0
+
+
+@contextmanager
+def _reserved_operation(_operation_name):
+    yield
 
 
 class TestCollectionHealth(unittest.TestCase):
@@ -88,8 +99,6 @@ class TestCollectionHealth(unittest.TestCase):
 
     def test_watchdog_stops_after_three_failed_restarts(self):
         with patch.object(collection_watchdog, '_stop_requested', False), patch.object(
-            collection_watchdog.signal, 'signal'
-        ), patch.object(collection_watchdog, 'clear_collection_alert'), patch.object(
             collection_watchdog, 'write_collection_start_heartbeat'
         ), patch.object(
             collection_watchdog, 'start_collection_process', side_effect=[
@@ -101,17 +110,21 @@ class TestCollectionHealth(unittest.TestCase):
         ), patch.object(collection_watchdog, 'terminate_process_tree'), patch.object(
             collection_watchdog, 'record_collection_alert'
         ) as record_alert, patch.object(collection_watchdog.time, 'sleep'), patch.object(
+            collection_watchdog, 'read_collection_batch', return_value={'remaining': 2}
+        ), patch.object(
             collection_watchdog, 'WATCHDOG_MAX_RESTARTS', 3
         ):
-            exit_code = collection_watchdog.run_supervised_collection()
+            exit_code = collection_watchdog._supervise_collection_batch('a' * 32)
         self.assertEqual(exit_code, 1)
         self.assertEqual(start_process.call_count, 3)
+        self.assertEqual([call.args for call in start_process.call_args_list], [('a' * 32,)] * 3)
         self.assertEqual(record_alert.call_args_list[-1].args[0], 'restart_limit_reached')
 
     def test_watchdog_requires_noninteractive_login_confirmation(self):
         with patch.object(collection_watchdog.subprocess, 'Popen') as collection_start:
-            collection_watchdog.start_collection_process()
+            collection_watchdog.start_collection_process('a' * 32)
         self.assertEqual(collection_start.call_args.kwargs['stdin'], subprocess.DEVNULL)
+        self.assertEqual(collection_start.call_args.args[0][-2:], ['--resume-batch', 'a' * 32])
 
     def test_watchdog_prioritizes_required_login_over_heartbeat_timeout(self):
         with patch.object(collection_watchdog, 'read_alert_status', return_value={
@@ -123,8 +136,6 @@ class TestCollectionHealth(unittest.TestCase):
 
     def test_watchdog_does_not_restart_when_login_requires_operator(self):
         with patch.object(collection_watchdog, '_stop_requested', False), patch.object(
-            collection_watchdog.signal, 'signal'
-        ), patch.object(collection_watchdog, 'clear_collection_alert'), patch.object(
             collection_watchdog, 'write_collection_start_heartbeat'
         ), patch.object(
             collection_watchdog, 'start_collection_process', return_value=_FailedProcess()
@@ -134,11 +145,147 @@ class TestCollectionHealth(unittest.TestCase):
         ), patch.object(collection_watchdog, 'terminate_process_tree'), patch.object(
             collection_watchdog, 'record_collection_alert'
         ) as record_alert, patch.object(collection_watchdog.time, 'sleep') as retry_delay:
-            exit_code = collection_watchdog.run_supervised_collection()
+            exit_code = collection_watchdog._supervise_collection_batch('a' * 32)
         self.assertEqual(exit_code, 1)
         self.assertEqual(collection_start.call_count, 1)
         retry_delay.assert_not_called()
         record_alert.assert_called_once_with('login_required', 'login not confirmed', 0)
+
+    def test_watchdog_prepares_exact_targets_before_supervision(self):
+        call_order = []
+
+        def prepare_batch(collector, application_nos):
+            call_order.append(('prepare', collector, application_nos))
+            return 'b' * 32
+
+        def supervise_batch(batch_id):
+            call_order.append(('supervise', batch_id))
+            return 0
+
+        with patch.object(collection_watchdog, '_stop_requested', False), patch.object(
+            collection_watchdog.signal, 'signal'
+        ), patch.object(collection_watchdog, 'reserve_supervised_collection', _reserved_operation), patch.object(
+            collection_watchdog, 'reserve_detail_collection_desktop', _reserved_operation
+        ), patch.object(collection_watchdog, 'clear_collection_alert'), patch.object(
+            collection_watchdog, 'select_main_collection_targets', return_value=['A', 'B']
+        ), patch.object(collection_watchdog.CollectionBatch, 'prepare', side_effect=prepare_batch), patch.object(
+            collection_watchdog, '_supervise_collection_batch', side_effect=supervise_batch
+        ):
+            exit_code = collection_watchdog.run_supervised_collection()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(call_order, [
+            ('prepare', 'main', ['A', 'B']),
+            ('supervise', 'b' * 32),
+        ])
+
+    def test_watchdog_succeeds_without_starting_process_when_no_targets(self):
+        with patch.object(collection_watchdog, '_stop_requested', False), patch.object(
+            collection_watchdog.signal, 'signal'
+        ), patch.object(collection_watchdog, 'reserve_supervised_collection', _reserved_operation), patch.object(
+            collection_watchdog, 'reserve_detail_collection_desktop', _reserved_operation
+        ), patch.object(collection_watchdog, 'clear_collection_alert'), patch.object(
+            collection_watchdog, 'select_main_collection_targets', return_value=[]
+        ), patch.object(collection_watchdog.CollectionBatch, 'prepare') as prepare_batch, patch.object(
+            collection_watchdog, 'start_collection_process'
+        ) as start_process, patch.object(
+            collection_watchdog, 'write_collection_stopped_heartbeat'
+        ) as stopped_heartbeat:
+            exit_code = collection_watchdog.run_supervised_collection()
+
+        self.assertEqual(exit_code, 0)
+        prepare_batch.assert_not_called()
+        start_process.assert_not_called()
+        stopped_heartbeat.assert_called_once_with(0, 0)
+
+    def test_prepare_failure_stops_before_supervision(self):
+        with patch.object(collection_watchdog, '_stop_requested', False), patch.object(
+            collection_watchdog.signal, 'signal'
+        ), patch.object(collection_watchdog, 'reserve_supervised_collection', _reserved_operation), patch.object(
+            collection_watchdog, 'reserve_detail_collection_desktop', _reserved_operation
+        ), patch.object(collection_watchdog, 'clear_collection_alert'), patch.object(
+            collection_watchdog, 'select_main_collection_targets', return_value=['A']
+        ), patch.object(
+            collection_watchdog.CollectionBatch, 'prepare', side_effect=OSError('disk full')
+        ), patch.object(collection_watchdog, '_supervise_collection_batch') as supervise, patch.object(
+            collection_watchdog, 'record_collection_alert'
+        ) as record_alert:
+            exit_code = collection_watchdog.run_supervised_collection()
+
+        self.assertEqual(exit_code, 1)
+        supervise.assert_not_called()
+        record_alert.assert_called_once_with('collection_start_failed', 'disk full', 0)
+
+    def test_zero_exit_with_remaining_targets_restarts_same_batch(self):
+        snapshots = [
+            {'status': 'paused', 'remaining': 1},
+            {'status': 'paused', 'remaining': 1},
+            {'status': 'completed', 'remaining': 0},
+        ]
+        with patch.object(collection_watchdog, '_stop_requested', False), patch.object(
+            collection_watchdog, 'write_collection_start_heartbeat'
+        ), patch.object(
+            collection_watchdog, 'start_collection_process', side_effect=[
+                _SuccessfulProcess(), _SuccessfulProcess(),
+            ]
+        ) as start_process, patch.object(
+            collection_watchdog, 'supervision_failure', return_value=None
+        ), patch.object(collection_watchdog, 'terminate_process_tree'), patch.object(
+            collection_watchdog, 'read_collection_batch', side_effect=snapshots
+        ), patch.object(collection_watchdog, 'record_collection_alert'), patch.object(
+            collection_watchdog, 'clear_collection_alert'
+        ) as clear_alert, patch.object(collection_watchdog.time, 'sleep'):
+            exit_code = collection_watchdog._supervise_collection_batch('c' * 32)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual([call.args for call in start_process.call_args_list], [('c' * 32,)] * 2)
+        clear_alert.assert_called_once_with()
+
+    def test_windows_termination_waits_for_batch_lease_release(self):
+        process = MagicMock(pid=12345)
+        process.poll.return_value = None
+        process.wait.side_effect = [
+            subprocess.TimeoutExpired('collector', 8),
+            0,
+        ]
+        with patch.object(collection_watchdog.sys, 'platform', 'win32'), patch.object(
+            collection_watchdog.subprocess, 'run'
+        ) as taskkill:
+            collection_watchdog.terminate_process_tree(process)
+
+        taskkill.assert_called_once_with(
+            ['taskkill', '/PID', '12345', '/T', '/F'],
+            check=False,
+            capture_output=True,
+        )
+        process.kill.assert_called_once_with()
+        self.assertEqual(process.wait.call_count, 2)
+
+    def test_supervisor_reads_batch_after_process_tree_termination(self):
+        call_order = []
+
+        def terminate(_process):
+            call_order.append('terminate')
+
+        def read_batch(_batch_id):
+            call_order.append('read')
+            return {'remaining': 0}
+
+        with patch.object(collection_watchdog, '_stop_requested', False), patch.object(
+            collection_watchdog, 'write_collection_start_heartbeat'
+        ), patch.object(
+            collection_watchdog, 'start_collection_process', return_value=_RunningProcess()
+        ), patch.object(
+            collection_watchdog, 'supervision_failure', return_value=('heartbeat_timeout', 'stale')
+        ), patch.object(
+            collection_watchdog, 'terminate_process_tree', side_effect=terminate
+        ), patch.object(
+            collection_watchdog, 'read_collection_batch', side_effect=read_batch
+        ), patch.object(collection_watchdog, 'record_collection_alert'):
+            exit_code = collection_watchdog._supervise_collection_batch('d' * 32)
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(call_order, ['terminate', 'read'])
 
     @unittest.skipIf(sys.platform == 'win32', 'POSIX process-group behavior')
     def test_terminate_process_tree_stops_process_group(self):

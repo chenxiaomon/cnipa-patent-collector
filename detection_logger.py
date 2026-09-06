@@ -66,6 +66,7 @@ class DetectionRecord:
         fwxx_list: Optional[list] = None,
         bhsjtzs_xiazaisj: Optional[str] = None,
         bhsjtzs_data: Optional[dict] = None,
+        fwxx_collected_at: Optional[str] = None,
         paid_fee_records: Optional[list] = None,
         fee_receipt_dispatch_records: Optional[list] = None,
         daili_jg: Optional[str] = None,
@@ -99,6 +100,7 @@ class DetectionRecord:
         self.fwxx_list = fwxx_list
         self.bhsjtzs_xiazaisj = bhsjtzs_xiazaisj
         self.bhsjtzs_data = bhsjtzs_data
+        self.fwxx_collected_at = fwxx_collected_at
         self.payable_fee_records = payable_fee_records
         self.late_fee_schedule_records = late_fee_schedule_records
         self.paid_fee_records = paid_fee_records
@@ -132,6 +134,7 @@ class DetectionRecord:
             'fwxx_list': self.fwxx_list,
             'bhsjtzs_xiazaisj': self.bhsjtzs_xiazaisj,
             'bhsjtzs_data': self.bhsjtzs_data,
+            'fwxx_collected_at': self.fwxx_collected_at,
             'payable_fee_records': self.payable_fee_records,
             'late_fee_schedule_records': self.late_fee_schedule_records,
             'paid_fee_records': self.paid_fee_records,
@@ -314,6 +317,7 @@ class DetectionLogger:
                 'fwxx_list': '发文列表',
                 'bhsjtzs_xiazaisj': '驳回时间',
                 'bhsjtzs_data': '驳回决定详情',
+                'fwxx_collected_at': '发文采集时间',
                 'payable_fee_records': '应缴费记录',
                 'late_fee_schedule_records': '应缴滞纳金记录',
                 'paid_fee_records': '已缴费记录',
