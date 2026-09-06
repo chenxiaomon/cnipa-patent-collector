@@ -52,6 +52,15 @@ _load_env_file_into_environment(BASE_DIR / '.env')
 VERSION_FILE = BASE_DIR / 'VERSION'
 RELEASE_REVISION_FILE = BASE_DIR / 'RELEASE_REVISION'
 
+# 本机只读环境诊断使用的手工驱动目录；不触发驱动下载或浏览器启动。
+MANUAL_CHROMEDRIVER_DIRS = tuple(
+    BASE_DIR / directory_name
+    for directory_name in (
+        'chromedriver-win64', 'chromedriver-mac-arm64',
+        'chromedriver-mac-x64', 'chromedriver-linux64',
+    )
+)
+
 # 数据目录
 DATA_DIR = BASE_DIR / 'data'
 RESULTS_DIR = DATA_DIR / 'results'
@@ -73,6 +82,7 @@ RETRY_FAILED_FILE = DATA_DIR / 'retry_failed.txt'
 MAIN_COLLECTION_CHECKPOINT_FILE = DATA_DIR / 'checkpoint_resume.txt'
 FWXX_COLLECTION_CHECKPOINT_FILE = DATA_DIR / 'checkpoint_fwxx.txt'
 FEE_COLLECTION_CHECKPOINT_FILE = DATA_DIR / 'checkpoint_fees.txt'
+COLLECTION_BATCHES_DIR = DATA_DIR / 'collection_batches'
 
 # ============================================================================
 # 配置文件（鼠标坐标等）

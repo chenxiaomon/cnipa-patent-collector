@@ -32,6 +32,7 @@ data/manual_fwxx_lists/
 data/checkpoint_resume.txt*
 data/checkpoint_fwxx.txt*
 data/checkpoint_fees.txt*
+data/collection_batches/
 data/failed_applications.txt
 data/search_list_retry.txt
 data/search_list.txt

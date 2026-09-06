@@ -54,7 +54,8 @@ from collection_health import (
     write_collection_start_heartbeat,
     write_collection_stopped_heartbeat,
 )
-from collection_checkpoint import CollectionCheckpoint
+from collection_checkpoint import CollectionBatch, CollectionBatchBusyError
+from desktop_collection_lock import DetailCollectionDesktopBusyError, reserve_detail_collection_desktop
 from input_service import InputService
 from settings import (
     CNIPA_URL, SEARCH_LIST_FILE, FORCE_UPDATE_FLAG,
@@ -234,6 +235,18 @@ def search_application(
 
 
 def run_automation(test_count: int = None, update_list: str = None) -> None:
+    """Hold the shared desktop through target selection, collection, and exports."""
+    with reserve_detail_collection_desktop('主采集'):
+        _run_automation(test_count, update_list)
+
+
+def resume_automation(batch_id: str, test_count: int = None) -> None:
+    with reserve_detail_collection_desktop('主采集'):
+        with CollectionBatch.resume('main', MAIN_COLLECTION_CHECKPOINT_FILE, batch_id) as checkpoint:
+            _collect_main_batch(checkpoint, DetectionLogger(), test_count, str(MAIN_COLLECTION_CHECKPOINT_FILE))
+
+
+def _run_automation(test_count: int = None, update_list: str = None) -> None:
     """
     运行自动化程序
 
@@ -280,9 +293,13 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
         logger.print_summary()
         return
 
-    checkpoint = CollectionCheckpoint(MAIN_COLLECTION_CHECKPOINT_FILE, pending)
+    with CollectionBatch.create('main', MAIN_COLLECTION_CHECKPOINT_FILE, pending) as checkpoint:
+        _collect_main_batch(checkpoint, logger, test_count, update_list)
+
+
+def _collect_main_batch(checkpoint: CollectionBatch, logger: DetectionLogger, test_count: int, update_list: str) -> None:
+    pending = checkpoint.select_pending(test_count)
     if test_count:
-        pending = pending[:test_count]
         print(f"📌 测试模式: 仅处理前 {test_count} 个")
 
     driver = None
@@ -326,6 +343,7 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
                 raise RuntimeError('浏览器进程意外退出')
 
             print(f"\n[{i}/{len(pending)}]")
+            checkpoint.record_started(app_no)
             record = search_application(
                 driver,
                 app_no,
@@ -346,6 +364,9 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
                         failure_streak.record_success()
                     else:
                         run_failed += 1
+                        checkpoint.record_failure(
+                            app_no, record.error_message or record.response_summary or '未采集到有效专利数据'
+                        )
                         failure_streak.record_failure()
                 else:
                     raise RuntimeError('浏览器已关闭，本条未采集，批次已中断')
@@ -374,7 +395,7 @@ def run_automation(test_count: int = None, update_list: str = None) -> None:
     finally:
         if checkpoint.remaining_count:
             print(f"\n[*] 未完成 {checkpoint.remaining_count} 条，清单已保存: {MAIN_COLLECTION_CHECKPOINT_FILE}")
-            print(f'    续跑命令: python main_automation.py --update-list "{MAIN_COLLECTION_CHECKPOINT_FILE}"')
+            print(f'    续跑命令: python main_automation.py --resume-batch {checkpoint.id}')
         write_collection_stopped_heartbeat(run_total, len(pending))
         if update_list:
             try:
@@ -441,12 +462,20 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--test', type=int, default=None, metavar='N',
                         help='仅处理前 N 个申请号')
-    parser.add_argument('--update-list', type=str, default=None, metavar='FILE',
-                        help='强制更新模式：从文件读取申请号并重新检索')
+    target_source = parser.add_mutually_exclusive_group()
+    target_source.add_argument('--update-list', type=str, default=None, metavar='FILE',
+                               help='强制更新模式：从文件读取申请号并重新检索')
+    target_source.add_argument('--resume-batch', metavar='ID', help='继续指定的未完成采集批次')
     args = parser.parse_args()
 
     try:
-        run_automation(test_count=args.test, update_list=args.update_list)
+        if args.resume_batch:
+            resume_automation(args.resume_batch, test_count=args.test)
+        else:
+            run_automation(test_count=args.test, update_list=args.update_list)
+    except (DetailCollectionDesktopBusyError, CollectionBatchBusyError, ValueError) as error:
+        print(f"\n[!] {error}")
+        sys.exit(2)
     except CollectionFailureStreakExceeded as error:
         print(f"\n⛔ {error}")
         sys.exit(3)

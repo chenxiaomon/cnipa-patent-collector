@@ -4,6 +4,8 @@ from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 import main_automation
+import collection_checkpoint
+from collection_checkpoint import list_collection_batches, read_collection_batch
 from collection_health import CollectionFailureStreakExceeded
 from db_manager import PENDING_STATUS_CODE, PatentsDB
 from detection_logger import DetectionLogger, DetectionRecord
@@ -57,6 +59,9 @@ class TestMainCollectionResume(unittest.TestCase):
         temporary_directory = TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
         self.checkpoint_file = Path(temporary_directory.name) / 'resume.txt'
+        directory_patch = patch.object(collection_checkpoint, 'COLLECTION_BATCHES_DIR', Path(temporary_directory.name) / 'batches')
+        directory_patch.start()
+        self.addCleanup(directory_patch.stop)
         self._patch('MAIN_COLLECTION_CHECKPOINT_FILE', self.checkpoint_file)
         self._patch('FORCE_UPDATE_FLAG', Path(temporary_directory.name) / 'force.flag')
         self._patch('load_search_list', return_value=['A', 'B'])
@@ -113,6 +118,8 @@ class TestMainCollectionResume(unittest.TestCase):
 
         self.assertEqual(self.checkpoint_file.read_text(encoding='utf-8'), 'B\n')
         self.browser_service.launch_and_login.return_value.quit.assert_called_once()
+        batch = read_collection_batch(list_collection_batches()[0]['id'])
+        self.assertEqual([item['status'] for item in batch['items']], ['success', 'interrupted'])
 
     def test_failed_and_unattempted_applications_survive_failure_streak(self):
         self.search_one.side_effect = [DetectionRecord(application_no='A', status_code=0)]
@@ -123,6 +130,9 @@ class TestMainCollectionResume(unittest.TestCase):
             main_automation.run_automation()
 
         self.assertEqual(self.checkpoint_file.read_text(encoding='utf-8'), 'A\nB\n')
+        batch = read_collection_batch(list_collection_batches()[0]['id'])
+        self.assertEqual([item['status'] for item in batch['items']], ['failed', 'pending'])
+        self.assertTrue(batch['items'][0]['reason'])
 
     def test_startup_failure_preserves_whole_batch(self):
         self.browser_service.launch_and_login.side_effect = RuntimeError('startup failed')
@@ -179,6 +189,32 @@ class TestMainCollectionResume(unittest.TestCase):
             self.checkpoint_file.read_text(encoding='utf-8'),
             '202310411762X\n2024110065970\n',
         )
+
+    def test_resume_keeps_batch_and_skips_target_selection(self):
+        main_automation.run_automation(test_count=1)
+        batch_id = list_collection_batches()[0]['id']
+        self.assertEqual(read_collection_batch(batch_id)['status'], 'paused')
+
+        main_automation.resume_automation(batch_id)
+
+        self.logger_class.return_value.get_pending_applications.assert_called_once()
+        self.assertEqual([call.args[1] for call in self.search_one.call_args_list], ['A', 'B'])
+        self.assertTrue(self.search_one.call_args_list[-1].kwargs['force_update'])
+        self.assertEqual(len(list_collection_batches()), 1)
+        completed = read_collection_batch(batch_id)
+        self.assertEqual((completed['status'], len(completed['runs'])), ('completed', 2))
+
+    def test_main_reserves_desktop_through_whole_run(self):
+        desktop_reservation = self._patch('reserve_detail_collection_desktop')
+        run_collection = self._patch('_run_automation', side_effect=RuntimeError('stopped'))
+
+        with self.assertRaisesRegex(RuntimeError, 'stopped'):
+            main_automation.run_automation(test_count=1)
+
+        desktop_reservation.assert_called_once_with('主采集')
+        desktop_reservation.return_value.__enter__.assert_called_once()
+        desktop_reservation.return_value.__exit__.assert_called_once()
+        run_collection.assert_called_once_with(1, None)
 
 
 if __name__ == '__main__':

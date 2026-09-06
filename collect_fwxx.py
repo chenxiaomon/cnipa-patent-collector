@@ -78,7 +78,7 @@ from detail_attempt import (
 )
 from browser_utils import is_browser_alive, raise_system_exit_on_sigterm
 from collection_health import CollectionFailureStreak, CollectionFailureStreakExceeded
-from collection_checkpoint import CollectionCheckpoint
+from collection_checkpoint import CollectionBatch, CollectionBatchBusyError
 from coordinate_service import CoordinateService
 from browser_service import BrowserService
 from input_service import InputService
@@ -498,7 +498,10 @@ def _run_fwxx_collection(args) -> None:
     Args:
         args: 命令行参数对象
     """
-    test_count = args.test
+    if getattr(args, 'resume_batch', None):
+        with CollectionBatch.resume('fwxx', FWXX_COLLECTION_CHECKPOINT_FILE, args.resume_batch) as checkpoint:
+            _collect_fwxx_batch(args, checkpoint)
+        return
     standalone_mode = bool(getattr(args, 'input', None) or getattr(args, 'app', None))
 
     print("\n" + "="*70)
@@ -530,11 +533,15 @@ def _run_fwxx_collection(args) -> None:
             print("✓ 无需采集，所有驳回案件的发文信息都已采集！")
         return
 
-    checkpoint = CollectionCheckpoint(FWXX_COLLECTION_CHECKPOINT_FILE, targets)
+    with CollectionBatch.create('fwxx', FWXX_COLLECTION_CHECKPOINT_FILE, targets) as checkpoint:
+        _collect_fwxx_batch(args, checkpoint)
+
+
+def _collect_fwxx_batch(args, checkpoint: CollectionBatch) -> None:
+    targets = checkpoint.select_pending(args.test)
 
     # 测试模式
-    if test_count:
-        targets = targets[:test_count]
+    if args.test:
         print(f"📋 测试模式：仅采集前 {len(targets)} 个\n")
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -589,6 +596,7 @@ def _run_fwxx_collection(args) -> None:
             print(f"\n[{idx}/{len(targets)}] 申请号: {application_no}")
 
             # 采集单个申请号
+            checkpoint.record_started(application_no)
             fwxx_fields = collect_one_fwxx(
                 driver=driver,
                 application_no=application_no,
@@ -612,10 +620,12 @@ def _run_fwxx_collection(args) -> None:
                 else:
                     print(f"  ⚠️  主日志未更新，发文信息已备份到 {FWXX_UNMATCHED_FILE}")
                     failed_count += 1
+                    checkpoint.record_failure(application_no, '发文数据未写入专利主库，已保存未匹配备份')
                     failure_streak.record_failure()
             else:
                 print(f"  ❌ 未采集到数据")
                 failed_count += 1
+                checkpoint.record_failure(application_no, '未采集到有效发文数据')
                 failure_streak.record_failure()
 
             # 申请号之间的随机延迟（防反爬）
@@ -659,7 +669,7 @@ def _run_fwxx_collection(args) -> None:
     finally:
         if checkpoint.remaining_count:
             print(f"\n[*] 未完成 {checkpoint.remaining_count} 条，清单已保存: {FWXX_COLLECTION_CHECKPOINT_FILE}")
-            print(f'    续跑命令: python collect_fwxx.py --input "{FWXX_COLLECTION_CHECKPOINT_FILE}" --force')
+            print(f'    续跑命令: python collect_fwxx.py --resume-batch {checkpoint.id}')
         # 清理
         if driver:
             try:
@@ -690,16 +700,18 @@ if __name__ == "__main__":
         default=SEARCH_PAGE_URL,
         help=f'搜索页 URL（默认：{SEARCH_PAGE_URL}）'
     )
-    parser.add_argument(
+    target_source = parser.add_mutually_exclusive_group()
+    target_source.add_argument(
         '--input',
         type=str,
         help='独立模式：从文件读取申请号列表（一行一个）'
     )
-    parser.add_argument(
+    target_source.add_argument(
         '--app',
         type=str,
         help='独立模式：直接指定申请号（多个用逗号分隔）'
     )
+    target_source.add_argument('--resume-batch', metavar='ID', help='继续指定的未完成发文批次')
     parser.add_argument(
         '--force',
         action='store_true',
@@ -718,7 +730,7 @@ if __name__ == "__main__":
 
     try:
         run_fwxx_collection(args=args)
-    except DetailCollectionDesktopBusyError as error:
+    except (DetailCollectionDesktopBusyError, CollectionBatchBusyError, ValueError) as error:
         print(f"\n[!] {error}")
         sys.exit(2)
     except CollectionFailureStreakExceeded as error:

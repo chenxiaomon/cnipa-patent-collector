@@ -61,9 +61,12 @@ from collection_health import read_alert_status
 from operator_api_token import api_token_matches, ensure_api_token
 from manual_fwxx_requests import create_manual_fwxx_request
 from code_release_safety import CodeReleaseVerificationError, CodeReleaseVersion
+from collection_checkpoint import list_collection_batches, read_collection_batch
+from environment_diagnostics import run_environment_diagnostics
 
 _patents_db = PatentsDB(PATENTS_DB_FILE)
 _RUNNING_CODE_RELEASE = CodeReleaseVersion.read()
+_ENVIRONMENT_DIAGNOSTICS_LOCK = threading.Lock()
 
 
 APP_NAME = "CNIPA 采集控制台"
@@ -76,6 +79,7 @@ MAX_REQUEST_APP_NOS = 500           # 单次提交申请号上限
 MAX_NOTE_LEN = 500                  # 备注字段长度上限
 _SAFE_ID_RE = re.compile(r'^[0-9a-f\-]{8,36}$')
 DESKTOP_BROWSER_ACTIONS = {
+    "resume_collection_batch",
     "main_full",
     "main_test",
     "main_update_dynamic",
@@ -431,6 +435,21 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
     py = resolve_task_python()
     action = action.strip()
 
+    if action == "resume_collection_batch":
+        batch = read_collection_batch(params.get("batch_id", ""))
+        if not batch["resumable"]:
+            raise ValueError("该批次正在运行或已全部完成，不能续跑")
+        collector_scripts = {
+            "main": ("main_automation.py", "主采集"),
+            "fwxx": ("collect_fwxx.py", "发文采集"),
+            "fees": ("collect_fees.py", "费用采集"),
+        }
+        script, title = collector_scripts[batch["collector"]]
+        return {
+            "action": action, "title": f"继续{title} {batch['id'][:8]}",
+            "command": [py, "-u", script, "--resume-batch", batch["id"]],
+            "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
+        }
     if action == "mitm_proxy":
         return {"action": action, "title": "主 MITM 代理", "command": [py, "-u", "start_mitm_proxy.py"]}
     if action == "public_mitm_proxy":
@@ -1520,6 +1539,44 @@ HTML = r"""<!doctype html>
 
     <!-- ═══ Tab 8：任务日志 ═══ -->
     <div id="tab-logs" class="tab-panel">
+      <section class="operation-section operator-only" aria-labelledby="batchHeading">
+        <div class="panel-head">
+          <h2 id="batchHeading">批次记录</h2>
+          <button class="btn secondary icon-button" id="refreshBatches" title="刷新批次" aria-label="刷新批次">&#x21bb;</button>
+        </div>
+        <div class="batch-toolbar">
+          <label class="field batch-selector"><span>采集批次</span><select id="batchSelect"><option value="">暂无批次记录</option></select></label>
+          <div class="button-row">
+            <button class="btn primary" id="resumeBatch" disabled>继续未完成项</button>
+            <button class="btn secondary" id="downloadBatch" disabled>下载记录</button>
+          </div>
+        </div>
+        <div id="batchFeedback" class="hint" role="status"></div>
+        <div id="batchDetail" class="hidden">
+          <div class="batch-metrics" id="batchMetrics"></div>
+          <p class="hint" id="batchTiming"></p>
+          <details open class="batch-items-disclosure">
+            <summary>申请号明细</summary>
+            <div class="batch-filters">
+              <input id="batchItemSearch" type="search" placeholder="申请号" aria-label="查找批次申请号">
+              <select id="batchItemFilter" aria-label="筛选批次申请号状态">
+                <option value="remaining">未完成</option><option value="all">全部</option>
+                <option value="failed">失败</option><option value="pending">未尝试</option>
+                <option value="success">成功</option><option value="interrupted">中断</option>
+              </select>
+            </div>
+            <div class="table-wrap batch-table-wrap"><table><thead><tr><th>申请号</th><th>状态</th><th>尝试次数</th><th>原因</th></tr></thead><tbody id="batchItems"></tbody></table></div>
+            <div class="batch-pagination">
+              <span id="batchPageLabel" class="hint"></span>
+              <button id="batchPreviousPage" class="btn secondary icon-button" title="上一页" aria-label="上一页">&#8592;</button>
+              <button id="batchNextPage" class="btn secondary icon-button" title="下一页" aria-label="下一页">&#8594;</button>
+            </div>
+          </details>
+          <details class="batch-runs-disclosure"><summary>执行轮次</summary>
+            <div class="table-wrap batch-runs-wrap"><table><thead><tr><th>轮次</th><th>开始</th><th>结束</th><th>本轮目标</th><th>结果</th></tr></thead><tbody id="batchRuns"></tbody></table></div>
+          </details>
+        </div>
+      </section>
       <section class="grid wide-left">
         <article class="panel">
           <div class="panel-head">
@@ -1540,6 +1597,18 @@ HTML = r"""<!doctype html>
 
     <!-- ═══ Tab 9：系统配置 ═══ -->
     <div id="tab-config" class="tab-panel">
+      <section class="operation-section operator-only" aria-labelledby="diagnosticsHeading">
+        <div class="panel-head">
+          <h2 id="diagnosticsHeading">环境诊断</h2>
+          <div class="button-row">
+            <button class="btn primary" id="runDiagnostics">开始诊断</button>
+            <button class="btn secondary" id="downloadDiagnostics" disabled>下载报告</button>
+          </div>
+        </div>
+        <p class="hint" id="diagnosticsFeedback" role="status">尚未诊断</p>
+        <p class="hint" id="diagnosticsTimestamp"></p>
+        <div class="table-wrap diagnostics-table-wrap hidden" id="diagnosticsTable"><table><thead><tr><th>检查项</th><th>状态</th><th>结果</th></tr></thead><tbody id="diagnosticsChecks"></tbody></table></div>
+      </section>
       <section class="grid two" style="margin-bottom:14px">
         <article class="panel">
           <div class="panel-head">
@@ -1828,6 +1897,42 @@ h3 { font-size: 13px; }
   gap: 12px;
   margin-bottom: 14px;
 }
+
+.operation-section { margin-bottom: 20px; padding: 4px 0 20px; border-bottom: 1px solid var(--line); }
+.operation-section .panel-head { flex-wrap: wrap; }
+.operation-section button:disabled { opacity: .5; cursor: not-allowed; }
+.operation-section .icon-button { width: 36px; min-width: 36px; height: 34px; padding: 0; font-size: 18px; }
+.batch-toolbar { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 10px; }
+.batch-selector { flex: 1 1 300px; min-width: 0; }
+.batch-selector select { width: 100%; text-overflow: ellipsis; }
+.batch-metrics { display: flex; flex-wrap: wrap; gap: 12px 28px; margin: 14px 0 8px; }
+.batch-metrics div { min-width: 62px; }
+.batch-metrics strong { display: block; font-size: 19px; line-height: 26px; }
+.batch-metrics span { color: var(--muted); font-size: 12px; }
+.batch-items-disclosure, .batch-runs-disclosure { margin-top: 12px; }
+.operation-section summary { cursor: pointer; font-weight: 600; font-size: 13px; padding: 8px 0; }
+.batch-filters { display: flex; gap: 8px; margin: 8px 0; }
+.batch-filters input { flex: 1; min-width: 0; }
+.batch-filters select { width: 125px; flex: 0 0 125px; }
+.batch-table-wrap table { min-width: 540px; table-layout: fixed; }
+.batch-table-wrap th:first-child { width: 150px; }
+.batch-table-wrap th:nth-child(2) { width: 76px; }
+.batch-table-wrap th:nth-child(3) { width: 78px; }
+.batch-table-wrap td { white-space: normal; overflow-wrap: anywhere; }
+.batch-pagination { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 8px; }
+.batch-pagination .hint { margin-right: auto; }
+.batch-runs-wrap { max-height: 260px; }
+.batch-runs-wrap table { min-width: 620px; }
+.diagnostics-table-wrap { margin-top: 12px; }
+.diagnostics-table-wrap table { min-width: 0; table-layout: fixed; width: 100%; }
+.diagnostics-table-wrap th:first-child { width: 115px; }
+.diagnostics-table-wrap th:nth-child(2) { width: 64px; }
+.diagnostics-table-wrap td { white-space: normal; overflow-wrap: anywhere; vertical-align: top; }
+.diagnostic-details { margin-top: 5px; color: var(--muted); font-size: 12px; }
+.diagnostic-suggestion { margin-top: 5px; color: var(--amber); }
+.check-ok { color: var(--accent-dark); }
+.check-warning, .check-unknown { color: var(--amber); }
+.check-error { color: var(--red); }
 
 /* ── Buttons ── */
 .top-actions, .button-row, .downloads {
@@ -2143,6 +2248,9 @@ td .clip { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-sp
   .main { margin-left: 0; padding: 0 14px 40px; }
   .topbar { position: static; flex-direction: column; align-items: flex-start; }
   .top-left { flex-wrap: wrap; }
+  .diagnostics-table-wrap th:first-child { width: 82px; }
+  .diagnostics-table-wrap th:nth-child(2) { width: 48px; }
+  .diagnostics-table-wrap td, .diagnostics-table-wrap th { padding: 8px 5px; }
 }
 """
 
@@ -2153,6 +2261,12 @@ JS = r"""const state = {
   followJobLog: true,
   jobLogRequestSequence: 0,
   jobLogAppliedSequence: 0,
+  selectedBatchId: '',
+  selectedBatch: null,
+  batchItemPage: 0,
+  batchListRefreshing: false,
+  batchDetailRequestSequence: 0,
+  diagnosticReport: null,
   searchLoaded: false,
   configLoaded: false,
   roleDetermined: false,
@@ -2249,12 +2363,145 @@ function switchTab(tab) {
   if (nav) nav.classList.add('active');
   location.hash = tab;
   state.currentTab = tab;
+  if (tab === 'logs' && state.roleDetermined) refreshCollectionBatches();
 }
 
 function initTabRouting() {
   $$('.nav-item').forEach(item => item.addEventListener('click', () => switchTab(item.dataset.tab)));
   const hash = location.hash.replace('#', '') || 'overview';
   switchTab(hash);
+}
+
+const COLLECTION_LABELS = { main: '主采集', fwxx: '发文', fees: '费用' };
+const BATCH_STATUS_LABELS = {
+  running: '运行中', completed: '已完成', paused: '已暂停', failed: '失败',
+  interrupted: '已中断', pending: '未尝试', success: '成功', unreadable: '记录损坏',
+};
+
+async function refreshCollectionBatches() {
+  if (state.batchListRefreshing || document.body.classList.contains('viewer-mode')) return;
+  state.batchListRefreshing = true;
+  try {
+    const response = await api('/api/collection-batches');
+    const batches = response.batches;
+    const selection = $('#batchSelect');
+    const selectedId = state.selectedBatchId;
+    selection.innerHTML = batches.length ? batches.map(batch =>
+      `<option value="${escHtml(batch.id)}">${escHtml(shortTime(batch.created_at))} | ${escHtml(COLLECTION_LABELS[batch.collector] || '采集')} | ${escHtml(BATCH_STATUS_LABELS[batch.status])} | ${escHtml(batch.id.slice(0, 8))}</option>`
+    ).join('') : '<option value="">暂无批次记录</option>';
+    state.selectedBatchId = batches.some(batch => batch.id === selectedId) ? selectedId : (batches[0]?.id || '');
+    selection.value = state.selectedBatchId;
+    selection.disabled = !batches.length;
+    await refreshSelectedBatch();
+  } catch (error) {
+    $('#batchFeedback').textContent = '读取批次失败：' + error.message;
+    $('#resumeBatch').disabled = true;
+  } finally {
+    state.batchListRefreshing = false;
+  }
+}
+
+async function refreshSelectedBatch() {
+  const batchId = state.selectedBatchId;
+  const requestSequence = ++state.batchDetailRequestSequence;
+  $('#resumeBatch').disabled = true;
+  $('#downloadBatch').disabled = true;
+  if (!batchId) {
+    state.selectedBatch = null;
+    $('#batchDetail').classList.add('hidden');
+    $('#batchFeedback').textContent = '暂无批次记录';
+    return;
+  }
+  try {
+    const response = await api('/api/collection-batches/' + encodeURIComponent(batchId));
+    if (requestSequence !== state.batchDetailRequestSequence || batchId !== state.selectedBatchId) return;
+    state.selectedBatch = response.batch;
+    renderBatchDetail();
+  } catch (error) {
+    if (requestSequence !== state.batchDetailRequestSequence) return;
+    state.selectedBatch = null;
+    $('#batchDetail').classList.add('hidden');
+    $('#batchFeedback').textContent = '读取批次失败：' + error.message;
+  }
+}
+
+function renderBatchDetail() {
+  const batch = state.selectedBatch;
+  $('#batchDetail').classList.remove('hidden');
+  $('#batchFeedback').textContent = BATCH_STATUS_LABELS[batch.status] + (batch.current_application ? ' · ' + batch.current_application : '');
+  $('#resumeBatch').disabled = !batch.resumable;
+  $('#downloadBatch').disabled = false;
+  $('#batchMetrics').innerHTML = [
+    ['总数', batch.total], ['成功', batch.succeeded], ['失败', batch.failed], ['剩余', batch.remaining],
+  ].map(([label, count]) => `<div><strong>${fmtNumber(count)}</strong><span>${label}</span></div>`).join('');
+  $('#batchTiming').textContent = '创建：' + shortTime(batch.created_at) + ' · 更新：' + shortTime(batch.updated_at);
+  renderBatchItems();
+  $('#batchRuns').innerHTML = batch.runs.map((run, index) => `<tr>
+    <td>${index + 1}</td><td>${escHtml(shortTime(run.started_at))}</td><td>${escHtml(shortTime(run.finished_at))}</td>
+    <td>${fmtNumber(run.selected_count)}</td><td>${escHtml(BATCH_STATUS_LABELS[run.status])}${run.stop_reason ? '<div class="hint">' + escHtml(run.stop_reason) + '</div>' : ''}</td>
+  </tr>`).join('');
+}
+
+function renderBatchItems() {
+  const batch = state.selectedBatch;
+  if (!batch) return;
+  const query = $('#batchItemSearch').value.trim().toUpperCase();
+  const status = $('#batchItemFilter').value;
+  const matchingItems = batch.items.filter(item =>
+    item.application_no.toUpperCase().includes(query) &&
+    (status === 'all' || (status === 'remaining' ? item.status !== 'success' : item.status === status))
+  );
+  const pageCount = Math.max(1, Math.ceil(matchingItems.length / 20));
+  state.batchItemPage = Math.min(state.batchItemPage, pageCount - 1);
+  const visibleItems = matchingItems.slice(state.batchItemPage * 20, (state.batchItemPage + 1) * 20);
+  $('#batchItems').innerHTML = visibleItems.length ? visibleItems.map(item => `<tr>
+    <td>${escHtml(item.application_no)}</td><td>${escHtml(BATCH_STATUS_LABELS[item.status])}</td>
+    <td>${fmtNumber(item.attempt_count)}</td><td>${escHtml(item.reason || '-')}</td>
+  </tr>`).join('') : '<tr><td colspan="4">无匹配记录</td></tr>';
+  $('#batchPageLabel').textContent = `${fmtNumber(matchingItems.length)} 条 · ${state.batchItemPage + 1} / ${pageCount}`;
+  $('#batchPreviousPage').disabled = state.batchItemPage === 0;
+  $('#batchNextPage').disabled = state.batchItemPage + 1 >= pageCount;
+}
+
+function downloadJsonReport(report, filename) {
+  const blob = new Blob([JSON.stringify(report, null, 2) + '\n'], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function diagnoseEnvironment() {
+  const button = $('#runDiagnostics');
+  state.diagnosticReport = null;
+  $('#diagnosticsTable').classList.add('hidden');
+  $('#diagnosticsTimestamp').textContent = '';
+  button.disabled = true;
+  button.textContent = '诊断中...';
+  $('#downloadDiagnostics').disabled = true;
+  $('#diagnosticsFeedback').textContent = '正在检查运行环境...';
+  try {
+    const report = await api('/api/environment-diagnostics', { method: 'POST', body: '{}' });
+    state.diagnosticReport = report;
+    const statusLabels = { ok: '正常', warning: '注意', error: '异常', unknown: '未确认' };
+    const attentionCount = report.checks.filter(check => check.status !== 'ok').length;
+    $('#diagnosticsFeedback').textContent = attentionCount ? `诊断完成，${attentionCount} 项需要关注` : '诊断完成，各项检查正常';
+    $('#diagnosticsTimestamp').textContent = '检查位置：Dashboard 所在电脑 · ' + shortTime(report.generated_at);
+    $('#diagnosticsChecks').innerHTML = report.checks.map(check => `<tr>
+      <td>${escHtml(check.title)}</td><td class="check-${escHtml(check.status)}">${statusLabels[check.status]}</td>
+      <td>${escHtml(check.summary)}${check.details.map(detail => '<div class="diagnostic-details">' + escHtml(detail) + '</div>').join('')}
+      ${check.suggestion ? '<div class="diagnostic-suggestion">' + escHtml(check.suggestion) + '</div>' : ''}</td>
+    </tr>`).join('');
+    $('#diagnosticsTable').classList.remove('hidden');
+    $('#downloadDiagnostics').disabled = false;
+  } catch (error) {
+    $('#diagnosticsFeedback').textContent = '诊断失败：' + error.message;
+  } finally {
+    button.disabled = false;
+    button.textContent = '开始诊断';
+  }
 }
 
 // ── Job Control ───────────────────────────────────────────────────────
@@ -2742,6 +2989,28 @@ async function loadSearchList() {
 
 // ── Event Binding ────────────────────────────────────────────────────
 function bindEvents() {
+  $('#refreshBatches').addEventListener('click', refreshCollectionBatches);
+  $('#batchSelect').addEventListener('change', () => {
+    state.selectedBatchId = $('#batchSelect').value;
+    state.batchItemPage = 0;
+    refreshSelectedBatch();
+  });
+  $('#resumeBatch').addEventListener('click', async () => {
+    $('#resumeBatch').disabled = true;
+    await startJob('resume_collection_batch', { batch_id: state.selectedBatchId });
+    await refreshCollectionBatches();
+  });
+  $('#downloadBatch').addEventListener('click', () => downloadJsonReport(state.selectedBatch, 'collection_batch_' + state.selectedBatchId + '.json'));
+  for (const selector of ['#batchItemSearch', '#batchItemFilter']) {
+    $(selector).addEventListener(selector === '#batchItemSearch' ? 'input' : 'change', () => {
+      state.batchItemPage = 0;
+      renderBatchItems();
+    });
+  }
+  $('#batchPreviousPage').addEventListener('click', () => { state.batchItemPage -= 1; renderBatchItems(); });
+  $('#batchNextPage').addEventListener('click', () => { state.batchItemPage += 1; renderBatchItems(); });
+  $('#runDiagnostics').addEventListener('click', diagnoseEnvironment);
+  $('#downloadDiagnostics').addEventListener('click', () => downloadJsonReport(state.diagnosticReport, 'cnipa_environment_diagnostics.json'));
   // data-action 全局代理
   $$('[data-action]').forEach(btn => {
     btn.addEventListener('click', () => startJob(btn.dataset.action));
@@ -3291,6 +3560,8 @@ async function boot() {
   bindEvents();
   await loadOperatorToken();
   await Promise.all([refreshSummary(), refreshJobs(), loadSearchList(), loadCredentials()]);
+  if (state.currentTab === 'logs') await refreshCollectionBatches();
+  setInterval(() => { if (state.currentTab === 'logs') refreshCollectionBatches(); }, 5000);
   setInterval(refreshSummary, 5000);
   setInterval(refreshJobs, 2500);
   checkUpdate();                              // 启动时检查一次
@@ -3394,6 +3665,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"requests": reqs})
             elif path == "/api/jobs":
                 self.send_json({"jobs": self.job_manager.list_jobs()})
+            elif path == "/api/collection-batches" or path.startswith("/api/collection-batches/"):
+                if not self.is_operator and not api_token_matches(self.headers.get('X-CNIPA-Token')):
+                    self.send_json({"error": "批次记录需要操作员权限"}, status=403)
+                    return
+                try:
+                    if path == "/api/collection-batches":
+                        self.send_json({"batches": list_collection_batches()})
+                    else:
+                        self.send_json({"batch": read_collection_batch(path.removeprefix("/api/collection-batches/"))})
+                except FileNotFoundError:
+                    self.send_json({"error": "批次不存在"}, status=404)
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, status=400)
             elif path.startswith("/api/jobs/"):
                 self.handle_get_job(path)
             elif path == "/api/search-list":
@@ -3511,7 +3795,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "写操作需要有效的 X-CNIPA-Token"}, status=401)
             return
         try:
-            if path == "/api/jobs":
+            if path == "/api/environment-diagnostics":
+                self.read_json_body()
+                if not _ENVIRONMENT_DIAGNOSTICS_LOCK.acquire(blocking=False):
+                    self.send_json({"error": "已有环境诊断正在运行"}, status=409)
+                    return
+                try:
+                    self.send_json(run_environment_diagnostics(resolve_task_python()))
+                finally:
+                    _ENVIRONMENT_DIAGNOSTICS_LOCK.release()
+            elif path == "/api/jobs":
                 payload = self.read_json_body()
                 job = self.job_manager.start(payload.get("action", ""), payload.get("params") or {})
                 self.send_json({"job": job.to_dict(include_logs=True)}, status=201)

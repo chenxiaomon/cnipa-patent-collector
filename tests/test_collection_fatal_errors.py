@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, PropertyMock, patch
 
 import collect_fees
 import collect_fwxx
+import collection_checkpoint
+from collection_checkpoint import list_collection_batches, read_collection_batch
 
 
 def collection_arguments() -> Namespace:
@@ -26,6 +28,9 @@ class TestCollectionFatalErrors(unittest.TestCase):
         temporary_directory = TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
         self.checkpoint_file = Path(temporary_directory.name) / 'resume.txt'
+        directory_patch = patch.object(collection_checkpoint, 'COLLECTION_BATCHES_DIR', Path(temporary_directory.name) / 'batches')
+        directory_patch.start()
+        self.addCleanup(directory_patch.stop)
         for collector, constant in (
             (collect_fwxx, 'FWXX_COLLECTION_CHECKPOINT_FILE'),
             (collect_fees, 'FEE_COLLECTION_CHECKPOINT_FILE'),
@@ -92,6 +97,7 @@ class DetailBatchInterruptionCases:
         temporary_directory = TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
         self.checkpoint_file = Path(temporary_directory.name) / 'resume.txt'
+        self._patch(collection_checkpoint, 'COLLECTION_BATCHES_DIR', Path(temporary_directory.name) / 'batches')
         self._patch(self.collector, self.checkpoint_constant, self.checkpoint_file)
         self._patch(self.collector, self.target_loader, return_value=['A', 'B'])
         coordinates = self._patch(self.collector, 'CoordinateService')
@@ -154,6 +160,8 @@ class DetailBatchInterruptionCases:
 
         self.assertEqual(self.checkpoint_file.read_text(encoding='utf-8'), 'B\n')
         self.browser_service.launch_and_login.return_value.quit.assert_called_once()
+        batch = read_collection_batch(list_collection_batches()[0]['id'])
+        self.assertEqual([item['status'] for item in batch['items']], ['success', 'interrupted'])
 
     def test_failed_application_stays_in_resume_list_after_later_success(self):
         self.collect_one.side_effect = [None, {'captured': True}]
@@ -164,6 +172,26 @@ class DetailBatchInterruptionCases:
         self.assertEqual(self.collect_one.call_count, 2)
         self.logger_class.return_value.export_to_excel.assert_called_once()
         self.assertEqual(self.checkpoint_file.read_text(encoding='utf-8'), 'A\n')
+        batch = read_collection_batch(list_collection_batches()[0]['id'])
+        self.assertEqual([item['status'] for item in batch['items']], ['failed', 'success'])
+        self.assertTrue(batch['items'][0]['reason'])
+
+    def test_resume_keeps_original_batch_and_bypasses_target_loaders(self):
+        arguments = collection_arguments()
+        arguments.test = 1
+        getattr(self.collector, self.batch_collection)(arguments)
+        batch_id = list_collection_batches()[0]['id']
+        self.assertEqual(read_collection_batch(batch_id)['status'], 'paused')
+
+        arguments.test = None
+        arguments.resume_batch = batch_id
+        getattr(self.collector, self.batch_collection)(arguments)
+
+        getattr(self.collector, self.target_loader).assert_called_once()
+        self.assertEqual([call.kwargs['application_no'] for call in self.collect_one.call_args_list], ['A', 'B'])
+        self.assertEqual(len(list_collection_batches()), 1)
+        completed = read_collection_batch(batch_id)
+        self.assertEqual((completed['status'], len(completed['runs'])), ('completed', 2))
 
     def test_successful_batch_returns_normally_after_export(self):
         getattr(self.collector, self.batch_collection)(collection_arguments())

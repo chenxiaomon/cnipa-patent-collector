@@ -40,7 +40,7 @@ from atomic_write import write_json_atomic
 from browser_service import BrowserService
 from browser_utils import is_browser_alive, raise_system_exit_on_sigterm
 from collection_health import CollectionFailureStreak, CollectionFailureStreakExceeded
-from collection_checkpoint import CollectionCheckpoint
+from collection_checkpoint import CollectionBatch, CollectionBatchBusyError
 from cache_utils import (
     clear_cache_key,
     parse_app_no_list,
@@ -425,7 +425,10 @@ def run_fee_collection(args) -> None:
 
 def _run_fee_collection(args) -> None:
     """执行已取得桌面独占权的费用采集主循环。"""
-    test_count = args.test
+    if getattr(args, 'resume_batch', None):
+        with CollectionBatch.resume('fees', FEE_COLLECTION_CHECKPOINT_FILE, args.resume_batch) as checkpoint:
+            _collect_fee_batch(args, checkpoint)
+        return
     standalone_mode = bool(getattr(args, 'input', None) or getattr(args, 'app', None))
     retry_failed_mode = bool(getattr(args, 'retry_failed', False))
 
@@ -458,10 +461,14 @@ def _run_fee_collection(args) -> None:
             print("✓ 本次无采集目标（数据集为空或已全部采集，见上方统计）")
         return
 
-    checkpoint = CollectionCheckpoint(FEE_COLLECTION_CHECKPOINT_FILE, targets)
+    with CollectionBatch.create('fees', FEE_COLLECTION_CHECKPOINT_FILE, targets) as checkpoint:
+        _collect_fee_batch(args, checkpoint)
 
-    if test_count:
-        targets = targets[:test_count]
+
+def _collect_fee_batch(args, checkpoint: CollectionBatch) -> None:
+    targets = checkpoint.select_pending(args.test)
+
+    if args.test:
         print(f"📋 测试模式：仅采集前 {len(targets)} 个\n")
 
     driver = None
@@ -499,6 +506,7 @@ def _run_fee_collection(args) -> None:
                 raise DetailCollectionFatalError('浏览器进程意外退出，费用采集已中断')
 
             print(f"\n[{index}/{len(targets)}] 申请号: {application_no}")
+            checkpoint.record_started(application_no)
             fee_fields = collect_one_fee(
                 driver=driver,
                 application_no=application_no,
@@ -520,6 +528,7 @@ def _run_fee_collection(args) -> None:
                         'fee_persistence_failed',
                     )
                     failed_count += 1
+                    checkpoint.record_failure(application_no, '费用数据未写入专利主库，已保存未匹配备份')
                     failure_streak.record_failure()
                 elif not all(
                     stored_snapshot[field] is not None for field in _REQUIRED_FEE_PAYLOAD_FIELDS
@@ -531,6 +540,7 @@ def _run_fee_collection(args) -> None:
                         'incomplete_fee_payload',
                     )
                     failed_count += 1
+                    checkpoint.record_failure(application_no, '主库费用栏目仍不完整')
                     failure_streak.record_failure()
                 else:
                     print("  ✅ 主库费用栏目已完整")
@@ -549,6 +559,7 @@ def _run_fee_collection(args) -> None:
                     'no_fee_payload',
                 )
                 failed_count += 1
+                checkpoint.record_failure(application_no, '未采集到有效费用数据')
                 failure_streak.record_failure()
 
             if index % FWXX_ANTI_CRAWL_BATCH_SIZE == 0 and index < len(targets):
@@ -588,7 +599,7 @@ def _run_fee_collection(args) -> None:
     finally:
         if checkpoint.remaining_count:
             print(f"\n[*] 未完成 {checkpoint.remaining_count} 条，清单已保存: {FEE_COLLECTION_CHECKPOINT_FILE}")
-            print(f'    续跑命令: python collect_fees.py --input "{FEE_COLLECTION_CHECKPOINT_FILE}" --force')
+            print(f'    续跑命令: python collect_fees.py --resume-batch {checkpoint.id}')
         if driver:
             try:
                 driver.quit()
@@ -609,6 +620,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     target_source = parser.add_mutually_exclusive_group()
     target_source.add_argument('--input', type=str, help='独立模式：从文件读取申请号列表')
     target_source.add_argument('--app', type=str, help='独立模式：直接指定申请号，多个用逗号分隔')
+    target_source.add_argument('--resume-batch', metavar='ID', help='继续指定的未完成费用批次')
     target_source.add_argument(
         '--retry-failed',
         action='store_true',
@@ -644,7 +656,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         run_fee_collection(arguments)
-    except DetailCollectionDesktopBusyError as error:
+    except (DetailCollectionDesktopBusyError, CollectionBatchBusyError, ValueError) as error:
         print(f"\n[!] {error}", file=sys.stderr)
         return 2
     except CollectionFailureStreakExceeded as error:

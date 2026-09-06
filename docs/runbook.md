@@ -250,6 +250,18 @@ Windows 的 `upgrade.bat` 和 Dashboard 更新入口统一使用 HTTP 发布清�
 
 ### 采集中断后继续
 
+升级 r1 后，新启动的主采集、发文和费用采集均在本机 `data/collection_batches/` 保存独立批次。Dashboard「任务日志 → 采集批次」可查看总数、成功、失败、剩余申请号、失败原因和每轮执行记录，支持筛选及下载 JSON。历史不依赖 Dashboard 内存，重启后仍可读取；已有的旧任务不会补造历史。
+
+恢复浏览器和登录环境后，选择原批次并点击「继续未完成项」。它只重新处理尚未成功的申请号，在同一批次增加一轮记录；此前的失败原因仍保存在历史中。命令行也可使用日志中的完整批次 ID：
+
+```text
+python main_automation.py --resume-batch <批次ID>
+python collect_fwxx.py --resume-batch <批次ID>
+python collect_fees.py --resume-batch <批次ID>
+```
+
+仍在运行的批次不能重复续跑，已全部成功的批次无需续跑。进程意外退出但未写入结束状态时，读取历史会显示为中断；不要删除批次目录中的锁文件。批次记录和锁均不提交 GitHub，不会随代码更新转移到其他电脑，需要保留历史时将该目录纳入本机备份。
+
 三个采集器分别维护最新一批的恢复清单：主采集为 `data/checkpoint_resume.txt`，发文为 `data/checkpoint_fwxx.txt`，费用为 `data/checkpoint_fees.txt`。新批次会替换对应采集器的旧清单；每条成功写入数据库后才从清单移除，失败和未尝试项都会保留。清单是本机运行文件，不提交 GitHub。
 
 普通单条失败仍会继续处理后续申请号；完成本批导出后，只要本次选中的目标仍有失败项，任务就以失败状态结束。`--test N` 只限制本次执行数量，未选中的后续目标仍保留在清单中，不算本次失败。浏览器退出或用户中断同样不会被报告为正常完成。恢复浏览器和登录环境后，在项目 Python 环境执行对应命令：
@@ -260,7 +272,15 @@ python collect_fwxx.py --input data/checkpoint_fwxx.txt --force
 python collect_fees.py --input data/checkpoint_fees.txt --force
 ```
 
-日志也会输出包含绝对路径的续跑命令。清单内所有目标采集成功后，对应文件为空。
+以上 TXT 命令兼容旧清单，会创建新批次。需要延续现有批次历史时使用 `--resume-batch`。日志也会输出续跑命令；清单内所有目标采集成功后，对应文件为空。`--test N` 执行完成但仍有未选中目标时，批次显示为暂停。
+
+### 一键环境诊断
+
+在 Dashboard「系统配置 → 环境诊断」点击「开始诊断」，完成后可下载 JSON 报告。检查使用与 Dashboard 启动采集任务相同的 Python，涵盖解释器和依赖、Chrome 与现有驱动版本、本机代理端口、坐标配置及数据库目录和现有 DB/WAL/SHM 文件的权限。
+
+诊断对象是运行 Dashboard 服务的电脑。要排查公司 Windows 环境，必须在公司 Dashboard 上执行；Mac 上的诊断不能说明公司电脑是否正常。缺少、超时或不能确定的检查会单独显示，并给出处理建议。
+
+诊断不会启动浏览器、移动鼠标、访问国知局或打开专利数据库。存储检查只用独立临时文件测试目录写入，报告中的 `sqlite_write_tested` 固定为 `false`；它不证明真实 SQLite 事务、账号登录、页面坐标准确性或代理拦截协议均可用。非本机代理地址不会被探测，报告不会包含密码、Token 或专利记录。
 
 ### 首次升级到 2026.09.06
 
