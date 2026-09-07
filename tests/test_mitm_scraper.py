@@ -16,7 +16,7 @@ import io
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stdout
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -217,6 +217,12 @@ class TestProcessRecord(unittest.TestCase):
         self.addCleanup(patcher_logger.stop)
         self.mock_logger = self.mock_logger_cls.return_value
         self.mock_logger.get_processed_applications.return_value = set()
+        cache_lock_patcher = patch(
+            'patent_mitm_scraper.reserve_json_cache_updates',
+            side_effect=lambda _cache_file: nullcontext(),
+        )
+        cache_lock_patcher.start()
+        self.addCleanup(cache_lock_patcher.stop)
 
         from patent_mitm_scraper import PatentMITMScraper
         self.scraper = PatentMITMScraper()
@@ -544,6 +550,12 @@ class TestProcessFwxx(unittest.TestCase):
         patcher_logger = patch('patent_mitm_scraper.DetectionLogger')
         self.mock_logger_cls = patcher_logger.start()
         self.addCleanup(patcher_logger.stop)
+        cache_lock_patcher = patch(
+            'patent_mitm_scraper.reserve_json_cache_updates',
+            side_effect=lambda _cache_file: nullcontext(),
+        )
+        cache_lock_patcher.start()
+        self.addCleanup(cache_lock_patcher.stop)
 
         from patent_mitm_scraper import PatentMITMScraper
         self.scraper = PatentMITMScraper()
@@ -620,6 +632,12 @@ class TestProcessFeeInformation(unittest.TestCase):
         patcher_logger = patch('patent_mitm_scraper.DetectionLogger')
         patcher_logger.start()
         self.addCleanup(patcher_logger.stop)
+        cache_lock_patcher = patch(
+            'patent_mitm_scraper.reserve_json_cache_updates',
+            side_effect=lambda _cache_file: nullcontext(),
+        )
+        cache_lock_patcher.start()
+        self.addCleanup(cache_lock_patcher.stop)
 
         from patent_mitm_scraper import PatentMITMScraper
         self.scraper = PatentMITMScraper()

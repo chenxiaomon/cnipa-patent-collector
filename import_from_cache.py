@@ -21,8 +21,13 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from detection_logger import DetectionLogger, DetectionRecord
-from cache_utils import normalize_app_no, read_json_cache
+from cache_utils import normalize_app_no, read_json_cache, reserve_json_cache_updates
 from atomic_write import write_json_atomic
+from desktop_collection_lock import (
+    DetailCollectionDesktopBusyError,
+    reserve_detail_collection_desktop,
+    reserve_phase0_browser,
+)
 from settings import PATENT_CACHE_FILE, DETECTION_LOG_JSONL_FILE
 
 CACHE_FILE = str(PATENT_CACHE_FILE)
@@ -133,9 +138,9 @@ def clear_cache() -> bool:
 # 主导入逻辑
 # ============================================================================
 
-def import_from_cache() -> bool:
+def _import_cache_batch() -> bool:
     """
-    主导入函数：缓存 → DetectionRecord → 日志
+    导入一个已由调用方锁定的缓存批次：缓存 → DetectionRecord → 日志
 
     Returns:
         导入成功返回 True，否则 False
@@ -168,6 +173,7 @@ def import_from_cache() -> bool:
     imported = 0
     skipped = 0
     failed = 0
+    durable_batch_succeeded = False
     new_records = []
 
     print("\n[*] 开始导入...")
@@ -198,9 +204,12 @@ def import_from_cache() -> bool:
 
     try:
         imported = logger.add_records(new_records)
+        logger.refresh_jsonl_backup()
+        durable_batch_succeeded = True
     except Exception as e:
-        print(f"  [!] 批量写入失败: {e}")
+        print(f"  [!] 批量写入或 JSONL 备份刷新失败: {e}")
         failed += len(new_records)
+        imported = 0
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 步骤 3：统计和清理
@@ -215,14 +224,29 @@ def import_from_cache() -> bool:
     print(f"✗ 失败: {failed} 条")
     print(f"📈 总处理: {imported + skipped + failed} 条")
 
-    # 只要处理过（无论新增还是跳过）就清空缓存，避免旧数据下次重复扫描
-    if imported > 0 or skipped > 0:
+    batch_processed = imported > 0 or skipped > 0
+    batch_succeeded = durable_batch_succeeded and failed == 0
+    if batch_succeeded and batch_processed:
         print("\n[*] 清理缓存...")
-        clear_cache()
+        batch_succeeded = clear_cache()
+    elif not batch_succeeded:
+        print("\n[!] 本批次未完整导入，保留缓存以便重试")
 
     print("\n" + "="*70)
 
-    return imported > 0 or skipped > 0
+    return batch_succeeded and batch_processed
+
+
+def import_from_cache() -> bool:
+    """独占缓存和相关浏览器，在完整备份成功后清理本批缓存。"""
+    try:
+        with reserve_detail_collection_desktop("Phase 0 缓存导入"):
+            with reserve_phase0_browser("Phase 0 缓存导入"):
+                with reserve_json_cache_updates(CACHE_FILE):
+                    return _import_cache_batch()
+    except DetailCollectionDesktopBusyError as error:
+        print(f"\n[!] {error}")
+        return False
 
 
 # ============================================================================

@@ -182,7 +182,7 @@ echo replica > data/machine_role.txt
 uv run python sync.py init   # 仅 replica 从 JSONL 备份初始化 SQLite
 ```
 
-`init` 只接受 `git pull --ff-only` 成功后的备份；网络失败、分支分叉或合并冲突时停止，不导入数据库。需要离线恢复已核实的本地 JSONL 时，单独执行 `sync.py rebuild`。导入前会验证整份 JSONL，损坏行或无效申请号会使整次导入失败；旧版追加日志中的同申请号多条记录仍按文件顺序重放。
+`init` 只接受 `git pull --ff-only` 成功后的备份；网络失败、分支分叉或合并冲突时停止，不导入数据库。需要从已核实的本地 JSONL 恢复专利表时，单独执行 `sync.py rebuild`。导入前会验证整份 JSONL，空快照、损坏行或缺失申请号会使整次导入失败；单条完整快照中的显式 `null` 会精确恢复为空，旧版追加日志中的重复申请号则按当时的 SQLite 规则依次重放：普通字段的 `null` 保留旧非空值，错误信息可清空，费用数据按快照时间合并。重建从读取快照到事务提交全程与专利写入串行；健康数据库只替换 `patents`，不会清空费用目标、请求和采集失败记录。损坏数据库必须按故障恢复章节先停服务并移走主文件及 WAL/SHM，命令不会在线替换损坏文件。
 
 ### replica 拉取 master 增量
 
@@ -243,11 +243,11 @@ Windows 的 `upgrade.bat` 和 Dashboard 更新入口统一使用 HTTP 发布清�
 
 ### 同日修订、重启和同步对账
 
-`2026.09.06 r1` 的 `VERSION` 仍是 `2026.09.06`，`RELEASE_REVISION` 为 `1`。没有修订文件的旧安装按 `r0` 处理；旧更新检查只比较日期，因此首次安装 r1 不会自动提示新版本。
+`2026.09.06 r2` 的 `VERSION` 仍是 `2026.09.06`，`RELEASE_REVISION` 为 `2`。没有修订文件的旧安装按 `r0` 处理；旧更新检查只比较日期，因此首次安装带修订号的版本不会自动提示新版本。
 
 1. 在公司 master 停止采集、看门狗和代理，保留数据库备份。已安装 `2026.09.06` 的机器可直接运行 `upgrade.bat`，或点击 Dashboard「更新系统代码（HTTP）」；更早的部署按下方首次升级步骤操作。
 2. 更新完成后重启 Dashboard 和需要使用的代理。后续更新或回滚时，Dashboard 会区分「正在运行」和「已安装」修订，并提示待重启；修改磁盘上的代码不会自动替换正在运行的服务。
-3. 开发 replica 也升级到 r1 后，在 replica 项目环境执行 `python sync_pull_from_master.py --full`，或在「数据管理 → 多机同步」点击「从 master 全量对账」。它只把 master 的专利快照合并到 replica，不删除或修改 master 数据。
+3. 开发 replica 也升级到 r2 后，在 replica 项目环境执行 `python sync_pull_from_master.py --full`，或在「数据管理 → 多机同步」点击「从 master 全量对账」。它只把 master 的专利快照合并到 replica，不删除或修改 master 数据。
 4. 升级后的首次同步本身会自动全量对账一次。仍建议在两端都升级并重启后显式执行 `--full`，覆盖 replica 先升级、master 尚未升级期间的旧同步问题。同步生成的数据提交须检查后再推送 GitHub。
 
 同一副本机的增量同步和全量对账不能同时运行；重复启动会提示已有同步任务占用。不要删除正在使用的 `data/master_sync.lock` 文件。
@@ -303,7 +303,10 @@ python collect_fees.py --input data/checkpoint_fees.txt --force
 ### 无人值守采集与报警
 
 ```bash
-# 部署机：看门狗启动主采集
+# 部署机终端 1：启动主 MITM 代理
+uv run python start_mitm_proxy.py
+
+# 部署机终端 2：看门狗启动主采集
 uv run python collection_watchdog.py
 
 # replica：轮询部署机报警并转发到 ServerChan
@@ -322,6 +325,7 @@ SERVERCHAN_SENDKEY=... uv run python poll_master_alerts.py
 - [ ] 连续两个工作日从 replica 执行 `sync_pull_from_master.py`，确认第二次只拉当天增量，并分别 push 两个数据提交。
 - [ ] 发布带 `release_manifest.json` 的代码，执行一次真实 `fetch_update.py`，再用 `rollback.py` 恢复最近备份。
 - [ ] 在维护窗口终止受看门狗管理的浏览器进程，确认采集任务被重新启动。
+- [ ] 不设置 `USE_MITM_PROXY` 直接启动看门狗：先关闭主 MITM，确认看门狗报警退出且没有创建批次；再启动主 MITM，运行少量真实申请号并确认数据落库。
 - [ ] 配置 `SERVERCHAN_SENDKEY`，触发测试报警并确认手机实际收到通知。
 - [ ] 确认部署机 `data/api_token.txt` 存在且仅当前用户可读，所有写操作无 token 时返回 401。
 
@@ -519,17 +523,43 @@ USE_MITM_PROXY=true python main_automation.py
 - 非正常断电导致数据库页损坏
 
 **恢复**:
-```bash
-# 先停止采集并检查数据库
-sqlite3 data/patents.db 'PRAGMA integrity_check;'
 
-# replica 可从 Git JSONL 备份重建
-uv run python sync.py rebuild
+优先恢复最新完整 `.db` 备份，因为 JSONL 不含费用目标、请求和采集失败记录。执行任何文件恢复前，先停止 Dashboard、两个 MITM、看门狗和全部采集进程。损坏库不能直接运行 `sync.py rebuild` 在线覆盖。
 
-# master 默认禁止重建；先保留损坏库，再由人工确认风险后执行
-cp data/patents.db data/patents.db.corrupt
-uv run python sync.py rebuild --force --i-know-this-is-master
+Windows PowerShell 中先把主文件和 sidecar 一起移到项目外的备份目录；以下命令只展示文件处理顺序，`D:\cnipa-db-corrupt` 应换成实际备份位置：
+
+```powershell
+New-Item -ItemType Directory -Force D:\cnipa-db-corrupt
+Move-Item data\patents.db D:\cnipa-db-corrupt\
+if (Test-Path data\patents.db-wal) { Move-Item data\patents.db-wal D:\cnipa-db-corrupt\ }
+if (Test-Path data\patents.db-shm) { Move-Item data\patents.db-shm D:\cnipa-db-corrupt\ }
+if (Test-Path data\patents.db-journal) { Move-Item data\patents.db-journal D:\cnipa-db-corrupt\ }
 ```
+
+首先恢复最新的完整 SQLite 备份。先检查备份完整性；只有输出 `[('ok',)]` 且命令成功时才复制：
+
+```powershell
+$backup = Get-ChildItem data\results\detection_log_backup_*.db |
+  Sort-Object LastWriteTime -Descending |
+  Select-Object -First 1
+if ($null -eq $backup) { throw '未找到完整 SQLite 备份' }
+
+.\.venv\Scripts\python.exe -c "import sqlite3,sys; checks=sqlite3.connect(sys.argv[1]).execute('PRAGMA integrity_check').fetchall(); print(checks); raise SystemExit(checks != [('ok',)])" $backup.FullName
+if ($LASTEXITCODE -ne 0) { throw '备份完整性检查失败，请检查下一份备份' }
+Copy-Item $backup.FullName data\patents.db
+```
+
+仅在没有可用的完整 SQLite 备份时，才从 Git JSONL 恢复。这条路径只恢复 `patents` 表：
+
+```powershell
+# replica 从 Git JSONL 仅恢复 patents 表
+.\.venv\Scripts\python.exe sync.py rebuild
+
+# master 须保留双重危险确认参数
+.\.venv\Scripts\python.exe sync.py rebuild --force --i-know-this-is-master
+```
+
+恢复完成并确认 `PRAGMA integrity_check` 返回 `ok` 后，才能重启 Dashboard、MITM 和采集任务。不要把旧 WAL/SHM 放回新数据库旁边。
 
 ---
 

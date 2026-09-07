@@ -72,6 +72,22 @@ class TestVisibleJobs(unittest.TestCase):
         self.assertIs(job_manager._start_conflict_locked('main_full'), update_job)
         self.assertIs(job_manager._start_conflict_locked('upgrade_code'), update_job)
 
+    def test_phase0_browser_and_cache_import_conflict_both_ways(self):
+        job_manager = web_dashboard.JobManager()
+        browser_job = web_dashboard.Job(
+            'phase0', 'phase0_browser', 'Phase 0 浏览器', ['python', 'start_browser_for_phase0.py'],
+        )
+        job_manager._jobs[browser_job.id] = browser_job
+        self.assertIs(job_manager._start_conflict_locked('import_cache'), browser_job)
+
+        job_manager._jobs.clear()
+        import_job = web_dashboard.Job(
+            'importing', 'import_cache', '导入 MITM 缓存', ['python', 'import_from_cache.py'],
+        )
+        job_manager._jobs[import_job.id] = import_job
+        self.assertIs(job_manager._start_conflict_locked('phase0_browser'), import_job)
+        self.assertIs(job_manager._start_conflict_locked('import_cache'), import_job)
+
     def test_rejected_manual_batch_creates_no_request_file(self):
         job_manager = web_dashboard.JobManager()
         collection_job = web_dashboard.Job(

@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -27,6 +28,8 @@ from desktop_collection_lock import (
 from main_collection_targets import select_main_collection_targets
 from settings import (
     BASE_DIR,
+    MITM_HOST,
+    MITM_PORT,
     WATCHDOG_FAILURE_THRESHOLD,
     WATCHDOG_HEARTBEAT_TIMEOUT_SECONDS,
     WATCHDOG_MAX_RESTARTS,
@@ -43,13 +46,28 @@ def _request_stop(signum, frame) -> None:
 
 
 def heartbeat_age_seconds(heartbeat: dict | None) -> float | None:
-    if not heartbeat or not heartbeat.get('timestamp'):
+    """Return the age of state validated by read_collection_heartbeat."""
+    if heartbeat is None:
         return None
-    try:
-        timestamp = datetime.fromisoformat(str(heartbeat['timestamp']).replace('Z', '+00:00'))
-    except ValueError:
-        return None
+    timestamp = datetime.fromisoformat(heartbeat['timestamp'].replace('Z', '+00:00'))
     return max(0.0, (datetime.now(timezone.utc) - timestamp).total_seconds())
+
+
+class CollectionHeartbeatDeadline:
+    """Track elapsed time monotonically; only newer valid timestamps renew it."""
+
+    def __init__(self):
+        self._last_heartbeat_at = time.monotonic()
+        self._latest_timestamp: datetime | None = None
+
+    def elapsed_seconds(self, heartbeat: dict | None) -> float:
+        observed_at = time.monotonic()
+        if heartbeat is not None:
+            timestamp = datetime.fromisoformat(heartbeat['timestamp'].replace('Z', '+00:00'))
+            if self._latest_timestamp is None or timestamp > self._latest_timestamp:
+                self._latest_timestamp = timestamp
+                self._last_heartbeat_at = observed_at - heartbeat_age_seconds(heartbeat)
+        return max(0.0, observed_at - self._last_heartbeat_at)
 
 
 def terminate_process_tree(process: subprocess.Popen) -> None:
@@ -85,10 +103,23 @@ def collection_command(batch_id: str) -> list[str]:
     return [sys.executable, '-u', str(BASE_DIR / 'main_automation.py'), '--resume-batch', batch_id]
 
 
+def require_main_mitm_proxy() -> None:
+    try:
+        with socket.create_connection((MITM_HOST, MITM_PORT), timeout=2):
+            return
+    except OSError as exc:
+        raise ConnectionError(
+            f'MITM 代理 {MITM_HOST}:{MITM_PORT} 未响应；'
+            '请先启动：uv run python start_mitm_proxy.py'
+        ) from exc
+
+
 def start_collection_process(batch_id: str) -> subprocess.Popen:
+    collection_environment = os.environ.copy()
+    collection_environment['USE_MITM_PROXY'] = 'true'
     popen_kwargs = {
         'cwd': str(BASE_DIR),
-        'env': os.environ.copy(),
+        'env': collection_environment,
         'stdin': subprocess.DEVNULL,
     }
     if sys.platform == 'win32':
@@ -98,7 +129,10 @@ def start_collection_process(batch_id: str) -> subprocess.Popen:
     return subprocess.Popen(collection_command(batch_id), **popen_kwargs)
 
 
-def supervision_failure(process: subprocess.Popen) -> tuple[str, str] | None:
+def supervision_failure(
+    process: subprocess.Popen,
+    heartbeat_deadline: CollectionHeartbeatDeadline,
+) -> tuple[str, str] | None:
     login_alert = read_alert_status()
     if login_alert.get('reason') == 'login_required':
         return 'login_required', login_alert['details']
@@ -106,10 +140,10 @@ def supervision_failure(process: subprocess.Popen) -> tuple[str, str] | None:
     if free_gb < WATCHDOG_MIN_FREE_GB:
         return 'disk_space_low', f'磁盘剩余 {free_gb:.2f} GB，阈值 {WATCHDOG_MIN_FREE_GB:.2f} GB'
     heartbeat = read_collection_heartbeat()
-    age = heartbeat_age_seconds(heartbeat)
-    if age is not None and age > WATCHDOG_HEARTBEAT_TIMEOUT_SECONDS:
+    age = heartbeat_deadline.elapsed_seconds(heartbeat)
+    if age > WATCHDOG_HEARTBEAT_TIMEOUT_SECONDS:
         return 'heartbeat_timeout', f'采集心跳已中断 {int(age)} 秒'
-    consecutive_failures = int((heartbeat or {}).get('consecutive_failures') or 0)
+    consecutive_failures = heartbeat['consecutive_failures'] if heartbeat is not None else 0
     if consecutive_failures >= WATCHDOG_FAILURE_THRESHOLD:
         return 'consecutive_failures', f'连续采集失败 {consecutive_failures} 条'
     if process.poll() is not None and process.returncode != 0:
@@ -118,6 +152,8 @@ def supervision_failure(process: subprocess.Popen) -> tuple[str, str] | None:
 
 
 def run_supervised_collection() -> int:
+    global _stop_requested
+    _stop_requested = False
     signal.signal(signal.SIGTERM, _request_stop)
     signal.signal(signal.SIGINT, _request_stop)
     try:
@@ -129,6 +165,7 @@ def run_supervised_collection() -> int:
                     write_collection_stopped_heartbeat(0, 0)
                     print('[watchdog] 没有待采集申请号。')
                     return 0
+                require_main_mitm_proxy()
                 batch_id = CollectionBatch.prepare('main', pending)
             print(f'[watchdog] 本次采集批次: {batch_id}，目标数={len(pending)}')
             return _supervise_collection_batch(batch_id)
@@ -142,23 +179,26 @@ def _supervise_collection_batch(batch_id: str) -> int:
     restart_count = 0
     while not _stop_requested:
         write_collection_start_heartbeat(0)
+        heartbeat_deadline = CollectionHeartbeatDeadline()
         process = start_collection_process(batch_id)
-        print(f'[watchdog] 采集进程已启动，PID={process.pid}，重启次数={restart_count}')
-        failure: tuple[str, str] | None = None
-        while not _stop_requested:
-            failure = supervision_failure(process)
-            if failure:
-                break
-            if process.poll() == 0:
-                batch = read_collection_batch(batch_id)
-                if batch['status'] == 'completed' and batch['remaining'] == 0:
-                    clear_collection_alert()
-                    print(f'[watchdog] 采集批次 {batch_id} 已全部完成。')
-                    return 0
-                failure = ('batch_incomplete', f"批次 {batch_id} 未完成，剩余 {batch['remaining']} 条")
-                break
-            time.sleep(2)
-        terminate_process_tree(process)
+        try:
+            print(f'[watchdog] 采集进程已启动，PID={process.pid}，重启次数={restart_count}')
+            failure: tuple[str, str] | None = None
+            while not _stop_requested:
+                failure = supervision_failure(process, heartbeat_deadline)
+                if failure:
+                    break
+                if process.poll() == 0:
+                    batch = read_collection_batch(batch_id)
+                    if batch['status'] == 'completed' and batch['remaining'] == 0:
+                        clear_collection_alert()
+                        print(f'[watchdog] 采集批次 {batch_id} 已全部完成。')
+                        return 0
+                    failure = ('batch_incomplete', f"批次 {batch_id} 未完成，剩余 {batch['remaining']} 条")
+                    break
+                time.sleep(2)
+        finally:
+            terminate_process_tree(process)
         if _stop_requested:
             print('[watchdog] 收到停止请求，采集进程树已终止。')
             return 0

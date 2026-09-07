@@ -24,7 +24,12 @@ from detail_attempt import (
     read_detail_attempt_marker,
 )
 from detection_logger import DetectionLogger
-from cache_utils import normalize_app_no, read_json_cache, write_json_cache
+from cache_utils import (
+    normalize_app_no,
+    read_json_cache,
+    reserve_json_cache_updates,
+    write_json_cache,
+)
 from settings import (
     AGENCY_UNMATCHED_FILE,
     FORCE_UPDATE_FLAG,
@@ -216,9 +221,10 @@ class PatentMITMScraper:
 
             # 加锁：读-改-写必须原子，防止并发回调互相覆盖
             with self._cache_lock:
-                cache_data = read_json_cache(cache_file)
-                cache_data[application_no] = patent_data
-                write_json_cache(cache_file, cache_data)
+                with reserve_json_cache_updates(cache_file):
+                    cache_data = read_json_cache(cache_file)
+                    cache_data[application_no] = patent_data
+                    write_json_cache(cache_file, cache_data)
 
             self.processed_count += 1
             print(f"  [✓] 已缓存: {application_no} - {api_record.get('zhuanlimc', 'N/A')}")
@@ -278,9 +284,10 @@ class PatentMITMScraper:
                             and app_no == bound_detail_attempt['application_no']
                         ):
                             for cache_file, captured_fields in self._pending_detail_fields.items():
-                                detail_cache = read_json_cache(cache_file)
-                                detail_cache[app_no] = captured_fields
-                                write_json_cache(cache_file, detail_cache)
+                                with reserve_json_cache_updates(cache_file):
+                                    detail_cache = read_json_cache(cache_file)
+                                    detail_cache[app_no] = captured_fields
+                                    write_json_cache(cache_file, detail_cache)
                             if self._pending_detail_fields:
                                 print(f'[✓] 官方身份已确认，详情预加载数据已缓存: {app_no}')
                         self._pending_detail_fields.clear()
@@ -371,9 +378,10 @@ class PatentMITMScraper:
                 'persistence_status': persistence_status,
             }
             with self._cache_lock:
-                agency_cache = read_json_cache(cache_file)
-                agency_cache[app_no] = acknowledgement
-                write_json_cache(cache_file, agency_cache)
+                with reserve_json_cache_updates(cache_file):
+                    agency_cache = read_json_cache(cache_file)
+                    agency_cache[app_no] = acknowledgement
+                    write_json_cache(cache_file, agency_cache)
         except Exception as e:
             print(f'[!] 写入代理机构确认回执失败: {e}')
 
@@ -414,9 +422,10 @@ class PatentMITMScraper:
                 **agency_fields,
             }
             with self._cache_lock:
-                unmatched_payload = read_json_cache(backup_file)
-                unmatched_payload.setdefault('records', []).append(unmatched_record)
-                write_json_cache(backup_file, unmatched_payload)
+                with reserve_json_cache_updates(backup_file):
+                    unmatched_payload = read_json_cache(backup_file)
+                    unmatched_payload.setdefault('records', []).append(unmatched_record)
+                    write_json_cache(backup_file, unmatched_payload)
         except Exception as e:
             # 备份失败不能打断 mitm 响应链路
             print(f'[!] 写入代理机构 unmatched 失败: {e}')
@@ -587,9 +596,10 @@ class PatentMITMScraper:
             if application_no != attempt['application_no']:
                 return False
             metadata[_DETAIL_TARGET_METADATA_KEY] = application_no
-            detail_cache = read_json_cache(cache_file)
-            detail_cache[application_no] = captured_fields
-            write_json_cache(cache_file, detail_cache)
+            with reserve_json_cache_updates(cache_file):
+                detail_cache = read_json_cache(cache_file)
+                detail_cache[application_no] = captured_fields
+                write_json_cache(cache_file, detail_cache)
             return True
 
     @staticmethod

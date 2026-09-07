@@ -2,12 +2,17 @@
 # -*- coding: utf-8 -*-
 
 import unittest
+from contextlib import nullcontext
 from unittest.mock import patch
 
 from tests.test_mitm_scraper import _json_body, _verified_detail_flow
 
 
 class TestEmptyFwxxCache(unittest.TestCase):
+    @patch(
+        "patent_mitm_scraper.reserve_json_cache_updates",
+        side_effect=lambda _cache_file: nullcontext(),
+    )
     @patch("patent_mitm_scraper.read_detail_attempt_marker", return_value={
         "application_no": "2026102909420", "attempt_id": "attempt-current",
     })
@@ -20,6 +25,7 @@ class TestEmptyFwxxCache(unittest.TestCase):
         read_cache,
         write_cache,
         _attempt_marker,
+        _cache_reservation,
     ):
         from patent_mitm_scraper import PatentMITMScraper
 

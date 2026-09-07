@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import math
 import mimetypes
 import os
 import re
@@ -25,7 +26,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -36,6 +37,7 @@ from settings import (
     AGENCY_VERIFICATION_REPORT_CSV_FILE,
     AGENCY_VERIFICATION_REPORT_JSON_FILE,
     BASE_DIR,
+    BUSINESS_TIMEZONE,
     COMPANY_META_FILE,
     CONFIG_FILE,
     CONFIG_FWXX_FILE,
@@ -53,7 +55,12 @@ from settings import (
     CNIPA_LOGIN_WAIT_SECONDS,
 )
 from db_manager import PatentsDB
-from cache_utils import normalize_app_no, parse_app_no_list, parse_timestamp
+from cache_utils import (
+    is_supported_cn_application_no,
+    normalize_app_no,
+    parse_app_no_list,
+    parse_timestamp,
+)
 from collection_watchdog import terminate_process_tree
 from payment_obligations import build_agency_arrears_ranking
 from machine_identity import MASTER_ROLE, read_machine_role
@@ -77,9 +84,66 @@ MAX_COMPLETED_JOBS = 40
 # 传给采集子进程的登录等待时间，与 settings.CNIPA_LOGIN_WAIT_SECONDS 保持一致
 DEFAULT_LOGIN_WAIT_SECONDS = str(int(CNIPA_LOGIN_WAIT_SECONDS))
 MAX_BODY_BYTES = 1 * 1024 * 1024   # 1 MB：防止超大请求体撑爆内存
+# JSONL 备份明显大于普通控制请求；独立留出完整导入容量并约束一次性内存占用。
+MAX_DELTA_IMPORT_BYTES = 128 * 1024 * 1024
 MAX_REQUEST_APP_NOS = 500           # 单次提交申请号上限
 MAX_NOTE_LEN = 500                  # 备注字段长度上限
 _SAFE_ID_RE = re.compile(r'^[0-9a-f\-]{8,36}$')
+_DELTA_IMPORT_LIST_FIELDS = {
+    "fwxx_list",
+    "payable_fee_records",
+    "late_fee_schedule_records",
+    "paid_fee_records",
+    "fee_receipt_dispatch_records",
+}
+_DELTA_IMPORT_OBJECT_FIELDS = {"bhsjtzs_data"}
+_DELTA_IMPORT_INTEGER_FIELDS = {"status_code"}
+_DELTA_IMPORT_NUMBER_FIELDS = {"response_time_ms"}
+_DELTA_IMPORT_BOOLEAN_FIELDS = {"detected"}
+_DELTA_IMPORT_TEXT_FIELDS = {
+    "response_summary",
+    "timestamp",
+    "error_message",
+    "famingzlsqgbg",
+    "shouquanggh",
+    "zhuanlimc",
+    "shenqingrxm",
+    "zhuanlilx",
+    "shenqingr",
+    "gongkaiggh",
+    "falvzt",
+    "gongkaiggr",
+    "shouquanggr",
+    "zhufenlh",
+    "anjianbh",
+    "anjianywzt",
+    "bhsjtzs_xiazaisj",
+    "fwxx_collected_at",
+    "fee_snapshot_at",
+    "previous_status",
+    "daili_jg",
+    "daili_r",
+    "_sync_updated_at",
+}
+_DELTA_IMPORT_FIELDS = {
+    "application_no",
+    *_DELTA_IMPORT_LIST_FIELDS,
+    *_DELTA_IMPORT_OBJECT_FIELDS,
+    *_DELTA_IMPORT_INTEGER_FIELDS,
+    *_DELTA_IMPORT_NUMBER_FIELDS,
+    *_DELTA_IMPORT_BOOLEAN_FIELDS,
+    *_DELTA_IMPORT_TEXT_FIELDS,
+}
+_DELTA_IMPORT_CORE_FIELDS = _DELTA_IMPORT_FIELDS - {
+    "application_no",
+    "response_time_ms",
+    "detected",
+    "timestamp",
+    "previous_status",
+    "_sync_updated_at",
+}
+_SQLITE_INTEGER_MIN = -(2 ** 63)
+_SQLITE_INTEGER_MAX = 2 ** 63 - 1
 DESKTOP_BROWSER_ACTIONS = {
     "resume_collection_batch",
     "main_full",
@@ -105,6 +169,11 @@ DESKTOP_BROWSER_ACTIONS = {
 PUBLIC_BROWSER_COMPANION_ACTIONS = {
     "public_browser",
     "public_auto_paginate",
+}
+
+PHASE0_CACHE_ACTIONS = {
+    "phase0_browser",
+    "import_cache",
 }
 
 CODE_MAINTENANCE_ACTIONS = {"upgrade_code", "fetch_update"}
@@ -202,6 +271,128 @@ def safe_json_load(path: Path, default: Any) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return default
+
+
+def _reject_non_finite_json_number(raw_number: str) -> None:
+    raise ValueError(f"JSON 数字 {raw_number} 不是有限值")
+
+
+def _parse_finite_json_float(raw_number: str) -> float:
+    number = float(raw_number)
+    if not math.isfinite(number):
+        _reject_non_finite_json_number(raw_number)
+    return number
+
+
+def _delta_record_has_core_field(record: dict) -> bool:
+    """A present core field may intentionally clear an existing value with null."""
+    return bool(record.keys() & _DELTA_IMPORT_CORE_FIELDS)
+
+
+def _validate_delta_import_record(record: dict, line_number: int) -> dict:
+    unknown_fields = sorted(set(record) - _DELTA_IMPORT_FIELDS)
+    if unknown_fields:
+        raise ValueError(
+            f"增量文件第 {line_number} 行包含未知字段 {unknown_fields[0]!r}，未导入任何记录"
+        )
+
+    application_no = record.get("application_no")
+    if (
+        not isinstance(application_no, str)
+        or not is_supported_cn_application_no(application_no)
+    ):
+        raise ValueError(
+            f"增量文件第 {line_number} 行缺少有效申请号，未导入任何记录"
+        )
+
+    for field_name in _DELTA_IMPORT_LIST_FIELDS:
+        value = record.get(field_name)
+        if value is not None and (
+            not isinstance(value, list)
+            or any(not isinstance(item, dict) for item in value)
+        ):
+            raise ValueError(
+                f"增量文件第 {line_number} 行字段 {field_name!r} 必须是对象列表或 null，未导入任何记录"
+            )
+    for field_name in _DELTA_IMPORT_OBJECT_FIELDS:
+        value = record.get(field_name)
+        if value is not None and not isinstance(value, dict):
+            raise ValueError(
+                f"增量文件第 {line_number} 行字段 {field_name!r} 必须是对象或 null，未导入任何记录"
+            )
+    for field_name in _DELTA_IMPORT_INTEGER_FIELDS:
+        value = record.get(field_name)
+        if value is not None and (
+            type(value) is not int
+            or not _SQLITE_INTEGER_MIN <= value <= _SQLITE_INTEGER_MAX
+        ):
+            raise ValueError(
+                f"增量文件第 {line_number} 行字段 {field_name!r} 必须是整数或 null，未导入任何记录"
+            )
+    for field_name in _DELTA_IMPORT_NUMBER_FIELDS:
+        value = record.get(field_name)
+        if value is not None and (
+            type(value) not in {int, float}
+            or (type(value) is int and not _SQLITE_INTEGER_MIN <= value <= _SQLITE_INTEGER_MAX)
+            or (type(value) is float and not math.isfinite(value))
+        ):
+            raise ValueError(
+                f"增量文件第 {line_number} 行字段 {field_name!r} 必须是有限数字或 null，未导入任何记录"
+            )
+    for field_name in _DELTA_IMPORT_BOOLEAN_FIELDS:
+        value = record.get(field_name)
+        if value is not None and not (
+            type(value) is bool or type(value) is int and value in {0, 1}
+        ):
+            raise ValueError(
+                f"增量文件第 {line_number} 行字段 {field_name!r} 必须是布尔值、0、1 或 null，未导入任何记录"
+            )
+        if type(value) is int:
+            record[field_name] = bool(value)
+    for field_name in _DELTA_IMPORT_TEXT_FIELDS:
+        value = record.get(field_name)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(
+                f"增量文件第 {line_number} 行字段 {field_name!r} 必须是文本或 null，未导入任何记录"
+            )
+
+    if not _delta_record_has_core_field(record):
+        raise ValueError(
+            f"增量文件第 {line_number} 行只有申请号或同步元数据，未导入任何记录"
+        )
+    record["application_no"] = normalize_app_no(application_no)
+    return record
+
+
+def parse_delta_import_records(body: str) -> list[dict]:
+    """Validate a complete NDJSON delta before it reaches the database."""
+    records: list[dict] = []
+    for line_number, raw_line in enumerate(body.splitlines(), 1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(
+                line,
+                parse_constant=_reject_non_finite_json_number,
+                parse_float=_parse_finite_json_float,
+            )
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"增量文件第 {line_number} 行 JSON 格式不正确，未导入任何记录"
+            ) from exc
+        except ValueError as exc:
+            raise ValueError(
+                f"增量文件第 {line_number} 行包含无效数字：{exc}，未导入任何记录"
+            ) from exc
+        if not isinstance(record, dict):
+            raise ValueError(
+                f"增量文件第 {line_number} 行必须是 JSON 对象，未导入任何记录"
+            )
+        records.append(_validate_delta_import_record(record, line_number))
+    if not records:
+        raise ValueError("增量文件不包含可导入记录，未导入任何记录")
+    return records
 
 
 def count_lines(path: Path) -> int:
@@ -407,6 +598,13 @@ class JobManager:
             job for job in self._jobs.values()
             if job.status in {"running", "stopping"}
         ]
+        if action in PHASE0_CACHE_ACTIONS:
+            phase0_job = next((
+                job for job in active_jobs
+                if job.action in PHASE0_CACHE_ACTIONS
+            ), None)
+            if phase0_job is not None:
+                return phase0_job
         if action in CODE_MAINTENANCE_ACTIONS:
             return next((
                 job for job in active_jobs
@@ -777,7 +975,7 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
     if action == "analyze_recent":
         return {"action": action, "title": "分析采集状态", "command": [py, "-u", "analyze_collection_status.py"]}
     if action == "db_rebuild":
-        # 从 detection_log.jsonl 重建 patents.db（DB 损坏或迁移场景）
+        # 从 detection_log.jsonl 精确恢复健康数据库的专利表。
         return {"action": action, "title": "从 JSONL 重建 DB", "command": [py, "-u", "sync.py", "rebuild"]}
     if action == "sync_status":
         return {"action": action, "title": "查看同步状态", "command": [py, "-u", "sync.py", "status"]}
@@ -1557,7 +1755,7 @@ HTML = r"""<!doctype html>
           <div class="button-row">
             <button class="btn secondary" data-action="db_rebuild">从 JSONL 重建 DB</button>
           </div>
-          <div class="hint" style="margin-top:6px">patents.db 损坏或迁移时，从 detection_log.jsonl 重建</div>
+          <div class="hint" style="margin-top:6px">从 detection_log.jsonl 精确恢复专利表；损坏库须先按运行手册离线处理</div>
         </article>
       </section>
       <article class="panel" style="margin-bottom:14px">
@@ -2362,15 +2560,22 @@ function fmtBytes(b) {
   return (b / 1048576).toFixed(1) + ' MB';
 }
 
+function timestampDate(v) {
+  const isoTimestamp = String(v).trim().replace(' ', 'T');
+  // Historic timestamps without an offset were written in UTC.
+  const naiveTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(isoTimestamp);
+  return new Date(naiveTimestamp ? isoTimestamp + 'Z' : isoTimestamp);
+}
+
 function shortTime(v) {
   if (!v) return '—';
-  const d = new Date(v);
-  return isNaN(d.getTime()) ? v : d.toLocaleString('zh-CN', { hour12: false });
+  const d = timestampDate(v);
+  return isNaN(d.getTime()) ? v : d.toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' });
 }
 
 function relTime(v) {
   if (!v) return '—';
-  const diff = Date.now() - new Date(v).getTime();
+  const diff = Date.now() - timestampDate(v).getTime();
   if (diff < 60000)    return '刚刚';
   if (diff < 3600000)  return Math.floor(diff / 60000) + ' 分钟前';
   if (diff < 86400000) return Math.floor(diff / 3600000) + ' 小时前';
@@ -3573,13 +3778,13 @@ function renderApplicantCheckboxes(filter) {
 
 function collectExportFilters() {
   const applicants = Array.from(selectedExportApplicants);
-  // date input 是 YYYY-MM-DD；采集时间转 ISO（含 Z），业务日期保持 YYYY-MM-DD
+  // 日期由服务端按北京时间解释，避免浏览器所在时区改变筛选范围。
   const tsFrom = $('#exportTsFrom').value;
   const tsTo = $('#exportTsTo').value;
   return {
     applicants,
-    timestamp_from: tsFrom ? tsFrom + 'T00:00:00Z' : '',
-    timestamp_to:   tsTo ? tsTo + 'T23:59:59Z' : '',
+    timestamp_from: tsFrom,
+    timestamp_to:   tsTo,
     notice_name_contains: $('#exportNoticeName').value.trim(),
     notice_from: $('#exportNoticeFrom').value,
     notice_to: $('#exportNoticeTo').value,
@@ -3718,7 +3923,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"applicants": applicants})
             elif path == "/api/agency-arrears":
                 # 按需触发，不并入 build_summary 的 TTL 缓存（前端每 5 秒轮询那条）
-                analysis_date = date.today()
+                analysis_date = utc_now().astimezone(BUSINESS_TIMEZONE).date()
                 self.send_json({
                     "analysis_date": analysis_date.isoformat(),
                     "agencies": build_agency_arrears_ranking(
@@ -4032,8 +4237,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif path == "/api/export/excel-filtered":
                 payload = self.read_json_body()
                 applicants = payload.get("applicants") or None
-                ts_from    = payload.get("timestamp_from") or None
-                ts_to      = payload.get("timestamp_to") or None
+                ts_from    = payload.get("timestamp_from")
+                ts_to      = payload.get("timestamp_to")
                 rej_from   = payload.get("rejection_from") or None
                 rej_to     = payload.get("rejection_to") or None
                 notice_name = str(payload.get("notice_name_contains") or "").strip() or None
@@ -4071,17 +4276,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if not self.is_operator:
                     self.send_json({"error": "仅操作员可导入数据"}, status=403)
                     return
-                length = int(self.headers.get("Content-Length", 0))
-                body = self.rfile.read(length).decode("utf-8")
-                records, bad = [], 0
-                for line in body.splitlines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        records.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        bad += 1
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                if length <= 0:
+                    raise ValueError("增量文件为空，未导入任何记录")
+                if length > MAX_DELTA_IMPORT_BYTES:
+                    self.send_json(
+                        {"error": f"增量文件超过大小限制（最大 {MAX_DELTA_IMPORT_BYTES // (1024 * 1024)} MB）"},
+                        status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    )
+                    return
+                raw_body = self.rfile.read(length)
+                if len(raw_body) != length:
+                    raise ValueError("增量文件上传不完整，未导入任何记录")
+                try:
+                    body = raw_body.decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise ValueError("增量文件必须使用 UTF-8 编码，未导入任何记录") from exc
+                records = parse_delta_import_records(body)
                 import_summary = _patents_db.summarize_record_import(records)
                 if read_machine_role() == MASTER_ROLE and self.headers.get('X-CNIPA-Merge-Confirmed') != 'yes':
                     self.send_json({
@@ -4090,8 +4301,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         "summary": import_summary,
                     }, status=409)
                     return
-                imported = _patents_db.upsert_batch(records)
-                self.send_json({"ok": True, "imported": imported, "bad_lines": bad, "summary": import_summary})
+                imported = _patents_db.apply_master_delta(records)
+                self.send_json({"ok": True, "imported": imported, "bad_lines": 0, "summary": import_summary})
             elif path == "/api/import/agency":
                 if not self.is_operator:
                     self.send_json({"error": "仅操作员可导入数据"}, status=403)

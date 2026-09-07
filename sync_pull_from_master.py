@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import http.client
 import json
 import os
 import shutil
@@ -102,30 +103,47 @@ def fetch_master_delta(master_url: str, since: str) -> tuple[list[dict], int]:
     )
     records: list[dict] = []
     bad_lines = 0
-    with urllib.request.urlopen(request, timeout=60) as response:
-        for raw_line in response:
-            line = raw_line.decode('utf-8').strip()
-            if not line:
-                continue
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            declared_length = response.headers.get('Content-Length')
             try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                bad_lines += 1
-                continue
-            if not isinstance(record, dict):
-                bad_lines += 1
-                continue
-            app_no = normalize_app_no(record.get('application_no'))
-            try:
-                sync_updated_at = normalize_sync_cursor(record.get(SYNC_CURSOR_FIELD))
-            except ValueError:
-                sync_updated_at = ''
-            if not app_no or not sync_updated_at:
-                bad_lines += 1
-                continue
-            record['application_no'] = app_no
-            record[SYNC_CURSOR_FIELD] = sync_updated_at
-            records.append(record)
+                expected_bytes = int(declared_length)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError('master 增量响应缺少有效的 Content-Length，无法确认响应完整性。') from exc
+            if expected_bytes < 0:
+                raise RuntimeError('master 增量响应的 Content-Length 无效，无法确认响应完整性。')
+
+            received_bytes = 0
+            for raw_line in response:
+                received_bytes += len(raw_line)
+                line = raw_line.decode('utf-8').strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    bad_lines += 1
+                    continue
+                if not isinstance(record, dict):
+                    bad_lines += 1
+                    continue
+                app_no = normalize_app_no(record.get('application_no'))
+                try:
+                    sync_updated_at = normalize_sync_cursor(record.get(SYNC_CURSOR_FIELD))
+                except ValueError:
+                    sync_updated_at = ''
+                if not app_no or not sync_updated_at:
+                    bad_lines += 1
+                    continue
+                record['application_no'] = app_no
+                record[SYNC_CURSOR_FIELD] = sync_updated_at
+                records.append(record)
+    except http.client.IncompleteRead as exc:
+        raise RuntimeError('master 增量响应在传输完成前中断，已拒绝导入。') from exc
+    if received_bytes != expected_bytes:
+        raise RuntimeError(
+            f'master 增量响应不完整：声明 {expected_bytes} 字节，实际收到 {received_bytes} 字节，已拒绝导入。'
+        )
     return records, bad_lines
 
 

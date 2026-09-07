@@ -203,7 +203,7 @@ uv run python sync.py init
 
 Windows 生产机可运行 `setup.bat` 安装相同的锁定运行依赖，再用 `.venv\Scripts\python.exe web_dashboard.py` 启动控制台。`run.bat` 和 `launch_browser.bat` 也使用该项目环境；本机角色按实际用途配置，生产机写入 `master`。
 
-`sync.py init` 在拉取失败或分支分叉时停止，不自动合并备份；离线恢复使用 `sync.py rebuild`。Windows 代码更新使用 `upgrade.bat` 的 HTTP 发布通道，更新后运行 `setup.bat` 并重启 Dashboard、主 MITM 代理。完整数据库备份与回滚步骤见 [运行手册](docs/runbook.md)。
+`sync.py init` 在拉取失败或分支分叉时停止，不自动合并备份；`sync.py rebuild` 仅从已核实的 JSONL 恢复专利表。数据库已损坏时，必须先停止相关进程，并将主文件和 `-wal`/`-shm`/`-journal` 一起移走后再恢复。Windows 代码更新使用 `upgrade.bat` 的 HTTP 发布通道，更新后运行 `setup.bat` 并重启 Dashboard、主 MITM 代理。完整数据库备份与回滚步骤见 [运行手册](docs/runbook.md)。
 
 ### Replica 每日单命令回流
 
@@ -220,7 +220,7 @@ git push
 | 命令 | 说明 |
 |------|------|
 | `uv run python sync.py status` | 查看本地记录数和同步状态 |
-| `uv run python sync.py rebuild` | replica 从现有 JSONL 重建 DB |
+| `uv run python sync.py rebuild` | replica 从现有 JSONL 精确重建专利表；损坏库须先按运行手册离线移走 |
 
 > master 默认拒绝重建。只有明确承担风险时，才允许同时添加 `--force --i-know-this-is-master`。
 

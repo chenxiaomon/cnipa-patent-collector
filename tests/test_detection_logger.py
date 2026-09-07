@@ -9,6 +9,7 @@
 import glob
 import json
 import tempfile
+import threading
 import unittest
 from datetime import date
 from pathlib import Path
@@ -298,6 +299,89 @@ class TestDetectionLoggerWritePath(unittest.TestCase):
                 Path(batched.log_file).read_text(encoding='utf-8'),
                 Path(looped.log_file).read_text(encoding='utf-8'),
             )
+
+    def test_refresh_jsonl_backup_exports_complete_database(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = _logger_in(tmpdir)
+            logger._db.upsert({
+                'application_no': '202310869634X',
+                'status_code': 200,
+                'zhuanlimc': '数据库中的完整记录',
+            })
+            Path(logger.log_file).write_text('{broken backup', encoding='utf-8')
+
+            self.assertEqual(logger.refresh_jsonl_backup(), 1)
+            exported_records = [
+                json.loads(line)
+                for line in Path(logger.log_file).read_text(encoding='utf-8').splitlines()
+            ]
+            self.assertEqual(len(exported_records), 1)
+            self.assertEqual(exported_records[0]['application_no'], '202310869634X')
+            self.assertEqual(exported_records[0]['zhuanlimc'], '数据库中的完整记录')
+
+    def test_record_append_waits_for_jsonl_snapshot_publication(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = _logger_in(tmpdir)
+            logger.add_record(DetectionRecord(
+                application_no='202310869634X',
+                status_code=200,
+            ))
+            snapshot_read = threading.Event()
+            release_snapshot = threading.Event()
+            writer_finished = threading.Event()
+            thread_errors = []
+            original_get_all_records = logger._db.get_all_records
+
+            def paused_snapshot_read():
+                records = original_get_all_records()
+                snapshot_read.set()
+                if not release_snapshot.wait(5):
+                    raise TimeoutError('test did not release JSONL snapshot')
+                return records
+
+            def refresh_backup():
+                try:
+                    logger.refresh_jsonl_backup()
+                except Exception as error:
+                    thread_errors.append(error)
+
+            def append_record():
+                try:
+                    logger.add_record(DetectionRecord(
+                        application_no='2024100659780',
+                        status_code=200,
+                    ))
+                except Exception as error:
+                    thread_errors.append(error)
+                finally:
+                    writer_finished.set()
+
+            with mock.patch.object(
+                logger._db, 'get_all_records', side_effect=paused_snapshot_read
+            ):
+                export_thread = threading.Thread(target=refresh_backup)
+                writer_thread = threading.Thread(target=append_record)
+                try:
+                    export_thread.start()
+                    self.assertTrue(snapshot_read.wait(5))
+                    writer_thread.start()
+                    self.assertFalse(writer_finished.wait(0.2))
+                    release_snapshot.set()
+                    export_thread.join(timeout=5)
+                    writer_thread.join(timeout=5)
+                finally:
+                    release_snapshot.set()
+                    export_thread.join(timeout=5)
+                    writer_thread.join(timeout=5)
+
+            self.assertFalse(export_thread.is_alive())
+            self.assertFalse(writer_thread.is_alive())
+            self.assertEqual(thread_errors, [])
+            application_nos = {
+                json.loads(line)['application_no']
+                for line in Path(logger.log_file).read_text(encoding='utf-8').splitlines()
+            }
+            self.assertEqual(application_nos, {'202310869634X', '2024100659780'})
 
 
 class TestFeeExcelExport(unittest.TestCase):

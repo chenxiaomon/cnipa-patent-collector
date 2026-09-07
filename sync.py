@@ -18,7 +18,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from settings import BASE_DIR, DETECTION_LOG_JSONL_FILE, PATENTS_DB_FILE
-from db_manager import PatentsDB
+from db_manager import DatabaseRebuildRejectedError, rebuild_patents_database_from_jsonl
 from machine_identity import (
     MachineRoleConfigurationError,
     require_database_rebuild_authorization,
@@ -132,8 +132,10 @@ def cmd_init():
         print(f"[✗] JSONL 文件不存在，未导入数据库: {DETECTION_LOG_JSONL_FILE}")
         sys.exit(1)
 
-    db = PatentsDB(PATENTS_DB_FILE)
-    imported = db.import_from_jsonl(DETECTION_LOG_JSONL_FILE)
+    imported = rebuild_patents_database_from_jsonl(
+        PATENTS_DB_FILE,
+        DETECTION_LOG_JSONL_FILE,
+    )
     print(f"[✓] 初始化完成：共导入 {imported} 条记录")
     print("现在可以开始采集了。")
 
@@ -150,8 +152,10 @@ def cmd_rebuild():
         print(f"[✗] JSONL 文件不存在: {LOG_FILE}")
         sys.exit(1)
 
-    db = PatentsDB(PATENTS_DB_FILE)
-    imported = db.import_from_jsonl(DETECTION_LOG_JSONL_FILE)
+    imported = rebuild_patents_database_from_jsonl(
+        PATENTS_DB_FILE,
+        DETECTION_LOG_JSONL_FILE,
+    )
     print(f"[✓] 重建完成：共导入 {imported} 条记录")
 
 
@@ -172,5 +176,8 @@ if __name__ == '__main__':
         print(f"[✗] {exc}")
         sys.exit(2)
     except ValueError as exc:
+        print(f"[✗] {exc}")
+        sys.exit(1)
+    except DatabaseRebuildRejectedError as exc:
         print(f"[✗] {exc}")
         sys.exit(1)
