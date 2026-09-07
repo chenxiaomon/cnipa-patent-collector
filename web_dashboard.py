@@ -26,7 +26,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -37,6 +37,7 @@ from settings import (
     AGENCY_VERIFICATION_REPORT_CSV_FILE,
     AGENCY_VERIFICATION_REPORT_JSON_FILE,
     BASE_DIR,
+    BUSINESS_TIMEZONE,
     COMPANY_META_FILE,
     CONFIG_FILE,
     CONFIG_FWXX_FILE,
@@ -2559,15 +2560,22 @@ function fmtBytes(b) {
   return (b / 1048576).toFixed(1) + ' MB';
 }
 
+function timestampDate(v) {
+  const isoTimestamp = String(v).trim().replace(' ', 'T');
+  // Historic timestamps without an offset were written in UTC.
+  const naiveTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(isoTimestamp);
+  return new Date(naiveTimestamp ? isoTimestamp + 'Z' : isoTimestamp);
+}
+
 function shortTime(v) {
   if (!v) return '—';
-  const d = new Date(v);
-  return isNaN(d.getTime()) ? v : d.toLocaleString('zh-CN', { hour12: false });
+  const d = timestampDate(v);
+  return isNaN(d.getTime()) ? v : d.toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' });
 }
 
 function relTime(v) {
   if (!v) return '—';
-  const diff = Date.now() - new Date(v).getTime();
+  const diff = Date.now() - timestampDate(v).getTime();
   if (diff < 60000)    return '刚刚';
   if (diff < 3600000)  return Math.floor(diff / 60000) + ' 分钟前';
   if (diff < 86400000) return Math.floor(diff / 3600000) + ' 小时前';
@@ -3770,13 +3778,13 @@ function renderApplicantCheckboxes(filter) {
 
 function collectExportFilters() {
   const applicants = Array.from(selectedExportApplicants);
-  // date input 是 YYYY-MM-DD；采集时间转 ISO（含 Z），业务日期保持 YYYY-MM-DD
+  // 日期由服务端按北京时间解释，避免浏览器所在时区改变筛选范围。
   const tsFrom = $('#exportTsFrom').value;
   const tsTo = $('#exportTsTo').value;
   return {
     applicants,
-    timestamp_from: tsFrom ? tsFrom + 'T00:00:00Z' : '',
-    timestamp_to:   tsTo ? tsTo + 'T23:59:59Z' : '',
+    timestamp_from: tsFrom,
+    timestamp_to:   tsTo,
     notice_name_contains: $('#exportNoticeName').value.trim(),
     notice_from: $('#exportNoticeFrom').value,
     notice_to: $('#exportNoticeTo').value,
@@ -3915,7 +3923,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"applicants": applicants})
             elif path == "/api/agency-arrears":
                 # 按需触发，不并入 build_summary 的 TTL 缓存（前端每 5 秒轮询那条）
-                analysis_date = date.today()
+                analysis_date = utc_now().astimezone(BUSINESS_TIMEZONE).date()
                 self.send_json({
                     "analysis_date": analysis_date.isoformat(),
                     "agencies": build_agency_arrears_ranking(
@@ -4229,8 +4237,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif path == "/api/export/excel-filtered":
                 payload = self.read_json_body()
                 applicants = payload.get("applicants") or None
-                ts_from    = payload.get("timestamp_from") or None
-                ts_to      = payload.get("timestamp_to") or None
+                ts_from    = payload.get("timestamp_from")
+                ts_to      = payload.get("timestamp_to")
                 rej_from   = payload.get("rejection_from") or None
                 rej_to     = payload.get("rejection_to") or None
                 notice_name = str(payload.get("notice_name_contains") or "").strip() or None

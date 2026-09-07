@@ -10,11 +10,11 @@
 
 import json
 import os
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from settings import DETECTION_LOG_JSONL_FILE, PATENTS_DB_FILE
+from settings import BUSINESS_TIMEZONE, DETECTION_LOG_JSONL_FILE, PATENTS_DB_FILE
 from atomic_write import write_json_atomic
 from db_manager import PatentsDB
 from cache_utils import normalize_app_no as _normalize_app_no
@@ -35,9 +35,6 @@ try:
     import pandas as pd
 except ImportError:
     pd = None
-
-
-_CHINA_STANDARD_TIME = timezone(timedelta(hours=8))
 
 
 class DetectionRecord:
@@ -298,7 +295,7 @@ class DetectionLogger:
                 excel_file = os.path.join(os.path.dirname(self.log_file), 'patents_data.xlsx')
 
             records = self._load_records()
-            analysis_date = fee_analysis_date or datetime.now(_CHINA_STANDARD_TIME).date()
+            analysis_date = fee_analysis_date or datetime.now(BUSINESS_TIMEZONE).date()
 
             column_mapping = {
                 'application_no': '专利申请号',

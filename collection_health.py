@@ -101,12 +101,28 @@ def write_collection_stopped_heartbeat(completed: int, total: int) -> None:
 
 
 def read_collection_heartbeat() -> dict | None:
-    if not COLLECTION_HEARTBEAT_FILE.exists():
-        return None
     try:
-        return json.loads(COLLECTION_HEARTBEAT_FILE.read_text(encoding='utf-8'))
-    except (json.JSONDecodeError, OSError):
+        heartbeat = _read_health_snapshot(COLLECTION_HEARTBEAT_FILE)
+        if heartbeat.get('status') not in ('starting', 'running', 'stopped'):
+            raise ValueError('Invalid heartbeat status')
+        if 'application_no' not in heartbeat or not isinstance(heartbeat['application_no'], (str, type(None))):
+            raise ValueError('Invalid heartbeat application number')
+        for counter in ('completed', 'total', 'consecutive_failures'):
+            if type(heartbeat.get(counter)) is not int or heartbeat[counter] < 0:
+                raise ValueError(f'Invalid heartbeat {counter}')
+        return heartbeat
+    except (ValueError, OSError):
         return None
+
+
+def _read_health_snapshot(path: Path) -> dict:
+    snapshot = json.loads(path.read_text(encoding='utf-8'))
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get('timestamp'), str):
+        raise ValueError('Health state must be an object with a timestamp')
+    timestamp = datetime.fromisoformat(snapshot['timestamp'].replace('Z', '+00:00'))
+    if timestamp.utcoffset() is None:
+        raise ValueError('Health state timestamp must include a timezone')
+    return snapshot
 
 
 def record_collection_alert(reason: str, details: str, restart_count: int) -> dict:
@@ -137,9 +153,20 @@ def clear_collection_alert() -> None:
 
 
 def read_alert_status() -> dict:
-    if not ALERT_STATUS_FILE.exists():
-        return {'status': 'unknown', 'reason': None, 'details': None, 'timestamp': None}
     try:
-        return json.loads(ALERT_STATUS_FILE.read_text(encoding='utf-8'))
-    except (json.JSONDecodeError, OSError):
+        alert = _read_health_snapshot(ALERT_STATUS_FILE)
+        if type(alert.get('restart_count')) is not int or alert['restart_count'] < 0:
+            raise ValueError('Invalid alert restart count')
+        if alert.get('status') == 'alert':
+            if not isinstance(alert.get('reason'), str) or not isinstance(alert.get('details'), str):
+                raise ValueError('Invalid alert reason or details')
+        elif alert.get('status') == 'ok':
+            if alert.get('reason') is not None or alert.get('details') is not None:
+                raise ValueError('Cleared alert must not contain a reason or details')
+        else:
+            raise ValueError('Invalid alert status')
+        return alert
+    except FileNotFoundError:
+        return {'status': 'unknown', 'reason': None, 'details': None, 'timestamp': None}
+    except (ValueError, OSError):
         return {'status': 'invalid', 'reason': 'alert_status.json 无法解析', 'details': None, 'timestamp': None}

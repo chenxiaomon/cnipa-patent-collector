@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "release": {
     "version": "2026.09.06",
-    "revision": 2
+    "revision": 3
   },
   "files": [
     {
@@ -43,7 +43,7 @@
     },
     {
       "path": "RELEASE_REVISION",
-      "sha256": "53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3"
+      "sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2"
     },
     {
       "path": "VERSION",
@@ -107,11 +107,11 @@
     },
     {
       "path": "collection_health.py",
-      "sha256": "d6095bfabf064a7cdb8c879682151128fe6957bf6cddad19e766c451a25629df"
+      "sha256": "114621994ec82481b8ac1a179af15228ff1588e29ee267c380a7147402142d2d"
     },
     {
       "path": "collection_watchdog.py",
-      "sha256": "23e6710f29a0b38b77f73b3e78310ca52a80b2e42eb9b5b621ae67edce2b5b60"
+      "sha256": "f81d0cdb81b868206eb639d89a703e036c3d6f28713bafe97422b2b5b71861ed"
     },
     {
       "path": "coordinate_config.py",
@@ -123,7 +123,7 @@
     },
     {
       "path": "db_manager.py",
-      "sha256": "685928576dec4fae2b0da79303f63b52db402c2717dab0abd2775f23c8ce8987"
+      "sha256": "9a0ce9045c43108cd36fb42d1c9086256b198400835c66c68134f5c31300862a"
     },
     {
       "path": "desktop_collection_lock.py",
@@ -135,7 +135,7 @@
     },
     {
       "path": "detection_logger.py",
-      "sha256": "4d01930e8774dd443767f233b39bde9c11c85a5b3f7f56726cbb2ba00855db88"
+      "sha256": "58bb0d510d85b0549a07b5c9e5ce489558eb34bebf7de775cea5b7e60f9f71de"
     },
     {
       "path": "docker-compose.yml",
@@ -379,7 +379,7 @@
     },
     {
       "path": "settings.py",
-      "sha256": "161f86c21d3e1d95eea99fa1b289a6ef70100fce00d6bd312991f8eab0299a5c"
+      "sha256": "3da3d3b9faf8e12d78fad4bee227a4317e2bba4b600134035806c5e1d629d5fc"
     },
     {
       "path": "setup.bat",
@@ -474,6 +474,10 @@
       "sha256": "d593d34b666048f91e9d2170e426d00d6eecc388c58e122ef5a6aa49d19ba18c"
     },
     {
+      "path": "tests/test_collection_date_filters.py",
+      "sha256": "fb6037955a6f7025a3adc7945dfb14e50e5daf216f764cb21deb0928912ac5d2"
+    },
+    {
       "path": "tests/test_collection_failures.py",
       "sha256": "95fe60c58257e698a102ddba68c59347f1954122bddfaa63357a2d130d91d863"
     },
@@ -483,7 +487,7 @@
     },
     {
       "path": "tests/test_collection_health.py",
-      "sha256": "6c25afd9e8d4014ff64313b6f82c19cdbc03e89f24c10127544651699a988d3a"
+      "sha256": "3cc612effeed7f388577bb1982b653cd9dba9e0c93f1e377f5da336990e78c2c"
     },
     {
       "path": "tests/test_collection_runtime_ignores.py",
@@ -510,6 +514,10 @@
       "sha256": "ecf110afd5c897643b0ab1d09075d5c168d702492e0c04852ad05877ce437e2d"
     },
     {
+      "path": "tests/test_dashboard_date_filters.py",
+      "sha256": "9ff12b077e665c79ada56f128b72ed689cd82e82df1f8133659132d9816e6e1f"
+    },
+    {
       "path": "tests/test_dashboard_delta_import.py",
       "sha256": "05f2ea74a66d816fb9ff312bccee877abba628a01142b522786b3133f0e24a1e"
     },
@@ -531,7 +539,7 @@
     },
     {
       "path": "tests/test_db_manager.py",
-      "sha256": "61ac6fbef5c411e906479b24e460d7654c0fbcc542e912a1f43d2d259b1d1b3e"
+      "sha256": "2ece61ea144636e4ee2f80abc8f9528b42bfd0802e4545fc1117b957161a8af3"
     },
     {
       "path": "tests/test_desktop_collection_lock.py",
@@ -662,6 +670,10 @@
       "sha256": "ed93abef4a434f510d0deb4dba1e989772dcbf0c717fd249103ae63e12be3fd1"
     },
     {
+      "path": "tests/test_watchdog_deadline.py",
+      "sha256": "fdecad3e33df6fd373cd77de9bc0c137d7363a838f6c40b34cb8992ebbf91edd"
+    },
+    {
       "path": "tests/test_web_dashboard_summary_cache.py",
       "sha256": "b1fd77bf0db0b2835f06291f2f45f338d13d096a57c47a453336d348259b3634"
     },
@@ -695,7 +707,7 @@
     },
     {
       "path": "web_dashboard.py",
-      "sha256": "8e6e4ba9b3dfdaf2322e0d2f32e2b5fe1212d42e64f3d5b819b8a40099210a62"
+      "sha256": "2a6b72ef46dfcb3bca6ac5358af7b156196ede4d647de85cfbce0550149350be"
     }
   ]
 }

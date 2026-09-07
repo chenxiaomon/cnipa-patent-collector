@@ -82,7 +82,9 @@ class TestCollectionHealth(unittest.TestCase):
             collection_watchdog, 'read_collection_heartbeat',
             return_value={'timestamp': stale_timestamp, 'consecutive_failures': 0},
         ), patch.object(collection_watchdog, 'WATCHDOG_HEARTBEAT_TIMEOUT_SECONDS', 600):
-            failure = collection_watchdog.supervision_failure(_RunningProcess())
+            failure = collection_watchdog.supervision_failure(
+                _RunningProcess(), collection_watchdog.CollectionHeartbeatDeadline()
+            )
         self.assertEqual(failure[0], 'heartbeat_timeout')
 
     def test_watchdog_detects_consecutive_failures(self):
@@ -94,7 +96,9 @@ class TestCollectionHealth(unittest.TestCase):
                 'consecutive_failures': 20,
             },
         ):
-            failure = collection_watchdog.supervision_failure(_RunningProcess())
+            failure = collection_watchdog.supervision_failure(
+                _RunningProcess(), collection_watchdog.CollectionHeartbeatDeadline()
+            )
         self.assertEqual(failure[0], 'consecutive_failures')
 
     def test_watchdog_stops_after_three_failed_restarts(self):
@@ -139,7 +143,9 @@ class TestCollectionHealth(unittest.TestCase):
         with patch.object(collection_watchdog, 'read_alert_status', return_value={
             'status': 'alert', 'reason': 'login_required', 'details': 'login not confirmed',
         }), patch.object(collection_watchdog, 'read_collection_heartbeat') as read_heartbeat:
-            failure = collection_watchdog.supervision_failure(_RunningProcess())
+            failure = collection_watchdog.supervision_failure(
+                _RunningProcess(), collection_watchdog.CollectionHeartbeatDeadline()
+            )
         self.assertEqual(failure, ('login_required', 'login not confirmed'))
         read_heartbeat.assert_not_called()
 

@@ -23,6 +23,7 @@ from pathlib import Path
 
 from cache_utils import is_supported_cn_application_no, normalize_app_no, parse_timestamp
 from file_update_lock import reserve_file_update
+from settings import BUSINESS_TIMEZONE
 
 _JSON_FIELDS = {
     'fwxx_list',
@@ -206,6 +207,23 @@ def normalize_sync_cursor(value: object) -> str:
     return instant.isoformat(timespec='microseconds').replace('+00:00', 'Z')
 
 
+def _parse_collection_time_filter(value: str | None) -> datetime | None:
+    """Date-only filters use Beijing midnight; legacy naive instants remain UTC."""
+    if value is None or value == '':
+        return None
+    if not isinstance(value, str):
+        raise ValueError('采集时间必须是 YYYY-MM-DD 日期或 ISO 时间戳')
+    try:
+        instant = parse_timestamp(value)
+        if instant is not None and re.fullmatch(r'\d{4}-\d{2}-\d{2}', value.strip()):
+            instant = instant.replace(tzinfo=BUSINESS_TIMEZONE).astimezone(timezone.utc)
+    except OverflowError:
+        instant = None
+    if instant is None:
+        raise ValueError('采集时间必须是有效的 YYYY-MM-DD 日期或 ISO 时间戳')
+    return instant
+
+
 def _is_sqlite_lock_contention(error: sqlite3.Error) -> bool:
     error_code = getattr(error, 'sqlite_errorcode', None)
     primary_error_code = error_code & 0xff if isinstance(error_code, int) else None
@@ -258,16 +276,17 @@ class PatentsDB:
     @contextmanager
     def _connect(self):
         conn = sqlite3.connect(str(self._db_path))
-        conn.row_factory = sqlite3.Row
-        conn.create_function('cnipa_fee_snapshot_order', 2, _compare_fee_snapshot_times, deterministic=True)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA foreign_keys=ON")
         try:
-            yield conn
-        except Exception:
-            conn.rollback()
-            raise
+            conn.row_factory = sqlite3.Row
+            conn.create_function('cnipa_fee_snapshot_order', 2, _compare_fee_snapshot_times, deterministic=True)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            try:
+                yield conn
+            except Exception:
+                conn.rollback()
+                raise
         finally:
             conn.close()
 
@@ -663,7 +682,7 @@ class PatentsDB:
 
         各筛选维度：
           applicants:      申请人列表（精确匹配，多值 IN）
-          ts_from/ts_to:   采集时间范围（ISO 字符串，闭区间）
+          ts_from/ts_to:   北京日期范围（含结束日）；精确 ISO 时间戳保留闭区间
           rejection_from/rejection_to: 驳回决定下载日期范围（YYYY-MM-DD，闭区间）
           notice_name_contains/notice_from/notice_to:
                            同一条发文记录的通知书名称和发文日条件
@@ -674,6 +693,36 @@ class PatentsDB:
         """
         clauses = []
         params: list = []
+        start_instant = _parse_collection_time_filter(ts_from)
+        end_instant = _parse_collection_time_filter(ts_to)
+        end_before = None
+        if end_instant is not None and re.fullmatch(r'\d{4}-\d{2}-\d{2}', ts_to.strip()):
+            try:
+                end_before = end_instant + timedelta(days=1)
+            except OverflowError as exc:
+                raise ValueError('采集结束日期超出支持范围') from exc
+            end_instant = None
+        if start_instant is not None and (
+            (end_before is not None and start_instant >= end_before)
+            or (end_instant is not None and start_instant > end_instant)
+        ):
+            raise ValueError('采集开始时间不能晚于结束时间')
+
+        def matches_timestamp(timestamp: object) -> bool:
+            if not (ts_from or ts_to):
+                return False
+            try:
+                collected_at = parse_timestamp(timestamp)
+            except OverflowError:
+                return False
+            if collected_at is None:
+                return False
+            return (
+                (start_instant is None or collected_at >= start_instant)
+                and (end_instant is None or collected_at <= end_instant)
+                and (end_before is None or collected_at < end_before)
+            )
+
         applicant_set = {
             name
             for applicant in (applicants or [])
@@ -693,15 +742,9 @@ class PatentsDB:
             clauses.append("shenqingrxm IS NOT NULL AND shenqingrxm != ''")
 
         # 维度 2：采集时间范围
-        ts_parts = []
-        if ts_from:
-            ts_parts.append("timestamp >= ?")
-            params.append(ts_from)
-        if ts_to:
-            ts_parts.append("timestamp <= ?")
-            params.append(ts_to)
-        if ts_parts:
-            clauses.append("(" + " AND ".join(ts_parts) + ")")
+        if ts_from or ts_to:
+            # Historic precision/offsets cannot be ordered as text; SQLite dates lose microseconds.
+            clauses.append("cnipa_collection_time_matches(timestamp) = 1")
 
         # 维度 3：驳回决定下载日期范围
         rej_parts = []
@@ -725,6 +768,7 @@ class PatentsDB:
         where = " OR ".join(clauses)
         sql = f"SELECT * FROM patents WHERE {where} ORDER BY timestamp ASC"
         with self._connect() as conn:
+            conn.create_function('cnipa_collection_time_matches', 1, matches_timestamp, deterministic=True)
             rows = conn.execute(sql, params).fetchall()
         records = [self._decode(r) for r in rows]
 
@@ -733,18 +777,6 @@ class PatentsDB:
 
         def matches_applicant(record: dict) -> bool:
             return bool(applicant_set & set(_split_applicant_names(record.get('shenqingrxm'))))
-
-        def matches_timestamp(record: dict) -> bool:
-            if not (ts_from or ts_to):
-                return False
-            timestamp = record.get('timestamp')
-            if not timestamp:
-                return False
-            if ts_from and timestamp < ts_from:
-                return False
-            if ts_to and timestamp > ts_to:
-                return False
-            return True
 
         def matches_rejection_date(record: dict) -> bool:
             if not (rejection_from or rejection_to):
@@ -790,7 +822,7 @@ class PatentsDB:
             record for record in records
             if (
                 matches_applicant(record)
-                or matches_timestamp(record)
+                or matches_timestamp(record.get('timestamp'))
                 or matches_rejection_date(record)
                 or matches_notice(record)
             )
@@ -1105,6 +1137,15 @@ class PatentsDB:
         一次数据库访问返回 build_summary() 所需的全部聚合数据。
         替代对 9000+ 条 JSONL 的多次 Python 遍历。
         """
+        today = datetime.now(BUSINESS_TIMEZONE).date()
+
+        def collection_business_date(timestamp: object) -> str | None:
+            try:
+                collected_at = parse_timestamp(timestamp)
+                return collected_at.astimezone(BUSINESS_TIMEZONE).date().isoformat() if collected_at else None
+            except OverflowError:
+                return None
+
         with self._connect() as conn:
             # 1. 主聚合
             agg = conn.execute(f"""
@@ -1141,13 +1182,14 @@ class PatentsDB:
             """).fetchall()
 
             # 4. 近 7 天每日采集量
-            cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).strftime('%Y-%m-%d')
+            cutoff = (today - timedelta(days=6)).isoformat()
+            conn.create_function('cnipa_collection_date', 1, collection_business_date, deterministic=True)
             daily_rows = conn.execute("""
-                SELECT strftime('%m-%d', timestamp) AS day, COUNT(*) AS cnt
+                SELECT cnipa_collection_date(timestamp) AS day, COUNT(*) AS cnt
                 FROM patents
-                WHERE timestamp >= ?
+                WHERE day >= ? AND day <= ?
                 GROUP BY day ORDER BY day
-            """, (cutoff,)).fetchall()
+            """, (cutoff, today.isoformat())).fetchall()
 
             # 5. 最近 16 条记录
             recent_rows = conn.execute("""
@@ -1200,12 +1242,11 @@ class PatentsDB:
         attempted = success + failed
 
         # 填充缺失的 7 天日期（可能某天没有记录）
-        today = datetime.now(timezone.utc)
         daily_map = {r['day']: r['cnt'] for r in daily_rows}
         daily_counts = []
         for i in range(7):
-            day = (today - timedelta(days=6 - i)).strftime('%m-%d')
-            daily_counts.append({'date': day, 'count': daily_map.get(day, 0)})
+            day = today - timedelta(days=6 - i)
+            daily_counts.append({'date': day.strftime('%m-%d'), 'count': daily_map.get(day.isoformat(), 0)})
 
         return {
             'unique_count': unique,

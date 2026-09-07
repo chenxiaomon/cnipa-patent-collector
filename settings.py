@@ -12,7 +12,11 @@
 
 import os
 import sys
+from datetime import timedelta, timezone
 from pathlib import Path
+
+# CNIPA business dates do not depend on the developer or deployment machine's timezone.
+BUSINESS_TIMEZONE = timezone(timedelta(hours=8))
 
 # Windows 控制台强制 UTF-8，避免 emoji/中文在 GBK 环境下崩溃
 if sys.platform == "win32":

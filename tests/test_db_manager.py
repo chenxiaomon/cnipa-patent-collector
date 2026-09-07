@@ -331,6 +331,48 @@ class TestConnectionLifecycle(unittest.TestCase):
             with self.assertRaises(sqlite3.ProgrammingError):
                 connection.execute("SELECT 1")
 
+    def test_connect_closes_connection_when_setup_fails(self):
+        from unittest.mock import patch
+
+        class FailingSetupConnection(sqlite3.Connection):
+            def __setattr__(self, name, value):
+                if name == failing_operation:
+                    raise setup_error
+                super().__setattr__(name, value)
+
+            def create_function(self, *args, **kwargs):
+                if failing_operation == "create_function":
+                    raise setup_error
+                return super().create_function(*args, **kwargs)
+
+            def execute(self, sql, *args, **kwargs):
+                if sql == failing_operation:
+                    raise setup_error
+                return super().execute(sql, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "patents.db"
+            db = PatentsDB(database_path)
+            for failing_operation in (
+                "row_factory",
+                "create_function",
+                "PRAGMA journal_mode=WAL",
+                "PRAGMA synchronous=NORMAL",
+                "PRAGMA foreign_keys=ON",
+            ):
+                with self.subTest(operation=failing_operation):
+                    setup_error = sqlite3.OperationalError("simulated setup failure")
+                    with closing(sqlite3.connect(
+                        database_path, factory=FailingSetupConnection
+                    )) as connection:
+                        with patch("db_manager.sqlite3.connect", return_value=connection):
+                            with self.assertRaises(sqlite3.OperationalError) as raised:
+                                with db._connect():
+                                    self.fail("setup failure must prevent connection use")
+                        self.assertIs(raised.exception, setup_error)
+                        with self.assertRaises(sqlite3.ProgrammingError):
+                            connection.execute("SELECT 1")
+
     def test_initialization_adds_fee_columns_to_legacy_database(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "patents.db"
