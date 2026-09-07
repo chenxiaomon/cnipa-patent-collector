@@ -6,7 +6,10 @@
 测试申请号规范化、验证等函数
 """
 
+import multiprocessing
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 from cache_utils import (
@@ -14,7 +17,34 @@ from cache_utils import (
     normalize_app_no,
     parse_app_no_list,
     poll_cache_with_retry,
+    read_json_cache,
+    reserve_json_cache_updates,
+    write_json_cache,
 )
+
+
+def _merge_cache_entry_in_process(
+    cache_file,
+    cache_key,
+    attempting_update,
+    entered_update,
+    release_update,
+):
+    attempting_update.set()
+    with reserve_json_cache_updates(cache_file):
+        cache_entries = read_json_cache(cache_file)
+        entered_update.set()
+        if not release_update.wait(10):
+            raise TimeoutError('test did not release cache update')
+        cache_entries[cache_key] = {'source': cache_key}
+        write_json_cache(cache_file, cache_entries)
+
+
+def _reserve_cache_twice_in_process(cache_file, reservation_finished):
+    with reserve_json_cache_updates(cache_file):
+        with reserve_json_cache_updates(cache_file):
+            write_json_cache(cache_file, {'nested': True})
+    reservation_finished.set()
 
 
 class TestNormalizeAppNo(unittest.TestCase):
@@ -168,6 +198,98 @@ CN202111504942.X
             parse_app_no_list(text),
             ['2024110065970', '100010220', '202311437336X'],
         )
+
+
+class TestJsonCacheUpdates(unittest.TestCase):
+    def test_non_object_json_is_treated_as_an_invalid_cache(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            cache_file = Path(temporary_directory) / 'cache.json'
+            cache_file.write_text('["unexpected"]', encoding='utf-8')
+
+            self.assertEqual(read_json_cache(str(cache_file)), {})
+
+    def test_read_modify_write_is_serialized_across_processes(self):
+        process_context = multiprocessing.get_context('spawn')
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            cache_file = Path(temporary_directory) / 'cache.json'
+            write_json_cache(str(cache_file), {})
+            first_attempting = process_context.Event()
+            first_entered = process_context.Event()
+            first_release = process_context.Event()
+            second_attempting = process_context.Event()
+            second_entered = process_context.Event()
+            second_release = process_context.Event()
+            first_writer = process_context.Process(
+                target=_merge_cache_entry_in_process,
+                args=(
+                    str(cache_file),
+                    'first',
+                    first_attempting,
+                    first_entered,
+                    first_release,
+                ),
+            )
+            second_writer = process_context.Process(
+                target=_merge_cache_entry_in_process,
+                args=(
+                    str(cache_file),
+                    'second',
+                    second_attempting,
+                    second_entered,
+                    second_release,
+                ),
+            )
+            try:
+                first_writer.start()
+                self.assertTrue(first_attempting.wait(5))
+                self.assertTrue(first_entered.wait(5))
+                second_writer.start()
+                self.assertTrue(second_attempting.wait(5))
+                self.assertFalse(second_entered.wait(0.2))
+
+                first_release.set()
+                self.assertTrue(second_entered.wait(5))
+                second_release.set()
+                first_writer.join(5)
+                second_writer.join(5)
+            finally:
+                first_release.set()
+                second_release.set()
+                for writer in (first_writer, second_writer):
+                    if writer.is_alive():
+                        writer.terminate()
+                    writer.join(5)
+
+            self.assertEqual(first_writer.exitcode, 0)
+            self.assertEqual(second_writer.exitcode, 0)
+            self.assertEqual(
+                read_json_cache(str(cache_file)),
+                {
+                    'first': {'source': 'first'},
+                    'second': {'source': 'second'},
+                },
+            )
+
+    def test_same_thread_can_reenter_cross_process_reservation(self):
+        process_context = multiprocessing.get_context('spawn')
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            cache_file = Path(temporary_directory) / 'cache.json'
+            reservation_finished = process_context.Event()
+            worker = process_context.Process(
+                target=_reserve_cache_twice_in_process,
+                args=(str(cache_file), reservation_finished),
+            )
+            try:
+                worker.start()
+                self.assertTrue(reservation_finished.wait(5))
+                worker.join(5)
+            finally:
+                if worker.is_alive():
+                    worker.terminate()
+                worker.join(5)
+
+            self.assertEqual(worker.exitcode, 0)
+            self.assertEqual(read_json_cache(str(cache_file)), {'nested': True})
 
 
 class TestPollCacheWithRetry(unittest.TestCase):

@@ -1,5 +1,7 @@
+import json
 import sqlite3
 import tempfile
+import threading
 import unittest
 from contextlib import closing, nullcontext
 from pathlib import Path
@@ -94,6 +96,67 @@ class TestDatabaseBackup(unittest.TestCase):
                 database.backup_to(database_path)
 
             self.assertEqual(database.count(), 1)
+
+    def test_concurrent_jsonl_exports_cannot_publish_an_older_snapshot_last(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            database = PatentsDB(root / 'patents.db')
+            database.upsert({'application_no': '202310411762X', 'status_code': 200})
+            snapshot_path = root / 'snapshot.jsonl'
+            first_snapshot_read = threading.Event()
+            release_first_export = threading.Event()
+            second_snapshot_read = threading.Event()
+            snapshot_counter_lock = threading.Lock()
+            snapshot_counter = 0
+            failures = []
+
+            original_get_all_records = database.get_all_records
+
+            def staged_snapshot_read():
+                nonlocal snapshot_counter
+                records = original_get_all_records()
+                with snapshot_counter_lock:
+                    snapshot_number = snapshot_counter
+                    snapshot_counter += 1
+                if snapshot_number == 0:
+                    first_snapshot_read.set()
+                    if not release_first_export.wait(5):
+                        raise TimeoutError('test did not release first JSONL export')
+                else:
+                    second_snapshot_read.set()
+                return records
+
+            def export_snapshot():
+                try:
+                    database.export_to_jsonl(snapshot_path)
+                except Exception as error:
+                    failures.append(error)
+
+            with patch.object(database, 'get_all_records', side_effect=staged_snapshot_read):
+                exporters = [threading.Thread(target=export_snapshot) for _ in range(2)]
+                try:
+                    exporters[0].start()
+                    self.assertTrue(first_snapshot_read.wait(5))
+                    database.upsert({'application_no': '2024100659780', 'status_code': 200})
+                    exporters[1].start()
+                    self.assertFalse(second_snapshot_read.wait(0.2))
+                    release_first_export.set()
+                    for exporter in exporters:
+                        exporter.join(timeout=5)
+                finally:
+                    release_first_export.set()
+                    for exporter in exporters:
+                        if exporter.is_alive():
+                            exporter.join(timeout=5)
+
+            self.assertTrue(all(not exporter.is_alive() for exporter in exporters))
+            self.assertEqual(failures, [])
+            application_nos = {
+                json.loads(line)['application_no']
+                for line in snapshot_path.read_text(encoding='utf-8').splitlines()
+            }
+            self.assertEqual(application_nos, {'202310411762X', '2024100659780'})
+            self.assertEqual(list(root.glob('snapshot.jsonl.*.tmp')), [])
 
 
 if __name__ == '__main__':

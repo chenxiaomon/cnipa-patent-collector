@@ -8,6 +8,7 @@ data/machine_role.txt
 data/master_sync.json
 data/master_sync_state.json
 data/master_sync.lock
+data/patents.db.lock
 data/collection_heartbeat.json
 data/alert_status.json
 data/watchdog_events.jsonl
@@ -20,7 +21,9 @@ data/patent_cache.json
 data/patent_fwxx_cache.json
 data/patent_fee_cache.json
 data/patent_agency_cache.json
+data/patent*_cache.json.lock
 data/fwxx_unmatched.json
+data/*_unmatched.json.lock
 data/fee_unmatched.json
 data/agency_unmatched.json
 data/current_fwxx_target.json
@@ -57,6 +60,7 @@ data/config_backup_*.json
 
 # Excel 导出（衍生产物，可从 detection_log.jsonl 重新生成）
 data/results/*.xlsx
+data/results/detection_log.jsonl.lock
 data/results/agency_verification_report.csv
 data/results/agency_verification_report.json
 

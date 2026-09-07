@@ -17,14 +17,22 @@ from db_manager import SYNC_CURSOR_FIELD, PatentsDB
 
 
 class _FakeResponse:
-    def __init__(self, lines: list[bytes]):
+    def __init__(self, lines: list[bytes], declared_length: int | None = None):
         self._lines = lines
+        self.headers = {
+            'Content-Length': str(
+                sum(len(line) for line in lines) if declared_length is None else declared_length
+            )
+        }
 
     def __enter__(self):
-        return iter(self._lines)
+        return self
 
     def __exit__(self, exc_type, exc, traceback):
         return False
+
+    def __iter__(self):
+        return iter(self._lines)
 
 
 def _hold_master_sync(lock_path, lock_acquired, release_lock):
@@ -167,6 +175,47 @@ class TestSyncPullFromMaster(unittest.TestCase):
             records, bad_lines = sync_pull_from_master.fetch_master_delta('http://master:8765', '1970-01-01T00:00:00Z')
         self.assertEqual(records, [])
         self.assertEqual(bad_lines, 4)
+
+    def test_fetch_rejects_response_without_length_proof(self):
+        response = _FakeResponse([])
+        response.headers.clear()
+        with patch.object(sync_pull_from_master.urllib.request, 'urlopen', return_value=response):
+            with self.assertRaisesRegex(RuntimeError, 'Content-Length'):
+                sync_pull_from_master.fetch_master_delta(
+                    'http://master:8765', '1970-01-01T00:00:00Z'
+                )
+
+    def test_truncated_response_at_line_boundary_is_not_merged_or_committed(self):
+        first_line = json.dumps({
+            'application_no': '2024110065970',
+            SYNC_CURSOR_FIELD: '2026-07-02T00:00:00Z',
+        }).encode('utf-8') + b'\n'
+        omitted_line = json.dumps({
+            'application_no': '2024110065989',
+            SYNC_CURSOR_FIELD: '2026-07-02T00:00:00Z',
+        }).encode('utf-8') + b'\n'
+        response = _FakeResponse([first_line], declared_length=len(first_line) + len(omitted_line))
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            sync_pull_from_master, 'MASTER_SYNC_LOCK_FILE', Path(tmpdir) / 'master_sync.lock'
+        ), patch.object(
+            sync_pull_from_master, 'require_replica_pull_role'
+        ), patch.object(
+            sync_pull_from_master, 'load_master_url', return_value='http://master:8765'
+        ), patch.object(
+            sync_pull_from_master, 'load_sync_cursor', return_value='2026-07-01T00:00:00Z'
+        ), patch.object(
+            sync_pull_from_master.urllib.request, 'urlopen', return_value=response
+        ), patch.object(
+            sync_pull_from_master, 'merge_master_delta'
+        ) as merge_delta, patch.object(
+            sync_pull_from_master, 'save_sync_cursor'
+        ) as save_cursor:
+            with self.assertRaises(SystemExit) as stopped:
+                sync_pull_from_master.main([])
+
+        self.assertEqual(stopped.exception.code, 1)
+        merge_delta.assert_not_called()
+        save_cursor.assert_not_called()
 
     def test_load_master_url_rejects_missing_configuration(self):
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(

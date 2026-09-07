@@ -124,7 +124,16 @@ class TestCollectionHealth(unittest.TestCase):
         with patch.object(collection_watchdog.subprocess, 'Popen') as collection_start:
             collection_watchdog.start_collection_process('a' * 32)
         self.assertEqual(collection_start.call_args.kwargs['stdin'], subprocess.DEVNULL)
+        self.assertEqual(collection_start.call_args.kwargs['env']['USE_MITM_PROXY'], 'true')
         self.assertEqual(collection_start.call_args.args[0][-2:], ['--resume-batch', 'a' * 32])
+
+    def test_watchdog_checks_configured_main_proxy(self):
+        with patch.object(collection_watchdog, 'MITM_HOST', 'proxy.internal'), patch.object(
+            collection_watchdog, 'MITM_PORT', 18083
+        ), patch.object(collection_watchdog.socket, 'create_connection') as connect:
+            collection_watchdog.require_main_mitm_proxy()
+
+        connect.assert_called_once_with(('proxy.internal', 18083), timeout=2)
 
     def test_watchdog_prioritizes_required_login_over_heartbeat_timeout(self):
         with patch.object(collection_watchdog, 'read_alert_status', return_value={
@@ -168,6 +177,8 @@ class TestCollectionHealth(unittest.TestCase):
             collection_watchdog, 'reserve_detail_collection_desktop', _reserved_operation
         ), patch.object(collection_watchdog, 'clear_collection_alert'), patch.object(
             collection_watchdog, 'select_main_collection_targets', return_value=['A', 'B']
+        ), patch.object(
+            collection_watchdog, 'require_main_mitm_proxy'
         ), patch.object(collection_watchdog.CollectionBatch, 'prepare', side_effect=prepare_batch), patch.object(
             collection_watchdog, '_supervise_collection_batch', side_effect=supervise_batch
         ):
@@ -198,6 +209,24 @@ class TestCollectionHealth(unittest.TestCase):
         start_process.assert_not_called()
         stopped_heartbeat.assert_called_once_with(0, 0)
 
+    def test_unavailable_proxy_stops_before_batch_creation(self):
+        with patch.object(collection_watchdog, '_stop_requested', False), patch.object(
+            collection_watchdog.signal, 'signal'
+        ), patch.object(collection_watchdog, 'reserve_supervised_collection', _reserved_operation), patch.object(
+            collection_watchdog, 'reserve_detail_collection_desktop', _reserved_operation
+        ), patch.object(collection_watchdog, 'clear_collection_alert'), patch.object(
+            collection_watchdog, 'select_main_collection_targets', return_value=['A']
+        ), patch.object(
+            collection_watchdog, 'require_main_mitm_proxy', side_effect=ConnectionError('proxy unavailable')
+        ), patch.object(collection_watchdog.CollectionBatch, 'prepare') as prepare_batch, patch.object(
+            collection_watchdog, 'record_collection_alert'
+        ) as record_alert:
+            exit_code = collection_watchdog.run_supervised_collection()
+
+        self.assertEqual(exit_code, 1)
+        prepare_batch.assert_not_called()
+        record_alert.assert_called_once_with('collection_start_failed', 'proxy unavailable', 0)
+
     def test_prepare_failure_stops_before_supervision(self):
         with patch.object(collection_watchdog, '_stop_requested', False), patch.object(
             collection_watchdog.signal, 'signal'
@@ -205,6 +234,8 @@ class TestCollectionHealth(unittest.TestCase):
             collection_watchdog, 'reserve_detail_collection_desktop', _reserved_operation
         ), patch.object(collection_watchdog, 'clear_collection_alert'), patch.object(
             collection_watchdog, 'select_main_collection_targets', return_value=['A']
+        ), patch.object(
+            collection_watchdog, 'require_main_mitm_proxy'
         ), patch.object(
             collection_watchdog.CollectionBatch, 'prepare', side_effect=OSError('disk full')
         ), patch.object(collection_watchdog, '_supervise_collection_batch') as supervise, patch.object(

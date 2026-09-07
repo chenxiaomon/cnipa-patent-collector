@@ -18,6 +18,7 @@ from settings import DETECTION_LOG_JSONL_FILE, PATENTS_DB_FILE
 from atomic_write import write_json_atomic
 from db_manager import PatentsDB
 from cache_utils import normalize_app_no as _normalize_app_no
+from file_update_lock import reserve_file_update
 from payment_obligations import (
     LATE_FEE_APPLICABLE,
     LATE_FEE_INVALID_INTERVAL,
@@ -186,14 +187,12 @@ class DetectionLogger:
         d = record.to_dict()
         d['application_no'] = _normalize_app_no(d['application_no'])
 
-        # 1. 写 SQLite
-        self._db.upsert(d)
-
-        # 2. 追加 JSONL（双写备份）。不 fsync：DB 已提交（SSOT），
-        #    JSONL 尾行丢失可由 export_to_jsonl() 完整重建
-        line = json.dumps(d, ensure_ascii=False) + '\n'
-        with open(self.log_file, 'a', encoding='utf-8') as f:
-            f.write(line)
+        with reserve_file_update(self.log_file):
+            # The lock orders the DB commit with full JSONL snapshot publication.
+            self._db.upsert(d)
+            line = json.dumps(d, ensure_ascii=False) + '\n'
+            with open(self.log_file, 'a', encoding='utf-8') as f:
+                f.write(line)
 
         self._auto_backup()
 
@@ -218,12 +217,17 @@ class DetectionLogger:
             rows.append(d)
         if not rows:
             return 0
-        self._db.upsert_batch(rows)
-        with open(self.log_file, 'a', encoding='utf-8') as f:
-            for d in rows:
-                f.write(json.dumps(d, ensure_ascii=False) + '\n')
+        with reserve_file_update(self.log_file):
+            self._db.upsert_batch(rows)
+            with open(self.log_file, 'a', encoding='utf-8') as f:
+                for d in rows:
+                    f.write(json.dumps(d, ensure_ascii=False) + '\n')
         self._auto_backup(written=len(rows))
         return len(rows)
+
+    def refresh_jsonl_backup(self) -> int:
+        """Replace the derived JSONL backup with a complete SQLite snapshot."""
+        return self._db.export_to_jsonl(Path(self.log_file))
 
     # ------------------------------------------------------------------
     # 备份（本进程每写 500 条生成一次完整 SQLite 快照）

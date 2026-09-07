@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -27,6 +28,8 @@ from desktop_collection_lock import (
 from main_collection_targets import select_main_collection_targets
 from settings import (
     BASE_DIR,
+    MITM_HOST,
+    MITM_PORT,
     WATCHDOG_FAILURE_THRESHOLD,
     WATCHDOG_HEARTBEAT_TIMEOUT_SECONDS,
     WATCHDOG_MAX_RESTARTS,
@@ -85,10 +88,23 @@ def collection_command(batch_id: str) -> list[str]:
     return [sys.executable, '-u', str(BASE_DIR / 'main_automation.py'), '--resume-batch', batch_id]
 
 
+def require_main_mitm_proxy() -> None:
+    try:
+        with socket.create_connection((MITM_HOST, MITM_PORT), timeout=2):
+            return
+    except OSError as exc:
+        raise ConnectionError(
+            f'MITM 代理 {MITM_HOST}:{MITM_PORT} 未响应；'
+            '请先启动：uv run python start_mitm_proxy.py'
+        ) from exc
+
+
 def start_collection_process(batch_id: str) -> subprocess.Popen:
+    collection_environment = os.environ.copy()
+    collection_environment['USE_MITM_PROXY'] = 'true'
     popen_kwargs = {
         'cwd': str(BASE_DIR),
-        'env': os.environ.copy(),
+        'env': collection_environment,
         'stdin': subprocess.DEVNULL,
     }
     if sys.platform == 'win32':
@@ -129,6 +145,7 @@ def run_supervised_collection() -> int:
                     write_collection_stopped_heartbeat(0, 0)
                     print('[watchdog] 没有待采集申请号。')
                     return 0
+                require_main_mitm_proxy()
                 batch_id = CollectionBatch.prepare('main', pending)
             print(f'[watchdog] 本次采集批次: {batch_id}，目标数={len(pending)}')
             return _supervise_collection_batch(batch_id)

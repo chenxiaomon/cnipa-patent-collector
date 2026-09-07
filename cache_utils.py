@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Optional, Tuple
 
 from atomic_write import write_json_atomic
+from file_update_lock import reserve_file_update
 
 
 _APP_NO_SPLIT_RE = re.compile(r'[\s,;；，]+')
@@ -21,6 +22,7 @@ _SUPPORTED_CN_APPLICATION_NO_RE = re.compile(r'^[0-9]{7,15}[0-9X]$')
 _SUPPORTED_CN_APPLICATION_NO_INPUT_RE = re.compile(
     r'^(?:CN)?[0-9]{7,15}(?:\.?[0-9X])$'
 )
+reserve_json_cache_updates = reserve_file_update
 
 
 def normalize_app_no(app_no: str) -> Optional[str]:
@@ -101,7 +103,8 @@ def read_json_cache(cache_file: str) -> dict:
     """读取 JSON 缓存文件，文件不存在或格式错误时返回空字典"""
     try:
         with open(cache_file, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            cache_entries = json.load(f)
+            return cache_entries if isinstance(cache_entries, dict) else {}
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
@@ -118,12 +121,13 @@ def clear_cache_key(cache_file: str, key: str) -> bool:
     Returns:
         True 表示键存在并已删除；False 表示键不存在
     """
-    cache = read_json_cache(cache_file)
-    if key in cache:
-        del cache[key]
-        write_json_cache(cache_file, cache)
-        return True
-    return False
+    with reserve_json_cache_updates(cache_file):
+        cache_entries = read_json_cache(cache_file)
+        if key in cache_entries:
+            del cache_entries[key]
+            write_json_cache(cache_file, cache_entries)
+            return True
+        return False
 
 
 def poll_cache_for_key(

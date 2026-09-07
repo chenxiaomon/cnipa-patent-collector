@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cache_utils import is_supported_cn_application_no, normalize_app_no, parse_timestamp
+from file_update_lock import reserve_file_update
 
 _JSON_FIELDS = {
     'fwxx_list',
@@ -38,6 +39,10 @@ _APPLICANT_SPLIT_RE = re.compile(r"[,，;；、\r\n]+")
 _NOTICE_DATE_RE = re.compile(
     r"^(?P<year>\d{4})-?(?P<month>\d{2})-?(?P<day>\d{2})(?:[T\s].*)?$"
 )
+
+
+class DatabaseRebuildRejectedError(RuntimeError):
+    """The live database cannot be safely rebuilt under current conditions."""
 
 _CREATE_REQUESTS_TABLE = """
 CREATE TABLE IF NOT EXISTS requests (
@@ -201,6 +206,44 @@ def normalize_sync_cursor(value: object) -> str:
     return instant.isoformat(timespec='microseconds').replace('+00:00', 'Z')
 
 
+def _is_sqlite_lock_contention(error: sqlite3.Error) -> bool:
+    error_code = getattr(error, 'sqlite_errorcode', None)
+    primary_error_code = error_code & 0xff if isinstance(error_code, int) else None
+    busy_code = getattr(sqlite3, 'SQLITE_BUSY', 5)
+    locked_code = getattr(sqlite3, 'SQLITE_LOCKED', 6)
+    return primary_error_code in {busy_code, locked_code} or 'locked' in str(error).lower()
+
+
+def _database_busy_message() -> str:
+    return (
+        '数据库正在被另一个写任务使用，未执行重建。请停止采集、同步或其他写入任务后重试；'
+        '不要移动或删除数据库文件。'
+    )
+
+
+def _offline_recovery_message() -> str:
+    return (
+        '数据库完整性检查失败，已拒绝在线替换。请停止 Dashboard、MITM 和全部采集进程，'
+        '将 patents.db 及其 -wal/-shm/-journal 文件一起移出 data 目录，再重新执行重建。'
+    )
+
+
+def _require_existing_database_integrity(database_path: Path) -> None:
+    """Inspect an existing database read-only before PatentsDB can run migrations."""
+    if not database_path.exists():
+        return
+    try:
+        database_uri = database_path.resolve().as_uri() + '?mode=ro'
+        with closing(sqlite3.connect(database_uri, uri=True)) as connection:
+            integrity_rows = connection.execute('PRAGMA integrity_check').fetchall()
+    except sqlite3.DatabaseError as exc:
+        if _is_sqlite_lock_contention(exc):
+            raise DatabaseRebuildRejectedError(_database_busy_message()) from exc
+        raise DatabaseRebuildRejectedError(_offline_recovery_message()) from exc
+    if integrity_rows != [('ok',)]:
+        raise DatabaseRebuildRejectedError(_offline_recovery_message())
+
+
 class PatentsDB:
     """SQLite 专利数据库（线程安全，WAL 模式）"""
 
@@ -229,82 +272,88 @@ class PatentsDB:
             conn.close()
 
     def _init_db(self) -> None:
-        with self._lock, self._connect() as conn:
-            conn.execute('BEGIN IMMEDIATE')
-            conn.execute(_CREATE_TABLE)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_anjianywzt ON patents(anjianywzt)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp   ON patents(timestamp)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_updated_at  ON patents(updated_at)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_shenqingrxm ON patents(shenqingrxm)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_status_code ON patents(status_code)")
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_zhuanlilx_shenqingrxm ON patents(zhuanlilx, shenqingrxm)"
-            )
-            # 部分索引：只索引未采集发文信息的行，避免把多 KB 的 fwxx_list 文本收进索引
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_fwxx_pending ON patents(anjianywzt) WHERE fwxx_list IS NULL"
-            )
-            conn.execute(_CREATE_REQUESTS_TABLE)
-            conn.execute(_CREATE_FEE_TARGETS_TABLE)
-            conn.execute(_CREATE_COLLECTION_FAILURES_TABLE)
-            # 对已有数据库做无损迁移：列已存在时 SQLite 抛 "duplicate column name"，忽略即可
-            for col in (
-                'daili_jg TEXT',
-                'daili_r TEXT',
-                'payable_fee_records TEXT',
-                'late_fee_schedule_records TEXT',
-                'paid_fee_records TEXT',
-                'fee_receipt_dispatch_records TEXT',
-                'fee_snapshot_at TEXT',
-                'fwxx_collected_at TEXT',
-            ):
-                try:
-                    conn.execute(f"ALTER TABLE patents ADD COLUMN {col}")
-                except sqlite3.OperationalError as e:
-                    if 'duplicate column' not in str(e).lower():
-                        raise  # 非"列已存在"的错误应当暴露
-            # detail_enrichment 综合口径已随费用解耦移除，该索引不再有查询使用
-            conn.execute("DROP INDEX IF EXISTS idx_detail_enrichment_pending")
-            migration_timestamp = datetime.now(timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z')
-            if conn.execute('PRAGMA user_version').fetchone()[0] < _SYNC_CURSOR_SCHEMA_VERSION:
-                # Historic cursors used mixed ISO precision and offsets, which cannot be sorted as text.
-                legacy_cursors = conn.execute(
-                    'SELECT application_no, updated_at, timestamp FROM patents'
-                ).fetchall()
-                for legacy_cursor in legacy_cursors:
-                    instant = (
-                        parse_timestamp(legacy_cursor['updated_at'])
-                        or parse_timestamp(legacy_cursor['timestamp'])
-                    )
-                    normalized_cursor = (
-                        instant.isoformat(timespec='microseconds').replace('+00:00', 'Z')
-                        if instant else migration_timestamp
-                    )
-                    conn.execute(
-                        'UPDATE patents SET updated_at=? WHERE application_no=?',
-                        (normalized_cursor, legacy_cursor['application_no']),
-                    )
-                conn.execute(f'PRAGMA user_version={_SYNC_CURSOR_SCHEMA_VERSION}')
-            conn.execute(
-                "UPDATE patents SET updated_at=? "
-                "WHERE updated_at IS NULL OR updated_at=''",
-                (migration_timestamp,),
-            )
-            conn.commit()
+        with reserve_file_update(self._db_path):
+            with self._lock, self._connect() as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                conn.execute(_CREATE_TABLE)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_anjianywzt ON patents(anjianywzt)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp   ON patents(timestamp)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_updated_at  ON patents(updated_at)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_shenqingrxm ON patents(shenqingrxm)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_status_code ON patents(status_code)")
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_zhuanlilx_shenqingrxm ON patents(zhuanlilx, shenqingrxm)"
+                )
+                # 部分索引：只索引未采集发文信息的行，避免把多 KB 的 fwxx_list 文本收进索引
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_fwxx_pending ON patents(anjianywzt) WHERE fwxx_list IS NULL"
+                )
+                conn.execute(_CREATE_REQUESTS_TABLE)
+                conn.execute(_CREATE_FEE_TARGETS_TABLE)
+                conn.execute(_CREATE_COLLECTION_FAILURES_TABLE)
+                # 对已有数据库做无损迁移：列已存在时 SQLite 抛 "duplicate column name"，忽略即可
+                for col in (
+                    'daili_jg TEXT',
+                    'daili_r TEXT',
+                    'payable_fee_records TEXT',
+                    'late_fee_schedule_records TEXT',
+                    'paid_fee_records TEXT',
+                    'fee_receipt_dispatch_records TEXT',
+                    'fee_snapshot_at TEXT',
+                    'fwxx_collected_at TEXT',
+                ):
+                    try:
+                        conn.execute(f"ALTER TABLE patents ADD COLUMN {col}")
+                    except sqlite3.OperationalError as e:
+                        if 'duplicate column' not in str(e).lower():
+                            raise  # 非"列已存在"的错误应当暴露
+                # detail_enrichment 综合口径已随费用解耦移除，该索引不再有查询使用
+                conn.execute("DROP INDEX IF EXISTS idx_detail_enrichment_pending")
+                migration_timestamp = datetime.now(timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z')
+                if conn.execute('PRAGMA user_version').fetchone()[0] < _SYNC_CURSOR_SCHEMA_VERSION:
+                    # Historic cursors used mixed ISO precision and offsets, which cannot be sorted as text.
+                    legacy_cursors = conn.execute(
+                        'SELECT application_no, updated_at, timestamp FROM patents'
+                    ).fetchall()
+                    for legacy_cursor in legacy_cursors:
+                        instant = (
+                            parse_timestamp(legacy_cursor['updated_at'])
+                            or parse_timestamp(legacy_cursor['timestamp'])
+                        )
+                        normalized_cursor = (
+                            instant.isoformat(timespec='microseconds').replace('+00:00', 'Z')
+                            if instant else migration_timestamp
+                        )
+                        conn.execute(
+                            'UPDATE patents SET updated_at=? WHERE application_no=?',
+                            (normalized_cursor, legacy_cursor['application_no']),
+                        )
+                    conn.execute(f'PRAGMA user_version={_SYNC_CURSOR_SCHEMA_VERSION}')
+                conn.execute(
+                    "UPDATE patents SET updated_at=? "
+                    "WHERE updated_at IS NULL OR updated_at=''",
+                    (migration_timestamp,),
+                )
+                conn.commit()
 
     @contextmanager
     def _patent_write_transaction(self):
-        """Allocate one cursor per atomic commit while holding SQLite's writer lock."""
-        with self._lock, self._connect() as conn:
-            conn.execute('BEGIN IMMEDIATE')
-            latest_cursor = conn.execute('SELECT MAX(updated_at) FROM patents').fetchone()[0]
-            commit_instant = datetime.now(timezone.utc)
-            if latest_cursor:
-                committed_instant = datetime.fromisoformat(latest_cursor.replace('Z', '+00:00'))
-                commit_instant = max(commit_instant, committed_instant + timedelta(microseconds=1))
-            commit_cursor = commit_instant.isoformat(timespec='microseconds').replace('+00:00', 'Z')
-            yield conn, commit_cursor
-            conn.commit()
+        """Allocate one cursor per commit under the shared patent update reservation."""
+        with reserve_file_update(self._db_path):
+            with self._lock, self._connect() as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                commit_cursor = self._allocate_commit_cursor(conn)
+                yield conn, commit_cursor
+                conn.commit()
+
+    @staticmethod
+    def _allocate_commit_cursor(conn: sqlite3.Connection) -> str:
+        latest_cursor = conn.execute('SELECT MAX(updated_at) FROM patents').fetchone()[0]
+        commit_instant = datetime.now(timezone.utc)
+        if latest_cursor:
+            committed_instant = datetime.fromisoformat(latest_cursor.replace('Z', '+00:00'))
+            commit_instant = max(commit_instant, committed_instant + timedelta(microseconds=1))
+        return commit_instant.isoformat(timespec='microseconds').replace('+00:00', 'Z')
 
     @staticmethod
     def _encode(record: dict) -> dict:
@@ -1271,6 +1320,12 @@ class PatentsDB:
 
     def import_from_jsonl(self, path: Path) -> int:
         """先验证整份备份，再事务导入；旧追加日志按文件顺序重放。"""
+        records = self._read_jsonl_records(path)
+        return self.upsert_batch(records)
+
+    @staticmethod
+    def _read_jsonl_records(path: Path) -> list[dict]:
+        """Validate a complete JSONL snapshot before any database write starts."""
         records = []
         with open(path, 'r', encoding='utf-8') as f:
             for line_number, line in enumerate(f, 1):
@@ -1285,17 +1340,84 @@ class PatentsDB:
                 if not isinstance(application_no, str) or not application_no.strip():
                     raise ValueError(f"JSONL 第 {line_number} 行缺少有效申请号，未导入任何记录")
                 records.append(record)
-        return self.upsert_batch(records)
+        return records
+
+    def _replace_patent_records(self, records: list[dict]) -> int:
+        """Replace patent rows atomically while the caller reserves this database."""
+        encoded_rows = [self._encode(record) for record in records]
+        replay_sql = self._upsert_statement(_COLUMNS)
+        integrity_verified = False
+        try:
+            with self._lock, self._connect() as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                integrity_rows = conn.execute('PRAGMA integrity_check').fetchall()
+                if [tuple(row) for row in integrity_rows] != [('ok',)]:
+                    raise DatabaseRebuildRejectedError(_offline_recovery_message())
+                integrity_verified = True
+                commit_cursor = self._allocate_commit_cursor(conn)
+                conn.execute('DELETE FROM patents')
+                for row in encoded_rows:
+                    row['updated_at'] = commit_cursor
+                conn.executemany(
+                    replay_sql,
+                    ([row[column] for column in _COLUMNS] for row in encoded_rows),
+                )
+                restored_count = conn.execute('SELECT COUNT(*) FROM patents').fetchone()[0]
+                rebuilt_integrity_rows = conn.execute('PRAGMA integrity_check').fetchall()
+                if [tuple(row) for row in rebuilt_integrity_rows] != [('ok',)]:
+                    raise DatabaseRebuildRejectedError(_offline_recovery_message())
+                conn.commit()
+        except sqlite3.DatabaseError as exc:
+            if integrity_verified:
+                raise
+            if _is_sqlite_lock_contention(exc):
+                raise DatabaseRebuildRejectedError(_database_busy_message()) from exc
+            raise DatabaseRebuildRejectedError(_offline_recovery_message()) from exc
+        return restored_count
 
     def export_to_jsonl(self, path: Path) -> int:
         """将 DB 全量导出为 JSONL（用于备份 / git 共享）"""
-        records = self.get_all_records()
-        tmp = Path(str(path) + '.tmp')
-        with open(tmp, 'w', encoding='utf-8') as f:
-            for r in records:
-                f.write(json.dumps(r, ensure_ascii=False) + '\n')
-        tmp.replace(path)
-        return len(records)
+        path = Path(path)
+        with reserve_file_update(path):
+            records = self.get_all_records()
+            temporary_file = tempfile.NamedTemporaryFile(
+                mode='w',
+                encoding='utf-8',
+                prefix=path.name + '.',
+                suffix='.tmp',
+                dir=path.parent,
+                delete=False,
+            )
+            temporary_path = Path(temporary_file.name)
+            try:
+                with temporary_file:
+                    for record in records:
+                        temporary_file.write(json.dumps(record, ensure_ascii=False) + '\n')
+                    temporary_file.flush()
+                    os.fsync(temporary_file.fileno())
+                os.replace(temporary_path, path)
+                return len(records)
+            finally:
+                temporary_path.unlink(missing_ok=True)
+
+
+def rebuild_patents_database_from_jsonl(database_path: Path, snapshot_path: Path) -> int:
+    """Transactionally replace patent rows without replacing the live SQLite file."""
+    database_path = Path(database_path)
+    snapshot_path = Path(snapshot_path)
+    with reserve_file_update(snapshot_path):
+        with reserve_file_update(database_path):
+            snapshot_records = PatentsDB._read_jsonl_records(snapshot_path)
+            if not snapshot_records:
+                raise ValueError('JSONL 不包含专利记录，未执行重建')
+            _require_existing_database_integrity(database_path)
+            try:
+                database = PatentsDB(database_path)
+            except sqlite3.DatabaseError as exc:
+                if _is_sqlite_lock_contention(exc):
+                    raise DatabaseRebuildRejectedError(_database_busy_message()) from exc
+                raise DatabaseRebuildRejectedError(_offline_recovery_message()) from exc
+            return database._replace_patent_records(snapshot_records)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────
