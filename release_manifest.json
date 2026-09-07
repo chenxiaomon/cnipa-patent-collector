@@ -647,7 +647,7 @@
     },
     {
       "path": "tests/test_sync_init.py",
-      "sha256": "0d7cd9c93823a16c8a693f1452080a17e1144c30fa39f15f46fd6e14aa667f65"
+      "sha256": "fb967cd1680f4e420fd016be6bb670da145ff48c266c2adb43f300584a763fd3"
     },
     {
       "path": "tests/test_sync_pull_from_master.py",

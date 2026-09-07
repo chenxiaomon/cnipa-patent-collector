@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
-from contextlib import redirect_stdout
+from contextlib import closing, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -271,7 +271,7 @@ class TestDatabaseRebuild(unittest.TestCase):
             backup_path = root / 'backup.jsonl'
             database = PatentsDB(database_path)
             database.upsert({'application_no': 'CN202310000001', 'zhuanlimc': 'preserved'})
-            with sqlite3.connect(database_path) as connection:
+            with closing(sqlite3.connect(database_path)) as connection:
                 connection.executemany(
                     "INSERT INTO requests(id, payload, requester, note, created_at) "
                     "VALUES (?, '[]', 'test', ?, '2026-09-06T00:00:00Z')",
@@ -304,7 +304,7 @@ class TestDatabaseRebuild(unittest.TestCase):
                 self.run_rebuild(database_path, backup_path)
 
             self.assertEqual(database_path.read_bytes(), corrupt_database_bytes)
-            with sqlite3.connect(database_path) as connection:
+            with closing(sqlite3.connect(database_path)) as connection:
                 self.assertEqual(
                     connection.execute(
                         'SELECT zhuanlimc FROM patents WHERE application_no=?',
@@ -477,7 +477,7 @@ class TestDatabaseRebuild(unittest.TestCase):
                 kwargs['timeout'] = 0.01
                 return sqlite_connect(database_file, *args, **kwargs)
 
-            with sqlite3.connect(database_path) as active_writer:
+            with closing(sqlite3.connect(database_path)) as active_writer:
                 active_writer.execute('BEGIN IMMEDIATE')
                 with patch('db_manager.sqlite3.connect', side_effect=connect_without_wait):
                     with self.assertRaisesRegex(RuntimeError, '另一个写任务') as stopped:
