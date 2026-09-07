@@ -1754,7 +1754,7 @@ HTML = r"""<!doctype html>
           <div class="button-row">
             <button class="btn secondary" data-action="db_rebuild">从 JSONL 重建 DB</button>
           </div>
-          <div class="hint" style="margin-top:6px">从 detection_log.jsonl 精确恢复专利表；损坏库须先按运手册离线处理</div>
+          <div class="hint" style="margin-top:6px">从 detection_log.jsonl 精确恢复专利表；损坏库须先按运行手册离线处理</div>
         </article>
       </section>
       <article class="panel" style="margin-bottom:14px">
