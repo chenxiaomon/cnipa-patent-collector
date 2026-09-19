@@ -63,7 +63,7 @@ from settings import (
     PYAUTOGUI_PAUSE, PYAUTOGUI_FAILSAFE, MITM_TIMEOUT, MITM_POLL_INTERVAL,
     PATENT_CACHE_FILE, USE_MITM_PROXY, PATENTS_DB_FILE, DETECTION_LOG_JSONL_FILE,
     MAIN_COLLECTION_CHECKPOINT_FILE,
-    AUTOMATION_CONFIG_LOAD_WAIT, AUTOMATION_STARTUP_COUNTDOWN,
+    AUTOMATION_STARTUP_COUNTDOWN,
     AUTOMATION_ANTI_CRAWL_BATCH_SIZE, AUTOMATION_STATS_PRINT_INTERVAL,
     AUTOMATION_ANTI_CRAWL_WAIT_MIN, AUTOMATION_ANTI_CRAWL_WAIT_MAX,
 )
@@ -294,6 +294,9 @@ def _collect_main_batch(checkpoint: CollectionBatch, logger: DetectionLogger, te
     failure_streak = CollectionFailureStreak('主采集')
     write_collection_start_heartbeat(len(pending))
     try:
+        print("\n⏳ 正在加载鼠标位置配置...")
+        input_x, input_y, button_x, button_y = CoordinateService.load_search_coordinates()
+
         if update_list:
             with open(FORCE_UPDATE_FLAG, 'w'):
                 pass
@@ -301,11 +304,6 @@ def _collect_main_batch(checkpoint: CollectionBatch, logger: DetectionLogger, te
 
         # 创建浏览器并登录
         driver = BrowserService.launch_and_login(CNIPA_URL)
-
-        # 加载或记录鼠标位置
-        print("\n⏳ 正在加载鼠标位置配置...")
-        time.sleep(AUTOMATION_CONFIG_LOAD_WAIT)
-        input_x, input_y, button_x, button_y = CoordinateService.load_or_record_search_coordinates()
 
         # 倒计时
         print(f"\n⏳ {AUTOMATION_STARTUP_COUNTDOWN}秒后开始自动操作，请不要动鼠标！")

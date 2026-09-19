@@ -304,7 +304,7 @@ class TestDetailResponseTargetBinding(unittest.TestCase):
 
     def test_collectors_reject_wrong_case_even_when_search_input_contains_target(self):
         for collector_module, collect_one, coordinates in (
-            (collect_fees, collect_fees.collect_one_fee, (1, 2, 3, 4, 5, 6)),
+            (collect_fees, collect_fees.collect_one_fee, (1, 2, 3, 4, 5, 6, 7, 8)),
             (collect_fwxx, collect_fwxx.collect_one_fwxx, (1, 2, 3, 4, 5, 6, 7, 8)),
         ):
             with self.subTest(collector=collector_module.__name__):

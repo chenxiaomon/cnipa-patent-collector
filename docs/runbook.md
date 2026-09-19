@@ -41,27 +41,18 @@ CN202380004567
 
 ### 3. 配置鼠标坐标
 
-方法 A：使用坐标记录工具
+Windows 在 Dashboard「系统配置 → 鼠标坐标配置」分别启动四个校准任务，也可在项目 Python 环境执行：
+
 ```bash
-# 交互式记录坐标（需要 PyAutoGUI）
-python -c "import pyautogui; pyautogui.locateOnScreen"
+python record_search_coordinates.py
+python record_detail_coordinates.py detail-link
+python record_detail_coordinates.py fwxx-menu
+python record_detail_coordinates.py fee-menu
 ```
 
-方法 B：手动编辑 `data/config.json`
+校准会打开与采集相同的固定尺寸 Chrome 窗口。完成登录并导航到目标页面后，按弹窗提示单击输入框、查询按钮、搜索结果标题或详情菜单。点击会正常作用于页面；切换窗口时的点击不会作为目标保存。
 
-```json
-{
-  "input_x": 366,
-  "input_y": 242,
-  "button_x": 722,
-  "button_y": 368,
-  "last_updated": "2026-03-26T15:43:04.376435"
-}
-```
-
-注：实际坐标值需根据你的屏幕分辨率和浏览器位置调整。上面的是示例坐标。
-
-坐标必须是 JSON 整数；负坐标和单个轴为 `0` 可用于多屏布局，但任一完整坐标对 `(0, 0)` 会被视为未录制。空配置和缺失字段可以先保存，采集时只要求当前操作所需的坐标；Dashboard 保存、采集加载和环境诊断使用同一规则。
+坐标配置在 Dashboard 中只读，校准任务与采集、代码维护互斥。配置同时记录屏幕和窗口几何；坐标缺失、落在工具栏或屏幕范围外、屏幕分辨率或窗口设置变化时，采集会在启动浏览器前停止，须重新校准。旧版没有几何信息的配置也须重新录制。当前点击录制仅支持 Windows 桌面。
 
 ### 3.5 配置管理（可选，高级）
 
@@ -139,7 +130,7 @@ USE_MITM_PROXY=true python main_automation.py
 ```
 
 **浏览器交互**:
-- 完成登录后在终端按 Enter，或在 Dashboard 点击登录确认按钮。等待超时、未确认或登录表单仍可见时任务会停止，不继续消耗申请号；看门狗对 `login_required` 报警不自动重启。处理完成后重新启动任务。
+- 确认已完成登录并进入查询页后，在终端按 Enter，或在 Dashboard 点击登录确认按钮。程序以人工确认为准，确认后不再探测页面；等待超时或未确认时任务会停止，不继续消耗申请号。看门狗对 `login_required` 报警不自动重启，处理完成后重新启动任务。
 - 浏览器自动打开，PyAutoGUI 自动输入搜索框
 - **勿手动关闭浏览器**（会中断采集）
 - **勿移动鼠标**（可能干扰 PyAutoGUI）

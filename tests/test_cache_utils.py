@@ -6,14 +6,21 @@
 测试申请号规范化、验证等函数
 """
 
+import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 from cache_utils import (
     is_supported_cn_application_no,
     normalize_app_no,
     parse_app_no_list,
+    poll_cache_for_key,
     poll_cache_with_retry,
+    read_json_cache,
+    write_json_cache,
 )
 
 
@@ -168,6 +175,117 @@ CN202111504942.X
             parse_app_no_list(text),
             ['2024110065970', '100010220', '202311437336X'],
         )
+
+
+class TestCacheSnapshots(unittest.TestCase):
+    def test_missing_and_malformed_cache_remain_empty(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_file = Path(tmpdir) / 'cache.json'
+            self.assertEqual(read_json_cache(cache_file), {})
+            cache_file.write_text('{', encoding='utf-8')
+            self.assertEqual(read_json_cache(cache_file), {})
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows read handles prevent snapshot replacement')
+    def test_publisher_can_replace_snapshot_while_reader_decodes_json(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_file = Path(tmpdir) / 'cache.json'
+            cache_file.write_text('{"response": "first"}', encoding='utf-8')
+            replacement = Path(tmpdir) / 'replacement.json'
+            replacement.write_text('{"response": "second"}', encoding='utf-8')
+            decode_json = json.loads
+
+            def publish_during_decode(snapshot, **kwargs):
+                os.replace(replacement, cache_file)
+                return decode_json(snapshot, **kwargs)
+
+            with patch('cache_utils.json.loads', side_effect=publish_during_decode):
+                self.assertEqual(read_json_cache(cache_file), {'response': 'first'})
+            self.assertEqual(read_json_cache(cache_file), {'response': 'second'})
+
+    def test_reader_recovers_from_transient_windows_access_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_file = Path(tmpdir) / 'cache.json'
+            cache_file.write_text('{"response": "received"}', encoding='utf-8')
+            sharing_error = PermissionError('snapshot is being replaced')
+            sharing_error.winerror = 5
+            with cache_file.open(encoding='utf-8') as stream:
+                with patch('builtins.open', side_effect=[sharing_error, stream]):
+                    self.assertEqual(read_json_cache(cache_file), {'response': 'received'})
+
+    def test_persistent_reader_access_error_is_reported(self):
+        sharing_error = PermissionError('cache remains inaccessible')
+        sharing_error.winerror = 32
+        with (
+            patch('builtins.open', side_effect=sharing_error),
+            patch('time.monotonic', side_effect=[0.0, 2.0]),
+        ):
+            with self.assertRaises(PermissionError):
+                read_json_cache('cache.json')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows CRT omits winerror on a sharing violation')
+    def test_reader_recovers_from_windows_crt_access_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_file = Path(tmpdir) / 'cache.json'
+            cache_file.write_text('{"response": "received"}', encoding='utf-8')
+            with cache_file.open(encoding='utf-8') as stream:
+                with patch('builtins.open', side_effect=[PermissionError(13, 'Permission denied'), stream]):
+                    self.assertEqual(read_json_cache(cache_file), {'response': 'received'})
+
+    def test_polling_unchanged_cache_does_not_repeat_full_reads(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_file = Path(tmpdir) / 'cache.json'
+            write_json_cache(cache_file, {'other': {'title': 'existing'}})
+            sleeps = []
+
+            def publish_on_fourth_poll(interval):
+                sleeps.append(interval)
+                if len(sleeps) == 4:
+                    write_json_cache(cache_file, {'target': {'title': 'received'}})
+
+            with (
+                patch('cache_utils.read_json_cache', wraps=read_json_cache) as read_cache,
+                patch('cache_utils.time.sleep', side_effect=publish_on_fourth_poll),
+            ):
+                captured = poll_cache_for_key(cache_file, 'target', max_wait=2)
+            self.assertEqual(captured, {'title': 'received'})
+            self.assertEqual(read_cache.call_count, 2)
+
+    def test_polling_finds_cache_created_after_wait_begins(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_file = Path(tmpdir) / 'cache.json'
+            with patch('cache_utils.time.sleep', side_effect=lambda interval: write_json_cache(cache_file, {'target': 42})):
+                self.assertEqual(poll_cache_for_key(cache_file, 'target', max_wait=2), 42)
+
+    def test_polling_revalidates_unchanged_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_file = Path(tmpdir) / 'cache.json'
+            write_json_cache(cache_file, {'target': 42})
+            validate = Mock(side_effect=[False, True])
+            with patch('cache_utils.time.sleep'):
+                self.assertEqual(poll_cache_for_key(cache_file, 'target', max_wait=2, validate=validate), 42)
+
+
+    def test_polling_detects_same_size_replacement_with_preserved_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_file = Path(tmpdir) / 'cache.json'
+            cache_file.write_text('{"target": 41}', encoding='utf-8')
+            original_stat = cache_file.stat()
+
+            def publish_replacement(interval):
+                replacement = Path(tmpdir) / 'replacement.json'
+                replacement.write_text('{"target": 42}', encoding='utf-8')
+                os.utime(replacement, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+                os.replace(replacement, cache_file)
+
+            with patch('cache_utils.time.sleep', side_effect=publish_replacement):
+                captured = poll_cache_for_key(cache_file, 'target', max_wait=2, validate=lambda value: value == 42)
+            self.assertEqual(captured, 42)
+
+    def test_unchanged_cache_without_target_still_times_out(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_file = Path(tmpdir) / 'cache.json'
+            write_json_cache(cache_file, {'other': 42})
+            self.assertIsNone(poll_cache_for_key(cache_file, 'target', max_wait=0.03, interval=0.005))
 
 
 class TestPollCacheWithRetry(unittest.TestCase):

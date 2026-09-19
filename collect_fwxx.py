@@ -550,29 +550,19 @@ def _collect_fwxx_batch(args, checkpoint: CollectionBatch) -> None:
 
     driver = None
     try:
+        print("\n[*] 正在加载坐标配置...")
+        input_x, input_y, button_x, button_y = CoordinateService.load_search_coordinates()
+        link_x, link_y, fwxx_menu_x, fwxx_menu_y = CoordinateService.load_fwxx_coordinates()
+
         # 步骤 3：创建浏览器，打开搜索页，等待用户登录
         print(f"\n[*] 打开搜索页: {args.url}")
         driver = BrowserService.launch_and_login(args.url, page_load_wait=FWXX_PAGE_LOAD_WAIT)
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # 步骤 4：加载坐标配置
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-        # 搜索页坐标
-        print("\n[*] 正在加载坐标配置...")
-        input_x, input_y, button_x, button_y = CoordinateService.load_or_record_search_coordinates()
-
-        print("\n[*] 现在需要记录发文信息页面的坐标...")
-        print("[*] 请确保浏览器已登录并正常显示搜索页")
-
-        # 发文信息坐标
-        link_x, link_y, fwxx_menu_x, fwxx_menu_y = CoordinateService.load_or_record_fwxx_coordinates()
-
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 步骤 5：倒计时
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-        countdown(FWXX_STARTUP_COUNTDOWN, "坐标已记录，即将开始自动采集，倒计时")
+        countdown(FWXX_STARTUP_COUNTDOWN, "坐标已就绪，即将开始自动采集，倒计时")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 步骤 6：主循环 - 逐个采集

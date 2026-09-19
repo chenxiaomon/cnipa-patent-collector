@@ -11,19 +11,17 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
-from urllib.parse import urlparse
 
 from browser_utils import (
     load_credentials, auto_fill_login, create_driver_with_retry, fill_vue_input,
 )
-from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.common.exceptions import TimeoutException
 from collection_health import record_collection_alert
 
 from settings import (
     BROWSER_PAGE_LOAD_TIMEOUT,
-    CNIPA_LOGIN_WAIT_SECONDS, CNIPA_URL, LOGIN_READY_FLAG_FILE,
+    BROWSER_WINDOW_HEIGHT, BROWSER_WINDOW_WIDTH, BROWSER_WINDOW_X, BROWSER_WINDOW_Y,
+    CNIPA_LOGIN_WAIT_SECONDS, LOGIN_READY_FLAG_FILE,
     USE_VIRTUAL_DISPLAY, VIRTUAL_DISPLAY_WIDTH, VIRTUAL_DISPLAY_HEIGHT,
 )
 
@@ -78,6 +76,31 @@ class BrowserService:
     """统一管理浏览器创建和登录"""
 
     @staticmethod
+    def close_automation_browser(driver) -> None:
+        driver.quit()
+        # UC 的析构再次调用 quit；显式关闭成功后不再重复清理临时 profile。
+        driver.keep_user_data_dir = True
+
+    @staticmethod
+    def _apply_collection_window_geometry(driver) -> None:
+        expected_geometry = {
+            "x": BROWSER_WINDOW_X,
+            "y": BROWSER_WINDOW_Y,
+            "width": BROWSER_WINDOW_WIDTH,
+            "height": BROWSER_WINDOW_HEIGHT,
+        }
+        driver.set_window_rect(**expected_geometry)
+        actual_geometry = driver.get_window_rect()
+        if any(
+            actual_geometry.get(name) != expected_value
+            for name, expected_value in expected_geometry.items()
+        ):
+            raise RuntimeError(
+                "浏览器窗口几何不匹配；"
+                f"期望 {expected_geometry}，实际 {actual_geometry}"
+            )
+
+    @staticmethod
     def launch_and_login(url: str, page_load_wait: float = 15.0) -> object:
         """
         创建浏览器、打开 URL、自动填写账密、等待用户完成验证码
@@ -91,6 +114,7 @@ class BrowserService:
         """
         driver = create_driver_with_retry()
         try:
+            BrowserService._apply_collection_window_geometry(driver)
             driver.set_page_load_timeout(BROWSER_PAGE_LOAD_TIMEOUT)
             try:
                 driver.get(url)
@@ -107,7 +131,7 @@ class BrowserService:
         except BaseException as error:
             # The caller has not received the driver yet, so startup owns cleanup.
             try:
-                driver.quit()
+                BrowserService.close_automation_browser(driver)
             except Exception:
                 pass
             if isinstance(error, LoginConfirmationRequired):
@@ -155,38 +179,10 @@ class BrowserService:
                             "等待登录确认超时，已停止采集；请重新启动任务并完成登录"
                         )
                     time.sleep(0.8)
-            BrowserService._verify_confirmed_login(driver)
-            print("[LOGIN_CONFIRMED] 登录已由操作员确认，登录表单已退出")
+            # 登录后的页面探测会使本机 CNIPA 搜索从 200 变为 400；沿用人工确认。
+            print("[LOGIN_CONFIRMED] 登录已由操作员确认")
         finally:
             LOGIN_READY_FLAG_FILE.unlink(missing_ok=True)
-
-    @staticmethod
-    def _verify_confirmed_login(driver) -> None:
-        # Absence of a password field is only a veto check after human confirmation,
-        # never evidence that an unattended session has authenticated successfully.
-        def confirmed_page_ready(browser):
-            if urlparse(browser.current_url).hostname != urlparse(CNIPA_URL).hostname:
-                return False
-            if not browser.execute_script(
-                "return document.readyState === 'complete' && "
-                "!!document.body && document.body.innerText.trim().length > 0;"
-            ):
-                return False
-            login_inputs = browser.find_elements(
-                By.CSS_SELECTOR,
-                'input[type="password"], input[placeholder="请输入密码"], '
-                'input[placeholder="代理机构代码"]',
-            )
-            return not any(element.is_displayed() for element in login_inputs)
-
-        try:
-            WebDriverWait(
-                driver, 10, ignored_exceptions=(StaleElementReferenceException,)
-            ).until(confirmed_page_ready)
-        except TimeoutException as error:
-            raise LoginConfirmationRequired(
-                "登录确认后仍停留在登录页或页面未就绪，已停止采集"
-            ) from error
 
     @staticmethod
     def _show_virtual_screenshot(driver, filename: str = "screenshot.png") -> None:

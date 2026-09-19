@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import json
 import tempfile
 import os
 import subprocess
@@ -121,10 +122,28 @@ class TestCollectionHealth(unittest.TestCase):
         self.assertEqual(record_alert.call_args_list[-1].args[0], 'restart_limit_reached')
 
     def test_watchdog_requires_noninteractive_login_confirmation(self):
-        with patch.object(collection_watchdog.subprocess, 'Popen') as collection_start:
-            collection_watchdog.start_collection_process('a' * 32)
-        self.assertEqual(collection_start.call_args.kwargs['stdin'], subprocess.DEVNULL)
-        self.assertEqual(collection_start.call_args.args[0][-2:], ['--resume-batch', 'a' * 32])
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            stdin_report = Path(temporary_directory) / 'stdin.json'
+            probe_command = [
+                sys.executable, '-c',
+                'import json,sys; from pathlib import Path; '
+                'Path(sys.argv[1]).write_text(json.dumps({'
+                '"interactive": sys.stdin.isatty(), '
+                '"input": sys.stdin.readline()}), encoding="utf-8")',
+                str(stdin_report),
+            ]
+            with patch.object(collection_watchdog, 'collection_command', return_value=probe_command):
+                probe_process = collection_watchdog.start_collection_process('a' * 32)
+            try:
+                self.assertEqual(probe_process.wait(timeout=10), 0)
+                self.assertEqual(
+                    json.loads(stdin_report.read_text(encoding='utf-8')),
+                    {'interactive': False, 'input': ''},
+                )
+            finally:
+                if probe_process.poll() is None:
+                    probe_process.kill()
+                    probe_process.wait(timeout=10)
 
     def test_watchdog_prioritizes_required_login_over_heartbeat_timeout(self):
         with patch.object(collection_watchdog, 'read_alert_status', return_value={

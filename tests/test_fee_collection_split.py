@@ -80,7 +80,6 @@ class TestFeeCollectionBoundaries(unittest.TestCase):
         driver = MagicMock()
         driver.page_source = ""
         driver.window_handles = ["search"]
-        coordinate_service.load_or_record_fee_menu_coordinates.return_value = (7, 8)
 
         def reveal_detail_tab(*_args, **_kwargs):
             if len(driver.window_handles) == 1:
@@ -110,9 +109,12 @@ class TestFeeCollectionBoundaries(unittest.TestCase):
                 button_y=4,
                 link_x=5,
                 link_y=6,
+                fee_menu_x=7,
+                fee_menu_y=8,
             )
 
         self.assertEqual(collected, fee_fields)
+        self.assertEqual(coordinate_service.mock_calls, [])
         clear_cache.assert_called_once_with(collect_fees.PATENT_FEE_CACHE_FILE, "A")
         poll_cache.assert_called_once_with(
             collect_fees.PATENT_FEE_CACHE_FILE,
@@ -151,6 +153,8 @@ class TestFeeCollectionBoundaries(unittest.TestCase):
             button_y=4,
             link_x=5,
             link_y=6,
+            fee_menu_x=7,
+            fee_menu_y=8,
         )
 
         self.assertIsNone(collected)

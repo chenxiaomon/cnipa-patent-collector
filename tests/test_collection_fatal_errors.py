@@ -38,6 +38,13 @@ class TestCollectionFatalErrors(unittest.TestCase):
             checkpoint_patch = patch.object(collector, constant, self.checkpoint_file)
             checkpoint_patch.start()
             self.addCleanup(checkpoint_patch.stop)
+            coordinate_patch = patch.object(collector, 'CoordinateService')
+            coordinates = coordinate_patch.start()
+            self.addCleanup(coordinate_patch.stop)
+            coordinates.load_search_coordinates.return_value = (1, 2, 3, 4)
+            coordinates.load_fwxx_coordinates.return_value = (5, 6, 7, 8)
+            coordinates.load_detail_link_coordinates.return_value = (5, 6)
+            coordinates.load_fee_menu_coordinates.return_value = (7, 8)
 
     @patch(
         "collect_fwxx.BrowserService.launch_and_login",
@@ -75,7 +82,7 @@ class TestCollectionFatalErrors(unittest.TestCase):
     def test_fee_single_collection_propagates_browser_exit_before_query(self):
         with patch('collect_fees.is_browser_alive', return_value=False):
             with self.assertRaises(collect_fees.DetailCollectionFatalError):
-                collect_fees.collect_one_fee(MagicMock(), 'A', 1, 2, 3, 4, 5, 6)
+                collect_fees.collect_one_fee(MagicMock(), 'A', 1, 2, 3, 4, 5, 6, 7, 8)
 
     def test_fwxx_driver_failure_before_detail_page_stops_batch(self):
         driver = MagicMock()
@@ -89,7 +96,7 @@ class TestCollectionFatalErrors(unittest.TestCase):
         type(driver).window_handles = PropertyMock(side_effect=collect_fees.WebDriverException('session lost'))
         with patch('collect_fees.is_browser_alive', return_value=True):
             with self.assertRaises(collect_fees.DetailCollectionFatalError):
-                collect_fees.collect_one_fee(driver, 'A', 1, 2, 3, 4, 5, 6)
+                collect_fees.collect_one_fee(driver, 'A', 1, 2, 3, 4, 5, 6, 7, 8)
 
 
 class DetailBatchInterruptionCases:
@@ -101,9 +108,10 @@ class DetailBatchInterruptionCases:
         self._patch(self.collector, self.checkpoint_constant, self.checkpoint_file)
         self._patch(self.collector, self.target_loader, return_value=['A', 'B'])
         coordinates = self._patch(self.collector, 'CoordinateService')
-        coordinates.load_or_record_search_coordinates.return_value = (1, 2, 3, 4)
-        coordinates.load_or_record_fwxx_coordinates.return_value = (5, 6, 7, 8)
-        coordinates.load_or_record_detail_link_coordinates.return_value = (5, 6)
+        coordinates.load_search_coordinates.return_value = (1, 2, 3, 4)
+        coordinates.load_fwxx_coordinates.return_value = (5, 6, 7, 8)
+        coordinates.load_detail_link_coordinates.return_value = (5, 6)
+        coordinates.load_fee_menu_coordinates.return_value = (7, 8)
         self.browser_service = self._patch(self.collector, 'BrowserService')
         self._patch(self.collector, 'countdown')
         self.browser_alive = self._patch(self.collector, 'is_browser_alive', return_value=True)

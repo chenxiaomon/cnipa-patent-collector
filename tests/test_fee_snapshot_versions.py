@@ -227,8 +227,9 @@ class TestFeeSnapshotVersions(unittest.TestCase):
             patch.object(collect_fees, "DetectionLogger"),
             patch.object(self.database, "export_to_jsonl", return_value=1),
         ):
-            coordinate_service.load_or_record_search_coordinates.return_value = (1, 2, 3, 4)
-            coordinate_service.load_or_record_detail_link_coordinates.return_value = (5, 6)
+            coordinate_service.load_search_coordinates.return_value = (1, 2, 3, 4)
+            coordinate_service.load_detail_link_coordinates.return_value = (5, 6)
+            coordinate_service.load_fee_menu_coordinates.return_value = (7, 8)
             collect_fees._run_fee_collection(Namespace(
                 test=None, input=None, app=None, force=False, url="https://example.invalid",
             ))

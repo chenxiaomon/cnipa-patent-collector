@@ -72,7 +72,7 @@ class TestMainCollectionResume(unittest.TestCase):
         self.browser_service = self._patch('BrowserService')
         self.browser_alive = self._patch('is_browser_alive', return_value=True)
         coordinates = self._patch('CoordinateService')
-        coordinates.load_or_record_search_coordinates.return_value = (1, 2, 3, 4)
+        coordinates.load_search_coordinates.return_value = (1, 2, 3, 4)
         self._patch('AUTOMATION_STARTUP_COUNTDOWN', 0)
         self._patch('stop_virtual_display')
         self._patch('write_collection_start_heartbeat')

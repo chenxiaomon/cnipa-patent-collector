@@ -23,7 +23,7 @@ class TestFeeCoordinateFlow(unittest.TestCase):
     @patch("collect_fees.InputService")
     @patch("collect_fees.CoordinateService")
     @patch("collect_fees.is_browser_alive", return_value=True)
-    def test_fee_menu_coordinate_is_loaded_after_detail_page_opens(
+    def test_fee_menu_uses_preloaded_coordinates_after_detail_page_opens(
         self,
         _browser_alive,
         coordinate_service,
@@ -40,15 +40,10 @@ class TestFeeCoordinateFlow(unittest.TestCase):
         def reveal_detail_tab(*_args, **_kwargs):
             if len(driver.window_handles) == 1:
                 driver.window_handles.append("detail")
+            else:
+                driver.switch_to.window.assert_called_with("detail")
 
         input_service.move_and_click.side_effect = reveal_detail_tab
-        def load_fee_menu_coordinates():
-            driver.switch_to.window.assert_called_with("detail")
-            return 7, 8
-
-        coordinate_service.load_or_record_fee_menu_coordinates.side_effect = (
-            load_fee_menu_coordinates
-        )
         poll_cache.return_value = {
             "detail_attempt_id": "attempt-current",
             "payable_fee_records": [],
@@ -71,9 +66,11 @@ class TestFeeCoordinateFlow(unittest.TestCase):
                 button_y=4,
                 link_x=5,
                 link_y=6,
+                fee_menu_x=7,
+                fee_menu_y=8,
             )
 
-        coordinate_service.load_or_record_fee_menu_coordinates.assert_called_once_with()
+        self.assertEqual(coordinate_service.mock_calls, [])
         self.assertEqual(
             input_service.move_and_click.call_args_list,
             [
@@ -110,7 +107,7 @@ class TestFeeCoordinateFlow(unittest.TestCase):
     @patch("collect_fees.CoordinateService")
     @patch("collect_fees.BrowserService")
     @patch("collect_fees.load_fee_dataset_targets", return_value=["A"])
-    def test_search_page_only_loads_search_and_detail_link_coordinates(
+    def test_fee_batch_loads_search_detail_and_fee_coordinates_before_browser(
         self,
         _load_targets,
         browser_service,
@@ -122,16 +119,20 @@ class TestFeeCoordinateFlow(unittest.TestCase):
         _db_class,
     ):
         driver = browser_service.launch_and_login.return_value
-        coordinate_service.load_or_record_search_coordinates.return_value = (
+        coordinate_service.load_search_coordinates.return_value = (
             1,
             2,
             3,
             4,
         )
-        coordinate_service.load_or_record_detail_link_coordinates.return_value = (
+        coordinate_service.load_detail_link_coordinates.return_value = (
             5,
             6,
         )
+        coordinate_service.load_fee_menu_coordinates.return_value = (7, 8)
+        startup_calls = MagicMock()
+        startup_calls.attach_mock(coordinate_service, 'coordinates')
+        startup_calls.attach_mock(browser_service, 'browser')
         arguments = Namespace(
             test=None,
             input=None,
@@ -147,10 +148,15 @@ class TestFeeCoordinateFlow(unittest.TestCase):
             ):
                 collect_fees._run_fee_collection(arguments)
 
-        coordinate_service.load_or_record_search_coordinates.assert_called_once_with()
-        coordinate_service.load_or_record_detail_link_coordinates.assert_called_once_with()
-        coordinate_service.load_or_record_fwxx_coordinates.assert_not_called()
-        coordinate_service.load_or_record_fee_menu_coordinates.assert_not_called()
+        self.assertEqual(startup_calls.mock_calls[:4], [
+            call.coordinates.load_search_coordinates(),
+            call.coordinates.load_detail_link_coordinates(),
+            call.coordinates.load_fee_menu_coordinates(),
+            call.browser.launch_and_login(
+                arguments.url, page_load_wait=collect_fees.FWXX_PAGE_LOAD_WAIT,
+            ),
+        ])
+        coordinate_service.load_fwxx_coordinates.assert_not_called()
         collect_one_fee.assert_called_once_with(
             driver=driver,
             application_no="A",
@@ -160,6 +166,8 @@ class TestFeeCoordinateFlow(unittest.TestCase):
             button_y=4,
             link_x=5,
             link_y=6,
+            fee_menu_x=7,
+            fee_menu_y=8,
         )
 
     @patch.object(collect_fees, "USE_MITM_PROXY", True)

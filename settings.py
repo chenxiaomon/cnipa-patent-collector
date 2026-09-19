@@ -169,6 +169,12 @@ MITM_POLL_INTERVAL = float(os.getenv('MITM_POLL_INTERVAL', '0.5'))
 PYAUTOGUI_PAUSE = float(os.getenv('PYAUTOGUI_PAUSE', '0.03'))
 PYAUTOGUI_FAILSAFE = os.getenv('PYAUTOGUI_FAILSAFE', 'false').lower() in ('true', '1', 'yes')
 
+# 校准与采集共享同一窗口几何，绝对桌面坐标才可复用。
+BROWSER_WINDOW_X = int(os.getenv('BROWSER_WINDOW_X', '0'))
+BROWSER_WINDOW_Y = int(os.getenv('BROWSER_WINDOW_Y', '0'))
+BROWSER_WINDOW_WIDTH = int(os.getenv('BROWSER_WINDOW_WIDTH', '1440'))
+BROWSER_WINDOW_HEIGHT = int(os.getenv('BROWSER_WINDOW_HEIGHT', '900'))
+
 # ============================================================================
 # 功能开关
 # ============================================================================
