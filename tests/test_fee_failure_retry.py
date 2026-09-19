@@ -118,16 +118,17 @@ class TestFeeFailureLifecycle(unittest.TestCase):
                 _logger,
                 db_class,
             ) = [stack.enter_context(test_patch) for test_patch in patches]
-            coordinate_service.load_or_record_search_coordinates.return_value = (
+            coordinate_service.load_search_coordinates.return_value = (
                 1,
                 2,
                 3,
                 4,
             )
-            coordinate_service.load_or_record_detail_link_coordinates.return_value = (
+            coordinate_service.load_detail_link_coordinates.return_value = (
                 5,
                 6,
             )
+            coordinate_service.load_fee_menu_coordinates.return_value = (7, 8)
 
             self.failure_database = db_class.return_value
             collect_fees._run_fee_collection(_collection_arguments())

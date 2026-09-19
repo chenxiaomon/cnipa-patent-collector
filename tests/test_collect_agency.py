@@ -133,8 +133,8 @@ class TestAgencyDetailFlow(unittest.TestCase):
             6,
             post_click_wait=collect_agency.FWXX_DETAIL_CLICK_WAIT,
         )
-        coordinate_service.load_or_record_fwxx_coordinates.assert_not_called()
-        coordinate_service.load_or_record_fee_menu_coordinates.assert_not_called()
+        coordinate_service.load_fwxx_coordinates.assert_not_called()
+        coordinate_service.load_fee_menu_coordinates.assert_not_called()
         close_tab.assert_called_once_with("ctrl", "w")
         self.assertEqual(driver.switch_to.window.call_args_list[0], call("search"))
 
@@ -472,13 +472,13 @@ class TestAgencyCollectionLoop(unittest.TestCase):
     ):
         events = []
         driver = browser_service.launch_and_login.return_value
-        coordinate_service.load_or_record_search_coordinates.return_value = (
+        coordinate_service.load_search_coordinates.return_value = (
             1,
             2,
             3,
             4,
         )
-        coordinate_service.load_or_record_detail_link_coordinates.return_value = (5, 6)
+        coordinate_service.load_detail_link_coordinates.return_value = (5, 6)
         db = db_class.return_value
 
         old_records = {
@@ -519,10 +519,10 @@ class TestAgencyCollectionLoop(unittest.TestCase):
             [record["classification"] for record in records],
             ["changed", "first_collected"],
         )
-        coordinate_service.load_or_record_search_coordinates.assert_called_once_with()
-        coordinate_service.load_or_record_detail_link_coordinates.assert_called_once_with()
-        coordinate_service.load_or_record_fwxx_coordinates.assert_not_called()
-        coordinate_service.load_or_record_fee_menu_coordinates.assert_not_called()
+        coordinate_service.load_search_coordinates.assert_called_once_with()
+        coordinate_service.load_detail_link_coordinates.assert_called_once_with()
+        coordinate_service.load_fwxx_coordinates.assert_not_called()
+        coordinate_service.load_fee_menu_coordinates.assert_not_called()
         db.update_fields.assert_not_called()
         self.assertEqual(write_reports.call_count, 3)
         driver.quit.assert_called_once_with()
@@ -551,13 +551,13 @@ class TestAgencyCollectionLoop(unittest.TestCase):
             "changed",
         )
         load_resume.return_value = [retained_record]
-        coordinate_service.load_or_record_search_coordinates.return_value = (
+        coordinate_service.load_search_coordinates.return_value = (
             1,
             2,
             3,
             4,
         )
-        coordinate_service.load_or_record_detail_link_coordinates.return_value = (5, 6)
+        coordinate_service.load_detail_link_coordinates.return_value = (5, 6)
         db = db_class.return_value
         db.get_record.return_value = None
         collect_one_agency.side_effect = [
@@ -622,13 +622,13 @@ class TestAgencyCollectionLoop(unittest.TestCase):
             for application_no in targets
         ]
         db.get_record.return_value = None
-        coordinate_service.load_or_record_search_coordinates.return_value = (
+        coordinate_service.load_search_coordinates.return_value = (
             1,
             2,
             3,
             4,
         )
-        coordinate_service.load_or_record_detail_link_coordinates.return_value = (5, 6)
+        coordinate_service.load_detail_link_coordinates.return_value = (5, 6)
         collect_one_agency.side_effect = [agency_ack(), agency_ack()]
         arguments = Namespace(
             input=None,
@@ -682,7 +682,7 @@ class TestAgencyCollectionLoop(unittest.TestCase):
         self.assertEqual(records, [])
         load_resume.assert_not_called()
         write_reports.assert_not_called()
-        coordinate_service.load_or_record_search_coordinates.assert_not_called()
+        coordinate_service.load_search_coordinates.assert_not_called()
         browser_service.launch_and_login.assert_not_called()
 
     @patch.object(collect_agency, "FWXX_ANTI_CRAWL_BATCH_SIZE", 99)
@@ -706,13 +706,13 @@ class TestAgencyCollectionLoop(unittest.TestCase):
         browser_alive,
     ):
         targets = ["2024110065970", "202111504942X"]
-        coordinate_service.load_or_record_search_coordinates.return_value = (
+        coordinate_service.load_search_coordinates.return_value = (
             1,
             2,
             3,
             4,
         )
-        coordinate_service.load_or_record_detail_link_coordinates.return_value = (5, 6)
+        coordinate_service.load_detail_link_coordinates.return_value = (5, 6)
         db = db_class.return_value
         db.get_record.return_value = None
         arguments = Namespace(

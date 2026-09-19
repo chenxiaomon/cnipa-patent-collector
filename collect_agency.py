@@ -441,14 +441,13 @@ def _run_agency_collection(arguments) -> list[dict]:
 
     driver = None
     try:
+        input_x, input_y, button_x, button_y = CoordinateService.load_search_coordinates()
+        link_x, link_y = CoordinateService.load_detail_link_coordinates()
+
         driver = BrowserService.launch_and_login(
             arguments.url,
             page_load_wait=FWXX_PAGE_LOAD_WAIT,
         )
-        input_x, input_y, button_x, button_y = (
-            CoordinateService.load_or_record_search_coordinates()
-        )
-        link_x, link_y = CoordinateService.load_or_record_detail_link_coordinates()
         countdown(FWXX_STARTUP_COUNTDOWN)
 
         if patents_db is None:

@@ -89,13 +89,16 @@ def start_collection_process(batch_id: str) -> subprocess.Popen:
     popen_kwargs = {
         'cwd': str(BASE_DIR),
         'env': os.environ.copy(),
-        'stdin': subprocess.DEVNULL,
+        # Windows 的 NUL 会被 isatty() 当作终端；关闭管道让登录流程等待 Dashboard 确认。
+        'stdin': subprocess.PIPE,
     }
     if sys.platform == 'win32':
         popen_kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         popen_kwargs['start_new_session'] = True
-    return subprocess.Popen(collection_command(batch_id), **popen_kwargs)
+    collection_process = subprocess.Popen(collection_command(batch_id), **popen_kwargs)
+    collection_process.stdin.close()
+    return collection_process
 
 
 def supervision_failure(process: subprocess.Popen) -> tuple[str, str] | None:

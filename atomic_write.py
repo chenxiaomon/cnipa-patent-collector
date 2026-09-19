@@ -6,11 +6,33 @@
 """
 import json
 import os
+import tempfile
+import time
+from pathlib import Path
 
 
 def write_json_atomic(path, obj, *, indent=2) -> None:
     """将 obj 序列化为 JSON 并原子替换到 path（str 或 Path）。"""
-    tmp_path = f"{path}.tmp"
-    with open(tmp_path, 'w', encoding='utf-8') as f:
-        json.dump(obj, f, ensure_ascii=False, indent=indent)
-    os.replace(tmp_path, path)
+    snapshot = json.dumps(obj, ensure_ascii=False, indent=indent)
+    destination = Path(path)
+    # 独立临时文件防止不同进程在替换前覆盖彼此尚未发布的内容。
+    snapshot_stream = tempfile.NamedTemporaryFile(
+        mode='w', encoding='utf-8', dir=destination.parent,
+        prefix=destination.name + '.', suffix='.tmp', delete=False,
+    )
+    temporary_path = Path(snapshot_stream.name)
+    try:
+        with snapshot_stream:
+            snapshot_stream.write(snapshot)
+        deadline = time.monotonic() + 1.0
+        while True:
+            try:
+                os.replace(temporary_path, destination)
+                return
+            except PermissionError as error:
+                # Windows 读句柄/扫描器可短暂阻止替换；永久权限错误仍须上报。
+                if getattr(error, 'winerror', None) not in {5, 32, 33} or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.02)
+    finally:
+        temporary_path.unlink(missing_ok=True)

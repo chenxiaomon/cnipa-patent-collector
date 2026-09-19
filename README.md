@@ -38,12 +38,26 @@ uv run python web_dashboard.py --host 127.0.0.1
 # 1. 准备申请号列表
 echo -e "CN201880002233\nCN201880002234" > data/search_list.txt
 
-# 2. 终端 1：启动代理
+# 2. 启动与正式采集相同的 Chrome，完成登录和页面导航后按弹窗单击目标
+python record_search_coordinates.py
+
+# 3. 终端 1：启动代理
 python start_mitm_proxy.py
 
-# 3. 终端 2：启动采集
+# 4. 终端 2：启动采集
 USE_MITM_PROXY=true python main_automation.py
 ```
+
+Windows 坐标校准采用人工鼠标点击录点，不使用截图缩放换算。录点命令会启动与正式采集相同的 Chrome；在新窗口完成登录并导航到对应页面后，再按弹窗单击目标：
+
+```bash
+python record_detail_coordinates.py detail-link
+python record_detail_coordinates.py fwxx-menu
+python record_detail_coordinates.py fee-menu
+```
+
+详情链接应在显示搜索结果的页面录制；发文菜单和费用菜单应在案件详情页录制。录点脚本会先忽略切换浏览器标签时的点击，再保存弹窗确认后的下一次真实左键点击。该点击会正常作用于页面，因此点击查询按钮、专利标题或菜单时可能同时触发对应页面操作。
+屏幕分辨率或浏览器窗口几何变化后，正式采集会在打开浏览器前退出，必须重新校准。
 
 **详见**: [📖 docs/runbook.md](docs/runbook.md) - 完整操作手册
 

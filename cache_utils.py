@@ -7,7 +7,9 @@ JSON 缓存工具函数（跨脚本复用）
 - 轮询等待缓存就绪
 """
 
+import errno
 import json
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -99,11 +101,24 @@ def parse_timestamp(value: Any) -> Optional[datetime]:
 
 def read_json_cache(cache_file: str) -> dict:
     """读取 JSON 缓存文件，文件不存在或格式错误时返回空字典"""
-    try:
-        with open(cache_file, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+    deadline = time.monotonic() + 1.0
+    while True:
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                snapshot = f.read()
+            # 解析大缓存前释放 Windows 读句柄，允许代理发布下一份完整快照。
+            return json.loads(snapshot)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+        except PermissionError as error:
+            # Python open() 在 Windows 上可能只保留 CRT errno=EACCES，不带 winerror。
+            windows_access_error = (
+                getattr(error, 'winerror', None) in {5, 32, 33}
+                or (os.name == 'nt' and error.errno == errno.EACCES)
+            )
+            if not windows_access_error or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
 
 
 def write_json_cache(cache_file: str, data: dict) -> None:
@@ -147,9 +162,20 @@ def poll_cache_for_key(
         找到的数据；超时返回 None
     """
     deadline = time.monotonic() + max_wait
+    previous_revision = None
+    value = None
     while time.monotonic() < deadline:
-        data = read_json_cache(cache_file)
-        value = data.get(key)
+        try:
+            snapshot_stat = os.stat(cache_file)
+        except FileNotFoundError:
+            previous_revision = None
+            value = None
+        else:
+            # 原子替换改变文件标识；纳入时间和大小以兼容现有的原位写入方。
+            revision = (snapshot_stat.st_ino, snapshot_stat.st_mtime_ns, snapshot_stat.st_ctime_ns, snapshot_stat.st_size)
+            if revision != previous_revision:
+                value = read_json_cache(cache_file).get(key)
+                previous_revision = revision
         if value is not None:
             if validate is None or validate(value):
                 return value

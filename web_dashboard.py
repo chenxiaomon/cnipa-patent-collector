@@ -63,7 +63,6 @@ from manual_fwxx_requests import create_manual_fwxx_request
 from code_release_safety import CodeReleaseVerificationError, CodeReleaseVersion
 from collection_checkpoint import list_collection_batches, read_collection_batch
 from environment_diagnostics import run_environment_diagnostics
-from coordinate_config import validate_coordinate_config
 
 _patents_db = PatentsDB(PATENTS_DB_FILE)
 _RUNNING_CODE_RELEASE = CodeReleaseVersion.read()
@@ -100,6 +99,10 @@ DESKTOP_BROWSER_ACTIONS = {
     "public_auto_paginate",
     "retry_failed_run_batch",
     "strategy_collect",
+    "calibrate_search",
+    "calibrate_detail_link",
+    "calibrate_fwxx_menu",
+    "calibrate_fee_menu",
 }
 
 PUBLIC_BROWSER_COMPANION_ACTIONS = {
@@ -725,6 +728,30 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         return {
             "action": action, "title": "导出 JSON",
             "command": [py, "-u", "-c", "from detection_logger import DetectionLogger; DetectionLogger().export_to_json()"],
+        }
+    calibration_commands = {
+        "calibrate_search": ("校准搜索页坐标", ["record_search_coordinates.py"]),
+        "calibrate_detail_link": (
+            "校准搜索结果专利标题坐标", ["record_detail_coordinates.py", "detail-link"],
+        ),
+        "calibrate_fwxx_menu": (
+            "校准发文信息菜单坐标", ["record_detail_coordinates.py", "fwxx-menu"],
+        ),
+        "calibrate_fee_menu": (
+            "校准费用信息菜单坐标", ["record_detail_coordinates.py", "fee-menu"],
+        ),
+    }
+    if action in calibration_commands:
+        calibration_title, recorder_arguments = calibration_commands[action]
+        return {
+            "action": action,
+            "title": calibration_title,
+            "command": [py, "-u", *recorder_arguments],
+            "env": {
+                "USE_MITM_PROXY": "false",
+                "USE_VIRTUAL_DISPLAY": "false",
+                "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS,
+            },
         }
     if action == "phase0_browser":
         return {"action": action, "title": "Phase 0 浏览器", "command": [py, "-u", "start_browser_for_phase0.py"]}
@@ -1689,18 +1716,29 @@ HTML = r"""<!doctype html>
         <article class="panel">
           <div class="panel-head">
             <h2>鼠标坐标配置</h2>
-            <div class="button-row">
-              <button class="btn secondary" id="resetConfig">重录坐标</button>
-              <button class="btn primary"   id="saveConfig">保存配置</button>
+            <span class="hint">只读</span>
+          </div>
+          <div class="field operator-only">
+            <span>搜索页坐标校准</span>
+            <div class="button-row" style="margin-top:6px">
+              <button class="btn primary" data-action="calibrate_search">输入框与查询按钮</button>
             </div>
           </div>
-          <label class="field">
-            <span>搜索页</span>
-            <textarea id="configText" class="codebox" spellcheck="false"></textarea>
-          </label>
           <label class="field" style="margin-top:12px">
-            <span>详情页（申请号、发文信息、费用信息）</span>
-            <textarea id="fwxxConfigText" class="codebox" spellcheck="false"></textarea>
+            <span>搜索页当前配置</span>
+            <textarea id="configText" class="codebox" readonly spellcheck="false"></textarea>
+          </label>
+          <div class="field operator-only" style="margin-top:12px">
+            <span>搜索结果与详情页坐标校准</span>
+            <div class="button-row" style="margin-top:6px">
+              <button class="btn secondary" data-action="calibrate_detail_link">搜索结果专利标题</button>
+              <button class="btn secondary" data-action="calibrate_fwxx_menu">发文信息菜单</button>
+              <button class="btn secondary" data-action="calibrate_fee_menu">费用信息菜单</button>
+            </div>
+          </div>
+          <label class="field" style="margin-top:12px">
+            <span>搜索结果与详情页当前配置</span>
+            <textarea id="fwxxConfigText" class="codebox" readonly spellcheck="false"></textarea>
           </label>
         </article>
         <article class="panel">
@@ -2344,7 +2382,6 @@ JS = r"""const state = {
   batchDetailRequestSequence: 0,
   diagnosticReport: null,
   searchLoaded: false,
-  configLoaded: false,
   roleDetermined: false,
   apiToken: localStorage.getItem('cnipaApiToken') || '',
 };
@@ -2763,13 +2800,10 @@ function renderSummary(data) {
   set('#sysDynamic',  fmtNumber(data.lists.dynamic) + ' 条');
   set('#sysRetry',    fmtNumber(data.lists.retry) + ' 条');
 
-  if (!state.configLoaded) {
-    const ct = $('#configText');
-    const ft = $('#fwxxConfigText');
-    if (ct) ct.value = JSON.stringify(data.config || {}, null, 2);
-    if (ft) ft.value = JSON.stringify(data.fwxx_config || {}, null, 2);
-    state.configLoaded = true;
-  }
+  const ct = $('#configText');
+  const ft = $('#fwxxConfigText');
+  if (ct) ct.value = JSON.stringify(data.config || {}, null, 2);
+  if (ft) ft.value = JSON.stringify(data.fwxx_config || {}, null, 2);
 
   // 角色切换：首次收到 is_operator 后设置 body class
   if (!state.roleDetermined) {
@@ -3275,34 +3309,12 @@ function bindEvents() {
     await refreshSummary();
   });
 
-  $('#saveConfig').addEventListener('click', async () => {
-    const ct = $('#configText');
-    const ft = $('#fwxxConfigText');
-    if (!ct || !ft) return;
-    try {
-      await api('/api/config', {
-        method: 'POST',
-        body: JSON.stringify({ search_text: ct.value, detail_text: ft.value })
-      });
-      showToast('坐标配置已保存');
-      state.configLoaded = false;
-      await refreshSummary();
-    } catch (e) { showToast('保存失败：' + e.message); }
-  });
-
   $('#saveApiToken').addEventListener('click', () => {
     const input = $('#apiTokenInput');
     state.apiToken = input ? input.value.trim() : '';
     if (state.apiToken) localStorage.setItem('cnipaApiToken', state.apiToken);
     else localStorage.removeItem('cnipaApiToken');
     showToast(state.apiToken ? 'API token 已保存到此浏览器' : 'API token 已清除');
-  });
-
-  $('#resetConfig').addEventListener('click', async () => {
-    await api('/api/config/reset', { method: 'POST', body: '{}' });
-    showToast('全部旧坐标已备份，下次对应采集会重新记录');
-    state.configLoaded = false;
-    await refreshSummary();
   });
 
   $('#resumeLoginBtn').addEventListener('click', async () => {
@@ -3973,36 +3985,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 SEARCH_LIST_FILE.parent.mkdir(parents=True, exist_ok=True)
                 _write_text_atomic(SEARCH_LIST_FILE, text)
                 self.send_json({"ok": True, "lines": len(search_app_nos)})
-            elif path == "/api/config":
-                payload = self.read_json_body()
-                search_text = str(payload.get("search_text", payload.get("text", "{}")))
-                detail_text = payload.get("detail_text")
-                search_config = json.loads(search_text)
-                detail_config = json.loads(str(detail_text)) if detail_text is not None else None
-                if not isinstance(search_config, dict):
-                    raise ValueError("搜索页坐标配置必须是 JSON 对象")
-                if detail_config is not None and not isinstance(detail_config, dict):
-                    raise ValueError("详情页坐标配置必须是 JSON 对象")
-                validate_coordinate_config(search_config)
-                if detail_config is not None:
-                    validate_coordinate_config(detail_config)
-                CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-                _write_text_atomic(CONFIG_FILE, json.dumps(search_config, ensure_ascii=False, indent=2) + "\n")
-                if detail_config is not None:
-                    _write_text_atomic(CONFIG_FWXX_FILE, json.dumps(detail_config, ensure_ascii=False, indent=2) + "\n")
-                self.send_json({"ok": True})
-            elif path == "/api/config/reset":
-                backups = {}
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                if CONFIG_FILE.exists():
-                    backup = CONFIG_FILE.with_name(f"config_backup_{timestamp}.json")
-                    CONFIG_FILE.rename(backup)
-                    backups["search"] = str(backup)
-                if CONFIG_FWXX_FILE.exists():
-                    detail_backup = CONFIG_FWXX_FILE.with_name(f"config_backup_fwxx_{timestamp}.json")
-                    CONFIG_FWXX_FILE.rename(detail_backup)
-                    backups["detail"] = str(detail_backup)
-                self.send_json({"ok": True, "backups": backups})
+            elif path in {"/api/config", "/api/config/reset"}:
+                self.send_json(
+                    {"error": "坐标配置仅可通过坐标校准任务更新"},
+                    status=HTTPStatus.METHOD_NOT_ALLOWED,
+                )
             elif path == "/api/login-ready":
                 flag = LOGIN_READY_FLAG_FILE
                 flag.parent.mkdir(parents=True, exist_ok=True)

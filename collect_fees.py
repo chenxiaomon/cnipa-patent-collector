@@ -233,6 +233,8 @@ def collect_one_fee(
     button_y: int,
     link_x: int,
     link_y: int,
+    fee_menu_x: int,
+    fee_menu_y: int,
 ) -> dict | None:
     """在详情页采集单个申请号的费用信息。"""
     fee_fields: dict = {}
@@ -295,10 +297,6 @@ def collect_one_fee(
         time.sleep(FWXX_TAB_SWITCH_WAIT)
         wait_for_detail_identity(detail_attempt)
         print("    [✓] 官方申请号已确认，开始采集费用")
-        fee_menu_x, fee_menu_y = (
-            CoordinateService.load_or_record_fee_menu_coordinates()
-        )
-
         print("    [*] 点击'费用信息'菜单...")
         InputService.move_and_click(
             fee_menu_x,
@@ -473,19 +471,19 @@ def _collect_fee_batch(args, checkpoint: CollectionBatch) -> None:
 
     driver = None
     try:
+        print("\n[*] 正在加载坐标配置...")
+        input_x, input_y, button_x, button_y = (
+            CoordinateService.load_search_coordinates()
+        )
+        link_x, link_y = CoordinateService.load_detail_link_coordinates()
+        fee_menu_x, fee_menu_y = CoordinateService.load_fee_menu_coordinates()
+
         print(f"\n[*] 打开搜索页: {args.url}")
         driver = BrowserService.launch_and_login(
             args.url,
             page_load_wait=FWXX_PAGE_LOAD_WAIT,
         )
-        print("\n[*] 正在加载坐标配置...")
-        input_x, input_y, button_x, button_y = (
-            CoordinateService.load_or_record_search_coordinates()
-        )
-        link_x, link_y = (
-            CoordinateService.load_or_record_detail_link_coordinates()
-        )
-        countdown(FWXX_STARTUP_COUNTDOWN, "搜索页坐标已就绪，即将开始费用采集")
+        countdown(FWXX_STARTUP_COUNTDOWN, "坐标已就绪，即将开始费用采集")
 
         print("\n" + "=" * 70)
         print("费用采集进度")
@@ -516,6 +514,8 @@ def _collect_fee_batch(args, checkpoint: CollectionBatch) -> None:
                 button_y=button_y,
                 link_x=link_x,
                 link_y=link_y,
+                fee_menu_x=fee_menu_x,
+                fee_menu_y=fee_menu_y,
             )
 
             if fee_fields:
