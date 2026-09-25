@@ -23,11 +23,11 @@
     },
     {
       "path": ".gitignore",
-      "sha256": "7d1e2aef60e29f82e1588e3553b41ab2a78c53d0b43c7d7053f6237cecfd747a"
+      "sha256": "4d09215db4471311b6a62a9013e173516eb297e684d9831e688fd8a382a99d21"
     },
     {
       "path": "CHANGELOG.md",
-      "sha256": "3f3024289d346565446b3a7a1ea227db24e6d07657f5267c08103f9a573f88fa"
+      "sha256": "66fa124259bab3246ac560c2688ab2de4e53942f3d915c1115e9381cff77e3b6"
     },
     {
       "path": "CLAUDE.md",
@@ -62,6 +62,18 @@
       "sha256": "25ca634c5a00e4a01ea90b7af9e6408a4434785f46bdecd010178dbc455e152e"
     },
     {
+      "path": "assets/cnipa-desktop.icns",
+      "sha256": "3d1795b1ec3b02a20bde7fe856693405880635940181251c74d0a87b44dae6aa"
+    },
+    {
+      "path": "assets/cnipa-desktop.ico",
+      "sha256": "183911ef9d1c99fc271dde2a80d6ac5bcfd961956c1d7e0a451271e1f2c7442b"
+    },
+    {
+      "path": "assets/cnipa-desktop.png",
+      "sha256": "c4a7cbd3750a11375d9b2e1fcece35c4ed6172834eaa2191bdebac6d93c5b59e"
+    },
+    {
       "path": "atomic_write.py",
       "sha256": "cdb2f2b5857067e83e0e297f1e657a0e8c542c3613ab85733c5fe2e1c689a97f"
     },
@@ -71,15 +83,15 @@
     },
     {
       "path": "browser_service.py",
-      "sha256": "3747fd0be92d8cb34f6d6d4457158af621b1f084bdbd9dcdf98b1fb66daa0fea"
+      "sha256": "e18cfc314d5f39cdea6adcc534e89616a7af9d61333302207f953eded98d157f"
     },
     {
       "path": "browser_utils.py",
-      "sha256": "6a70b5d9069481507b3519c8d0b27288f100ab683d1a8b07685e2a6e9956d93c"
+      "sha256": "d58ab47b12b66a68fba41bf24fe1eac30ded50bfc25e267edfe072ee76502900"
     },
     {
       "path": "cache_utils.py",
-      "sha256": "a2d3bd3f0819eefdef83646ca93737ca47c77550e29e91b408b52a010a857807"
+      "sha256": "1c99d3cb55df32ac10cd5fc06e3a40c1e6d636bc98f5907540f5542ee1da8488"
     },
     {
       "path": "calibrate_coordinates.py",
@@ -88,6 +100,10 @@
     {
       "path": "check_update.py",
       "sha256": "a8e8ae86f1e193752c9a8d4474763015ece784e73a6ae9fadc69a1aad640a1a5"
+    },
+    {
+      "path": "cnipa_session.py",
+      "sha256": "3b6aba8f3beb6d5e79cafcca8cfb2a917a196f146fc5e1875e0509739bf58057"
     },
     {
       "path": "code_release_safety.py",
@@ -99,11 +115,11 @@
     },
     {
       "path": "collect_fees.py",
-      "sha256": "34f56a312ac3e18cfca92addd5fa55b80e2bfc6ee76a0fe862c42869a521e571"
+      "sha256": "31bd8cfe7e65981c5617113d124d07bc60e4e6c8752aa3c72eb5b4d4919d056d"
     },
     {
       "path": "collect_fwxx.py",
-      "sha256": "d93522a43ce00124d7109cb65f44003970deeb36b9c4f07f6496c528c435c2f2"
+      "sha256": "401da15cb7a25524b7c6e3946955ad05eff7177bc579be9616e48d0476e23524"
     },
     {
       "path": "collection_checkpoint.py",
@@ -115,7 +131,7 @@
     },
     {
       "path": "collection_watchdog.py",
-      "sha256": "a3b8418d621659dee0de1187277b1bb6c3471364963acb0b94506d913567dc14"
+      "sha256": "f3bf2893d994f393232482ecc87894bd0e2d394495d10452c7774f3e09596945"
     },
     {
       "path": "coordinate_config.py",
@@ -123,19 +139,35 @@
     },
     {
       "path": "coordinate_service.py",
-      "sha256": "cabcc6adc7f20d88972add7f253a3114d80eea65be8f9b933a86caba4f187b27"
+      "sha256": "93d39eee9a020b4bd089297cc43875ab3eb618a2a473dc61214c12754ebf939d"
     },
     {
       "path": "db_manager.py",
       "sha256": "66bb643c0f30b46b3fa5f83ca0206ed2f9012aa54c22540489aea9c557587456"
     },
     {
+      "path": "desktop.bat",
+      "sha256": "86d034f9ff815dfc4d4ac5648e76c60bdeef4ffdd50aaf905cd3a672530a55c7"
+    },
+    {
+      "path": "desktop.command",
+      "sha256": "4baa630537b7d78f951cac290ae8e6cddab5cd9f196cad51d7b31be706bbb4a2"
+    },
+    {
       "path": "desktop_collection_lock.py",
       "sha256": "21ca08233b743574725fa2d1de31b4e7a523096da7f1f90975cbefd6f6200ed1"
     },
     {
+      "path": "desktop_dashboard.py",
+      "sha256": "370f22c110892c55dbcfec139af1c7b2d2223f94c02206ff4e5ed76daa3033d2"
+    },
+    {
       "path": "detail_attempt.py",
-      "sha256": "881184057ded5bd3fd90b79ebd0d3047b545f94883410ae7b9d42f09ee05c997"
+      "sha256": "4db445444352368d2bbf0cbf3fa37ad9983d5c19ca109854b70de025330786c0"
+    },
+    {
+      "path": "detail_search.py",
+      "sha256": "037f3cc7acd2ba3f4a592343041529d0dd25d21af987d261d1ab5161ee028b4c"
     },
     {
       "path": "detection_logger.py",
@@ -155,7 +187,7 @@
     },
     {
       "path": "docs/architecture.md",
-      "sha256": "61d086efb86f0bd66dc2ffe69e5947d6cc7aeffcb847a37bd91d41167e45f2af"
+      "sha256": "b5959de2cffe7c945fb36bf8893eff23f9e96ff88c120358099f059ad71381d5"
     },
     {
       "path": "docs/batch-diagnostics.md",
@@ -227,7 +259,7 @@
     },
     {
       "path": "docs/guides/README_COLLECT_FWXX.md",
-      "sha256": "34693d698a4b04c5fc19310d296b9855f7c73edff2bba57738f5c9a63427530d"
+      "sha256": "1910d39b5659d61485e11397d2c3fb21e08424276d15c4413410ab65a30d48ee"
     },
     {
       "path": "docs/guides/RETRY_GUIDE_CN.md",
@@ -247,7 +279,7 @@
     },
     {
       "path": "docs/runbook.md",
-      "sha256": "466e4b55e4e9c294148d40e0fdaf350bb5220ef5f4e3bdb6101ef0dbf9168c4c"
+      "sha256": "bb8db7870e8401c6444093267a5747576366017af41a6eed23df10e587a2348f"
     },
     {
       "path": "docs/worklog.md",
@@ -286,6 +318,10 @@
       "sha256": "39fb46b54988db7b0a34874e508e233f5d6ee3293ac50b4c766cda9eac989cca"
     },
     {
+      "path": "install_desktop_app.py",
+      "sha256": "00d55f8be445b07d95b2e437d641508bdb74211a60a543542a765c8b2043cab3"
+    },
+    {
       "path": "launch_browser.bat",
       "sha256": "991e2698ac7cba5fda1e12fe36f2d00abb1704b0f338d81f29c8c2520629d9e5"
     },
@@ -298,8 +334,12 @@
       "sha256": "4bc9386c95435a2f580d71d9417896c592b5ed12bdcc4de99643f7d9fdcb7dd4"
     },
     {
+      "path": "macos_coordinate_capture.py",
+      "sha256": "b97e4b91a30599711bb93dc0945238649365c8aac8fab8abdbe36d6369d4b494"
+    },
+    {
       "path": "main_automation.py",
-      "sha256": "a2942b60f9f6f99c31902bcada1d8e9410189b19873f7a1502cfa77cd1f9e914"
+      "sha256": "a63fefdf8adcd2cd3b393a609a8defd96440b3f32b79b9b4cc484ddb2ed76b18"
     },
     {
       "path": "main_collection_targets.py",
@@ -327,7 +367,7 @@
     },
     {
       "path": "patent_mitm_scraper.py",
-      "sha256": "2b7afb0e1a9732bb49cf96756189758e11678c986a5a21045b7010b84444055e"
+      "sha256": "9040481bbe9d77abd2aabeccea3f02384fcfd84bfb95a45c3c8a3864bc6ccdc7"
     },
     {
       "path": "payment_obligations.py",
@@ -339,7 +379,7 @@
     },
     {
       "path": "pyproject.toml",
-      "sha256": "7822e84a1ccf40262b44bbddabe606bd6b9d565b0686aaab9488fb905189bcbb"
+      "sha256": "218d1031e7c23981c8560699ec0fe699d462acf68cd2ff87087f698c8d824d7c"
     },
     {
       "path": "quick_retry.sh",
@@ -382,12 +422,20 @@
       "sha256": "b663359aa108c31af3fe7d25549044fcd5918d521ae8e5d8ee346e755d17376c"
     },
     {
+      "path": "scripts/generate_desktop_icon.py",
+      "sha256": "02f82e53a1fd9d3c93b096a72c0db4ce665d81190b56f775c91841aa03e2bc1b"
+    },
+    {
+      "path": "scripts/macos_desktop_launcher.c",
+      "sha256": "ea812b59e8144f4e1f0befb48c431fb8efe738b43470d564dbd0e8932cb43585"
+    },
+    {
       "path": "scripts/sync_version.py",
       "sha256": "80584dde88ac1f51b789dc8bfb00e7d6061a1f6dad9ccae6d5b1158413293099"
     },
     {
       "path": "settings.py",
-      "sha256": "1867e4249beddd4b36c9de67e05c0d7709a4492cebd9af5f87ca4ccb02a5a794"
+      "sha256": "4fa8a4a6c577cae2703da036eb0b39d74432197a62d9ca05d688e1612746378e"
     },
     {
       "path": "setup.bat",
@@ -455,7 +503,7 @@
     },
     {
       "path": "tests/test_browser_utils.py",
-      "sha256": "ee0d96905d2a23734663c4dd2439baeac2a42cd18aa2cdb29407fc509b69af68"
+      "sha256": "e0e53b58f067495ed74f7154a0f13b91428131506ad8527abb9e86bb83a666ed"
     },
     {
       "path": "tests/test_cache_utils.py",
@@ -464,6 +512,10 @@
     {
       "path": "tests/test_check_update.py",
       "sha256": "6cbb03ba77997cb11564c0c434dda3385e46e5c14fd19525754291242206c887"
+    },
+    {
+      "path": "tests/test_cnipa_session.py",
+      "sha256": "91eaa2a09a47a8110fd273c59ba4c1d5384f94ff19b0425fad03e7bad7594e37"
     },
     {
       "path": "tests/test_code_maintenance_lock.py",
@@ -487,7 +539,7 @@
     },
     {
       "path": "tests/test_collection_coordinate_preflight.py",
-      "sha256": "26b142342798ce743269591314da53176e123ceb213c40bfa7e5da988d016363"
+      "sha256": "8bbf401bee444bfcaaf0a976aa1223278f2bbfa629ee643ef79232f2928df4a7"
     },
     {
       "path": "tests/test_collection_failures.py",
@@ -495,11 +547,11 @@
     },
     {
       "path": "tests/test_collection_fatal_errors.py",
-      "sha256": "339e4d9f81217e4647949f28dd6ca9eb949685ecda402c028cb04f031ba41a07"
+      "sha256": "f4b35048595b561fbc8104b6470f3c39ee1ab0b73b8a2908cee431519b14e9da"
     },
     {
       "path": "tests/test_collection_health.py",
-      "sha256": "a7508bded53dae0b6963279bf6b0f7c26f114b6d288f90c72385259f92e5b88b"
+      "sha256": "38465f9c7952f2665263b93429d37455e23300af102d7f2f9569eccb2c0c7e49"
     },
     {
       "path": "tests/test_collection_runtime_ignores.py",
@@ -507,7 +559,7 @@
     },
     {
       "path": "tests/test_collection_split.py",
-      "sha256": "6a89700f82fc9b85b0bcda90fdd02ba913efcd39775e087567fd167be863c907"
+      "sha256": "4fa8b873c69240abb40cd41bc6914d59c56295dab5cde298fc98fba06d9f9a53"
     },
     {
       "path": "tests/test_coordinate_offline_calibration.py",
@@ -538,12 +590,20 @@
       "sha256": "392ea9e32b8db16a551fa3b7fb3275c51bf22895ee163684ff7f18e5bed1855b"
     },
     {
+      "path": "tests/test_dashboard_persistent_logs.py",
+      "sha256": "beff2dc9f7c9d065496ff07410d55be40610ef63c2fb84eaa39e85ed87d23389"
+    },
+    {
       "path": "tests/test_dashboard_public_browser_compat.py",
       "sha256": "78981e656fd47fdd2c70934cbbdf4e506cd44dd3bbddb604ddadd01ad4822085"
     },
     {
       "path": "tests/test_dashboard_release_status.py",
       "sha256": "9a9d21b3e8c0d043feced4ab225feafb12df5c05e02d2e47e600834740540e9e"
+    },
+    {
+      "path": "tests/test_dashboard_shutdown.py",
+      "sha256": "2bfa403b7c2746907771e919b8be0faf3b76b9d81482d9116e55c20208317ce3"
     },
     {
       "path": "tests/test_database_backup.py",
@@ -558,8 +618,16 @@
       "sha256": "95419290d9b8f327a1f9a96da4aabc3ae1555ed3ef353f8350c87b5f1cf3de2f"
     },
     {
+      "path": "tests/test_desktop_dashboard.py",
+      "sha256": "296a208e18353f68df02ac2864858b9223db7aa01daf2ff672602012b61f50f7"
+    },
+    {
+      "path": "tests/test_desktop_window_shutdown.py",
+      "sha256": "ede8a32804b569b069df0a6efe7ccce6e514a2010a0ff37e66b8c30eb61be63e"
+    },
+    {
       "path": "tests/test_detail_response_binding.py",
-      "sha256": "e8d77a17f31219ec5b59f472ca07b15b38009b82f6bc9a8ad274bc90cb68d556"
+      "sha256": "c8ef0f40900cc13f24494fb0a2234b78058b916d0f1a49b1039864d034d9666e"
     },
     {
       "path": "tests/test_detection_logger.py",
@@ -571,15 +639,15 @@
     },
     {
       "path": "tests/test_failure_streak_and_env_loading.py",
-      "sha256": "f4fc028a4c4984d88475585e80f82451ae3d89d3f873a5eaf995fe72fe66b7f5"
+      "sha256": "c3df2f2bfcdb07d4fb028819b3d13ef7c6df820d0e3b81f95de57a1c272a5da7"
     },
     {
       "path": "tests/test_fee_collection_split.py",
-      "sha256": "3d820e14e70f393039f3c92ba692e65b495494b2fddb2644b99678ca56561f6c"
+      "sha256": "7b4041451f639300f56030b5e2be36e02183e3526a1396a74f161450cb4c3c80"
     },
     {
       "path": "tests/test_fee_coordinate_flow.py",
-      "sha256": "d071c13c39c1da1727ed6dafa1f771216374edb9900b107deb760d8f142ac375"
+      "sha256": "852058fcdcc9ee04ce7c13458f47b0d0dd27d7dd29b720d3cd3c959a3260ee18"
     },
     {
       "path": "tests/test_fee_failure_retry.py",
@@ -588,6 +656,18 @@
     {
       "path": "tests/test_fee_persistence_integration.py",
       "sha256": "aca390bb82f06f64bc77ab6c6395e76757863554f6633da6c6d355e4daa4c159"
+    },
+    {
+      "path": "tests/test_fee_response_shapes.py",
+      "sha256": "7fd884fe71420e6c9d91f9747756603828b6fd97cf661d6ffd4b8ef59a0276b6"
+    },
+    {
+      "path": "tests/test_fee_response_wait.py",
+      "sha256": "e631548232b96ef997ad6d2c17d4cdacbef3038d331c17b3a7cd36ed578837b9"
+    },
+    {
+      "path": "tests/test_fee_retry_recovery.py",
+      "sha256": "5006b21f30fd702607c2e11e0e6bf35f67d4f77758268f0dab11d3345a6abb83"
     },
     {
       "path": "tests/test_fee_snapshot_versions.py",
@@ -602,8 +682,16 @@
       "sha256": "7fd2fe66fb8b4fe57eda01cc950ef5d59d4853cb38ab12a7d373b58e6c2a7167"
     },
     {
+      "path": "tests/test_fwxx_detail_window.py",
+      "sha256": "57880f550f51f9338b5cc33edfe43eb78e65f74859bd61195c1befa53919d6e2"
+    },
+    {
       "path": "tests/test_fwxx_empty_cache.py",
       "sha256": "c292b38a864b094e9097165072ca0bc7b013af72052afd5e87dec67bd53c74cc"
+    },
+    {
+      "path": "tests/test_fwxx_search_ready.py",
+      "sha256": "f4f0054fa9e2d169ace1d01f8dfcf3d3cc45b6f21d60e4dc15f0fc2e13d16134"
     },
     {
       "path": "tests/test_generate_code_manifest.py",
@@ -622,6 +710,10 @@
       "sha256": "0fb2774db0e16b64691c50e0eb64ec8ebc9fb4a177ec8a663885735e9cde7c0c"
     },
     {
+      "path": "tests/test_macos_coordinate_capture.py",
+      "sha256": "f70dd41466af3c666d2f237abffa182121d8cb7f644820ef30e3e86ba5db4a60"
+    },
+    {
       "path": "tests/test_main_collection_resume.py",
       "sha256": "f14a60aeb3d467a943110e9980de545384c536779719a0639068e72cbbb8f307"
     },
@@ -630,16 +722,24 @@
       "sha256": "2dcf742b7b31cc4e2a6e49f6b9b9c57a12fe4ff42144b545ad13d77cb76fb18c"
     },
     {
+      "path": "tests/test_main_coordinate_failure.py",
+      "sha256": "3f519210dd5e35982c8f784a88156207bad8ddffc7c7b3e286d16768a9863c1c"
+    },
+    {
       "path": "tests/test_manual_fwxx_batch.py",
       "sha256": "7837cd37f40c1b1c976041619d8802113547601d20fa2b948f83de3c7915a89a"
     },
     {
       "path": "tests/test_mitm_scraper.py",
-      "sha256": "1e3821dfa0776004c33236f0e4812fffdea972c62ea293b9fc27b3b915683a7b"
+      "sha256": "313c51c1ea0845aa67c41eb35fc7bbdba8d8c62afd677e9dd81ebb06643f83c5"
     },
     {
       "path": "tests/test_operator_api_token.py",
       "sha256": "5dae17ee9c7649a72da4d5675d4d3dade5bbe89f418b59fec529414591c845f5"
+    },
+    {
+      "path": "tests/test_passive_search_binding.py",
+      "sha256": "24554df3d2638df894b02dbac28106af50491707db90f32dc19752029bc73fed"
     },
     {
       "path": "tests/test_payment_obligations.py",
@@ -648,6 +748,10 @@
     {
       "path": "tests/test_poll_master_alerts.py",
       "sha256": "8a6131bf09f80d63429052baa9c243ba6322f57a23172eea72649368725e0a4f"
+    },
+    {
+      "path": "tests/test_process_tree_shutdown.py",
+      "sha256": "331990d8a59599e5dca1878c574a590ab7139f0b2557de62785f7d23456d682f"
     },
     {
       "path": "tests/test_record_detail_coordinates.py",
@@ -711,7 +815,7 @@
     },
     {
       "path": "uv.lock",
-      "sha256": "e3232215aa623591e3ff2fcc1833a8fa8c16027a67b3451c8f58a81d373a2618"
+      "sha256": "ba306e36d9b077fa48e54f06f45a7cbfddab2156a0b33344c2c3023ded1bd8f9"
     },
     {
       "path": "validate_results.py",
@@ -719,7 +823,7 @@
     },
     {
       "path": "web_dashboard.py",
-      "sha256": "145254f71b8badd8bf648d00c840eeea04989be6163c7d4f21359e5b774c0067"
+      "sha256": "81d9d9794fce62488c0253e212c1868bbfef3292d71035a4a6cd7446d2681bbb"
     }
   ]
 }

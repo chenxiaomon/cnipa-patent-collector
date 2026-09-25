@@ -21,9 +21,11 @@ import glob
 import platform
 import plistlib
 import subprocess
+import shutil
+from tempfile import TemporaryDirectory
 
 import pyautogui
-from settings import MITM_HOST, MITM_PORT, USE_MITM_PROXY, USE_VIRTUAL_DISPLAY
+from settings import BASE_DIR, MITM_HOST, MITM_PORT, USE_MITM_PROXY, USE_VIRTUAL_DISPLAY
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -177,6 +179,8 @@ def _get_chromedriver_major_version(driver_path: str) -> int | None:
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
+    if completed_process.returncode != 0:
+        return None
     return _major_version_from_text(completed_process.stdout)
 
 
@@ -195,7 +199,7 @@ def _find_matching_chromedriver(chrome_major_version: int | None) -> str | None:
 
     if sys.platform == 'win32':
         driver_patterns = [
-            os.path.join(os.path.dirname(__file__), 'chromedriver-win64', 'chromedriver.exe'),
+            os.path.join(BASE_DIR, 'chromedriver-win64', 'chromedriver.exe'),
             os.path.expandvars(
                 r'%LOCALAPPDATA%\Temp\chromedriver-win64-*\chromedriver-win64\chromedriver.exe'
             ),
@@ -207,12 +211,16 @@ def _find_matching_chromedriver(chrome_major_version: int | None) -> str | None:
             [_manual_chromedriver_dir_name(), 'chromedriver-mac-x64', 'chromedriver-mac-arm64']
         )
         driver_patterns = [
-            os.path.join(os.path.dirname(__file__), dir_name, 'chromedriver')
+            os.path.join(BASE_DIR, dir_name, 'chromedriver')
             for dir_name in mac_driver_dir_names
         ]
+        if platform.machine() == 'arm64':
+            driver_patterns.insert(1, os.path.join(
+                uc.Patcher.data_path, 'undetected_chromedriver_mac_arm64'
+            ))
     else:
         driver_patterns = [
-            os.path.join(os.path.dirname(__file__), 'chromedriver-linux64', 'chromedriver'),
+            os.path.join(BASE_DIR, 'chromedriver-linux64', 'chromedriver'),
             '/tmp/chromedriver-linux64-*/chromedriver-linux64/chromedriver',
         ]
 
@@ -229,6 +237,39 @@ def _find_matching_chromedriver(chrome_major_version: int | None) -> str | None:
             if driver_major_version == chrome_major_version:
                 return driver_path
     return None
+
+
+def _prepare_macos_arm64_chromedriver(chrome_major_version: int | None) -> str:
+    """为 Apple Silicon 准备可执行驱动，手工文件保持不变，缓存原子发布。"""
+    matching_driver_path = _find_matching_chromedriver(chrome_major_version)
+    patcher = uc.Patcher(
+        executable_path=matching_driver_path, version_main=chrome_major_version or 0
+    )
+    if matching_driver_path and patcher.is_binary_patched(matching_driver_path):
+        return matching_driver_path
+    # UC 在所有 macOS 上默认使用 mac-x64，仅更改本次下载实例。
+    patcher.platform_name = 'mac_arm64' if patcher.is_old_chromedriver else 'mac-arm64'
+    cached_driver_path = os.path.join(
+        patcher.data_path, 'undetected_chromedriver_mac_arm64'
+    )
+    with TemporaryDirectory(prefix='mac-arm64-', dir=patcher.data_path) as download_dir:
+        patcher.executable_path = os.path.join(download_dir, 'chromedriver.tmp')
+        patcher.zip_path = os.path.join(download_dir, 'unpacked')
+        if matching_driver_path:
+            shutil.copy2(matching_driver_path, patcher.executable_path)
+            patcher.patch_exe()
+        else:
+            patcher.auto()
+        # Apple Silicon 会终止签名被 UC 补丁破坏的可执行文件；仅重签临时副本。
+        subprocess.run(
+            ['codesign', '--force', '--sign', '-', patcher.executable_path],
+            capture_output=True, text=True, timeout=30, check=True,
+        )
+        prepared_major_version = _get_chromedriver_major_version(patcher.executable_path)
+        if prepared_major_version != (chrome_major_version or patcher.version_main):
+            raise RuntimeError('准备的 macOS ARM64 ChromeDriver 无法执行或与 Chrome 版本不匹配')
+        os.replace(patcher.executable_path, cached_driver_path)
+    return cached_driver_path
 
 
 def load_credentials() -> tuple[str, str]:
@@ -369,7 +410,10 @@ def create_driver_with_retry(max_retries: int = 3, use_mitm: bool = None) -> uc.
             print(f"\n[尝试 {attempt+1}/{max_retries}] 启动浏览器...")
 
             # 每轮重新探测：上一轮可能已把匹配版本下载进 uc 缓存，这轮直接复用
-            matching_driver_path = _find_matching_chromedriver(chrome_ver)
+            if sys.platform == 'darwin' and platform.machine() == 'arm64':
+                matching_driver_path = _prepare_macos_arm64_chromedriver(chrome_ver)
+            else:
+                matching_driver_path = _find_matching_chromedriver(chrome_ver)
 
             options = uc.ChromeOptions()
             options.add_argument("--no-sandbox")
@@ -412,7 +456,7 @@ def create_driver_with_retry(max_retries: int = 3, use_mitm: bool = None) -> uc.
                 # milestone 时无法自动下到匹配驱动，只能手工放进这个目录（已在
                 # _find_matching_chromedriver 的搜索路径里，放进去即自动生效）。
                 manual_driver_dir = os.path.join(
-                    os.path.dirname(__file__), _manual_chromedriver_dir_name()
+                    BASE_DIR, _manual_chromedriver_dir_name()
                 )
                 raise RuntimeError(
                     f"浏览器初始化失败（本机 Chrome 主版本 {chrome_ver}）：{e}\n"

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import unittest
-from unittest.mock import ANY, MagicMock, call, patch
+from unittest.mock import MagicMock, call, patch
 
 import collect_fees
 
@@ -62,7 +62,7 @@ class TestFeeCollectionBoundaries(unittest.TestCase):
 
     @patch("collect_fees.time.sleep")
     @patch("collect_fees.pyautogui.hotkey")
-    @patch("collect_fees.poll_cache_for_key")
+    @patch("collect_fees.wait_for_fee_snapshot")
     @patch("collect_fees.clear_cache_key")
     @patch("collect_fees.InputService")
     @patch("collect_fees.CoordinateService")
@@ -99,7 +99,7 @@ class TestFeeCollectionBoundaries(unittest.TestCase):
             "application_no": "A", "attempt_id": "attempt-current",
         }), patch("collect_fees.wait_for_detail_identity"), patch(
             "collect_fees.clear_matching_detail_attempt"
-        ):
+        ), patch("collect_fees.wait_for_detail_search_target"):
             collected = collect_fees.collect_one_fee(
                 driver,
                 "A",
@@ -117,10 +117,7 @@ class TestFeeCollectionBoundaries(unittest.TestCase):
         self.assertEqual(coordinate_service.mock_calls, [])
         clear_cache.assert_called_once_with(collect_fees.PATENT_FEE_CACHE_FILE, "A")
         poll_cache.assert_called_once_with(
-            collect_fees.PATENT_FEE_CACHE_FILE,
-            "A",
-            max_wait=collect_fees.FWXX_CACHE_POLL_TIMEOUT,
-            validate=ANY,
+            "A", "attempt-current",
         )
         self.assertEqual(
             input_service.move_and_click.call_args_list,
@@ -130,7 +127,7 @@ class TestFeeCollectionBoundaries(unittest.TestCase):
             ],
         )
 
-    @patch("collect_fees.poll_cache_for_key")
+    @patch("collect_fees.wait_for_fee_snapshot")
     @patch("collect_fees.clear_cache_key", side_effect=OSError("denied"))
     @patch("collect_fees.InputService")
     @patch("collect_fees.is_browser_alive", return_value=True)

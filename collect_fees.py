@@ -4,6 +4,7 @@
 
 自动模式处理费用数据集中必需费用栏目尚未采集的申请号。
 `--input` 和 `--app` 可指定申请号，`--retry-failed` 可重试历史失败目标。
+每轮每件只尝试一次，普通失败保留到失败清单，后续轮次再补采。
 """
 
 import argparse
@@ -12,7 +13,6 @@ import os
 import random
 import sys
 import time
-from functools import partial
 
 if sys.platform == 'win32':
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -38,23 +38,30 @@ from selenium.common.exceptions import WebDriverException
 sys.path.insert(0, os.path.dirname(__file__))
 from atomic_write import write_json_atomic
 from browser_service import BrowserService
+from cnipa_session import CNIPALoginRequired, raise_if_cnipa_login_required
 from browser_utils import is_browser_alive, raise_system_exit_on_sigterm
-from collection_health import CollectionFailureStreak, CollectionFailureStreakExceeded
 from collection_checkpoint import CollectionBatch, CollectionBatchBusyError
 from cache_utils import (
     clear_cache_key,
     parse_app_no_list,
-    poll_cache_for_key,
+    read_json_cache,
 )
 from coordinate_service import CoordinateService
 from db_manager import PatentsDB
 from detection_logger import DetectionLogger
 from detail_attempt import (
     DetailCollectionFatalError,
+    DetailIdentityTimeout,
     begin_detail_attempt,
     clear_matching_detail_attempt,
     matches_detail_attempt,
     wait_for_detail_identity,
+)
+from detail_search import (
+    DetailSearchRetryableError,
+    restore_detail_search_page,
+    wait_for_detail_search_target,
+    wait_for_unique_detail_window,
 )
 from input_service import InputService
 from desktop_collection_lock import (
@@ -106,6 +113,12 @@ _REQUIRED_FEE_PAYLOAD_FIELDS = (
     'paid_fee_records',
     'fee_receipt_dispatch_records',
 )
+_FEE_SECTION_LABELS = {
+    'payable_fee_records': '应缴费',
+    'late_fee_schedule_records': '应缴滞纳金',
+    'paid_fee_records': '已缴费',
+    'fee_receipt_dispatch_records': '收据发文',
+}
 FEE_COLLECTION_KIND = 'fees'
 
 
@@ -224,6 +237,35 @@ def _load_standalone_collected() -> set[str]:
         return set()
 
 
+def missing_required_fee_sections(fee_snapshot: dict) -> list[str]:
+    """An explicit empty list is complete; an omitted or unknown section is not."""
+    return [
+        _FEE_SECTION_LABELS[field] for field in _REQUIRED_FEE_PAYLOAD_FIELDS
+        if fee_snapshot.get(field) is None
+    ]
+
+
+def wait_for_fee_snapshot(application_no: str, attempt_id: str) -> dict | None:
+    """Wait for a complete response from this attempt, retaining partial evidence on timeout."""
+    deadline = time.monotonic() + FWXX_CACHE_POLL_TIMEOUT
+    latest_snapshot = None
+    while True:
+        raise_if_cnipa_login_required()
+        cached_snapshot = read_json_cache(PATENT_FEE_CACHE_FILE).get(application_no)
+        if matches_detail_attempt(cached_snapshot, attempt_id):
+            missing_sections = missing_required_fee_sections(cached_snapshot)
+            if not missing_sections:
+                return cached_snapshot
+            if latest_snapshot is None:
+                print(f"    [*] 已收到部分费用栏目，继续等待：缺少{'、'.join(missing_sections)}")
+            # Do not combine different responses into a snapshot the server never returned.
+            latest_snapshot = cached_snapshot
+        remaining_wait = deadline - time.monotonic()
+        if remaining_wait <= 0:
+            return latest_snapshot
+        time.sleep(min(0.5, remaining_wait))
+
+
 def collect_one_fee(
     driver,
     application_no: str,
@@ -241,6 +283,7 @@ def collect_one_fee(
     detail_attempt = None
     detail_handle = None
     search_handle = None
+    detail_click_started = False
     try:
         if not is_browser_alive(driver):
             raise DetailCollectionFatalError('浏览器已关闭，本条未采集，费用批次已中断')
@@ -259,6 +302,7 @@ def collect_one_fee(
             return None
 
         print("    [*] 输入申请号并点击查询按钮...")
+        detail_attempt = begin_detail_attempt(application_no)
         InputService.type_in_search(
             input_x,
             input_y,
@@ -270,32 +314,23 @@ def collect_one_fee(
             post_search_wait=FWXX_POST_SEARCH_WAIT,
         )
 
-        try:
-            page_text = driver.page_source.lower()
-            if any(
-                keyword in page_text
-                for keyword in ('无查询结果', '无搜索结果', '请输入查询', '没有找到')
-            ):
-                print("    [!] 搜索无结果或出现异常提示")
-                return None
-        except Exception:
-            pass
+        wait_for_detail_search_target(detail_attempt)
+        print(f"    [✓] 本轮搜索响应已确认唯一目标申请号 {application_no}")
 
         print("    [*] 点击申请号链接进入详情页...")
-        detail_attempt = begin_detail_attempt(application_no)
+        detail_click_started = True
         InputService.move_and_click(
             link_x,
             link_y,
             post_click_wait=FWXX_DETAIL_CLICK_WAIT,
         )
-        new_handles = [handle for handle in driver.window_handles if handle != search_handle]
-        if len(new_handles) != 1:
-            raise DetailCollectionFatalError("费用详情页未唯一打开，已停止批次")
-
-        detail_handle = new_handles[0]
+        detail_handle = wait_for_unique_detail_window(driver, search_handle)
         driver.switch_to.window(detail_handle)
         time.sleep(FWXX_TAB_SWITCH_WAIT)
-        wait_for_detail_identity(detail_attempt)
+        try:
+            wait_for_detail_identity(detail_attempt)
+        except DetailIdentityTimeout as error:
+            raise DetailSearchRetryableError(str(error)) from error
         print("    [✓] 官方申请号已确认，开始采集费用")
         print("    [*] 点击'费用信息'菜单...")
         InputService.move_and_click(
@@ -305,44 +340,52 @@ def collect_one_fee(
         )
 
         print("    [*] 从 MITM 缓存读取费用信息...")
-        fee_payload = poll_cache_for_key(
-            PATENT_FEE_CACHE_FILE,
-            application_no,
-            max_wait=FWXX_CACHE_POLL_TIMEOUT,
-            validate=partial(
-                matches_detail_attempt,
-                expected_attempt_id=detail_attempt['attempt_id'],
-            ),
-        )
+        fee_payload = wait_for_fee_snapshot(application_no, detail_attempt['attempt_id'])
         if fee_payload is None:
             print("    [!] 未从缓存中获得费用信息")
         else:
             fee_counts = []
-            for field, label in (
-                ('payable_fee_records', '应缴费'),
-                ('late_fee_schedule_records', '应缴滞纳金'),
-                ('paid_fee_records', '已缴费'),
-                ('fee_receipt_dispatch_records', '收据发文'),
-            ):
-                if field in fee_payload:
+            for field, label in _FEE_SECTION_LABELS.items():
+                if fee_payload.get(field) is not None:
                     fee_counts.append(f"{label} {len(fee_payload[field])} 条")
                 else:
                     fee_counts.append(f"{label} 未返回")
-            print(f"    [✓] 成功读取费用信息：{'; '.join(fee_counts)}")
+            for field, issue in fee_payload.get('fee_section_issues', {}).items():
+                label = _FEE_SECTION_LABELS[field]
+                evidence = ', '.join(f'{name}={value}' for name, value in issue.items())
+                print(f"    [费用栏目诊断] {label}：{evidence}")
+            missing_sections = missing_required_fee_sections(fee_payload)
+            if missing_sections:
+                print(
+                    f"    [!] 等待 {FWXX_CACHE_POLL_TIMEOUT:g} 秒后费用栏目仍不完整："
+                    f"缺少{'、'.join(missing_sections)}；{'; '.join(fee_counts)}"
+                )
+            else:
+                print(f"    [✓] 已读取完整费用栏目：{'; '.join(fee_counts)}")
             fee_fields.update({
-                field: value for field, value in fee_payload.items()
-                if field != 'detail_attempt_id'
+                field: fee_payload[field] for field in _FEE_PAYLOAD_FIELDS
+                if field in fee_payload
             })
 
         return fee_fields or None
 
-    except DetailCollectionFatalError:
+    except (CNIPALoginRequired, DetailCollectionFatalError):
         raise
+    except DetailSearchRetryableError:
+        if detail_click_started:
+            restore_detail_search_page(driver, search_handle, detail_attempt['attempt_id'])
+            detail_attempt = None
+            detail_handle = None
+        raise
+    except pyautogui.FailSafeException as error:
+        raise DetailCollectionFatalError('鼠标紧急停止已触发，费用批次已中断') from error
     except WebDriverException as error:
         raise DetailCollectionFatalError('浏览器连接失效，费用批次已中断') from error
     except Exception as error:
-        print(f"    [!] 采集失败: {str(error)[:100]}")
-        return fee_fields or None
+        if detail_click_started and detail_handle is None:
+            restore_detail_search_page(driver, search_handle, detail_attempt['attempt_id'])
+            detail_attempt = None
+        raise DetailSearchRetryableError(f'费用采集失败: {type(error).__name__}: {str(error)[:200]}') from error
     finally:
         if detail_attempt is not None:
             clear_matching_detail_attempt(detail_attempt['attempt_id'])
@@ -465,12 +508,33 @@ def _run_fee_collection(args) -> None:
 
 def _collect_fee_batch(args, checkpoint: CollectionBatch) -> None:
     targets = checkpoint.select_pending(args.test)
+    if not targets:
+        print("✓ 本批没有待采集费用的申请号")
+        return
 
     if args.test:
         print(f"📋 测试模式：仅采集前 {len(targets)} 个\n")
 
     driver = None
     try:
+        failure_db = PatentsDB(PATENTS_DB_FILE)
+        failed_count = 0
+        registered_targets = []
+        for application_no in targets:
+            if failure_db.get_record(application_no) is None:
+                reason = '主库未建档，请先完成主采集，再重试费用采集'
+                print(f"  [!] {application_no}：{reason}；本次不打开详情页")
+                checkpoint.record_started(application_no)
+                checkpoint.record_failure(application_no, reason)
+                failure_db.record_collection_failure(FEE_COLLECTION_KIND, application_no, 'not_found_in_db')
+                failed_count += 1
+            else:
+                registered_targets.append(application_no)
+        if not registered_targets:
+            raise RuntimeError(f'本批 {failed_count} 件主库均未建档，请先完成主采集；未完成清单已保留')
+        if failed_count:
+            print(f"[*] {failed_count} 件待主采集建档，本次检索其余 {len(registered_targets)} 件")
+
         print("\n[*] 正在加载坐标配置...")
         input_x, input_y, button_x, button_y = (
             CoordinateService.load_search_coordinates()
@@ -488,35 +552,38 @@ def _collect_fee_batch(args, checkpoint: CollectionBatch) -> None:
         print("\n" + "=" * 70)
         print("费用采集进度")
         print("=" * 70)
+        print("[*] 每件仅尝试一次；失败后跳过，后续从费用失败清单补采")
         success_count = 0
-        failed_count = 0
-        failure_streak = CollectionFailureStreak('费用信息采集')
-        failure_db = PatentsDB(PATENTS_DB_FILE)
 
-        for index, application_no in enumerate(targets, 1):
+        for index, application_no in enumerate(registered_targets, 1):
             if not is_browser_alive(driver):
                 print("\n⚠️  浏览器已关闭，停止采集")
-                remaining = len(targets) - index + 1
+                remaining = len(registered_targets) - index + 1
                 print(
                     f"\n已采集 {success_count} 条，失败 {failed_count} 条，"
                     f"还有 {remaining} 条未采集"
                 )
                 raise DetailCollectionFatalError('浏览器进程意外退出，费用采集已中断')
 
-            print(f"\n[{index}/{len(targets)}] 申请号: {application_no}")
+            print(f"\n[{index}/{len(registered_targets)}] 申请号: {application_no}")
             checkpoint.record_started(application_no)
-            fee_fields = collect_one_fee(
-                driver=driver,
-                application_no=application_no,
-                input_x=input_x,
-                input_y=input_y,
-                button_x=button_x,
-                button_y=button_y,
-                link_x=link_x,
-                link_y=link_y,
-                fee_menu_x=fee_menu_x,
-                fee_menu_y=fee_menu_y,
-            )
+            navigation_failure = ''
+            fee_fields = None
+            try:
+                fee_fields = collect_one_fee(
+                    driver=driver,
+                    application_no=application_no,
+                    input_x=input_x,
+                    input_y=input_y,
+                    button_x=button_x,
+                    button_y=button_y,
+                    link_x=link_x,
+                    link_y=link_y,
+                    fee_menu_x=fee_menu_x,
+                    fee_menu_y=fee_menu_y,
+                )
+            except DetailSearchRetryableError as error:
+                navigation_failure = str(error)
 
             if fee_fields:
                 stored_snapshot = persist_fee_fields(application_no, fee_fields)
@@ -529,19 +596,16 @@ def _collect_fee_batch(args, checkpoint: CollectionBatch) -> None:
                     )
                     failed_count += 1
                     checkpoint.record_failure(application_no, '费用数据未写入专利主库，已保存未匹配备份')
-                    failure_streak.record_failure()
-                elif not all(
-                    stored_snapshot[field] is not None for field in _REQUIRED_FEE_PAYLOAD_FIELDS
-                ):
-                    print("  ⚠️  主库费用栏目仍不完整，需重试")
+                elif missing_required_fee_sections(stored_snapshot):
+                    reason = f"主库费用栏目仍不完整：缺少{'、'.join(missing_required_fee_sections(stored_snapshot))}"
+                    print(f"  ⚠️  {reason}；已保存现有栏目，保留待重试")
                     failure_db.record_collection_failure(
                         FEE_COLLECTION_KIND,
                         application_no,
                         'incomplete_fee_payload',
                     )
                     failed_count += 1
-                    checkpoint.record_failure(application_no, '主库费用栏目仍不完整')
-                    failure_streak.record_failure()
+                    checkpoint.record_failure(application_no, reason)
                 else:
                     print("  ✅ 主库费用栏目已完整")
                     failure_db.clear_collection_failure(
@@ -550,19 +614,18 @@ def _collect_fee_batch(args, checkpoint: CollectionBatch) -> None:
                     )
                     success_count += 1
                     checkpoint.record_success(application_no)
-                    failure_streak.record_success()
             else:
-                print("  ❌ 未采集到费用数据")
+                reason = navigation_failure or '等待结束仍未收到本次费用数据'
+                print(f"  ❌ {reason}；本轮跳过，已记入费用失败清单，继续后续申请号")
                 failure_db.record_collection_failure(
                     FEE_COLLECTION_KIND,
                     application_no,
-                    'no_fee_payload',
+                    navigation_failure or 'no_fee_payload',
                 )
                 failed_count += 1
-                checkpoint.record_failure(application_no, '未采集到有效费用数据')
-                failure_streak.record_failure()
+                checkpoint.record_failure(application_no, reason)
 
-            if index % FWXX_ANTI_CRAWL_BATCH_SIZE == 0 and index < len(targets):
+            if index % FWXX_ANTI_CRAWL_BATCH_SIZE == 0 and index < len(registered_targets):
                 wait_time = random.uniform(
                     FWXX_ANTI_CRAWL_WAIT_MIN,
                     FWXX_ANTI_CRAWL_WAIT_MAX,
@@ -584,13 +647,12 @@ def _collect_fee_batch(args, checkpoint: CollectionBatch) -> None:
         )
         print(f"[✓] JSONL 备份已刷新：{exported} 条（含费用信息）")
         if failed_count:
+            print("[*] 可在控制台费用面板点击「仅重试失败项」；下轮仅采集仍在失败清单中的申请号")
+            print('    补采命令: python collect_fees.py --retry-failed')
             raise RuntimeError(
                 f'费用采集失败 {failed_count} 条，未完成清单: {FEE_COLLECTION_CHECKPOINT_FILE}'
             )
 
-    except CollectionFailureStreakExceeded:
-        # The streak tracker already records the actionable alert details.
-        raise
     except Exception as error:
         print(f"\n[!] 费用采集过程出错: {error}")
         import traceback
@@ -656,12 +718,12 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         run_fee_collection(arguments)
+    except CNIPALoginRequired as error:
+        print(f"\n[!] {error}", file=sys.stderr)
+        return 1
     except (DetailCollectionDesktopBusyError, CollectionBatchBusyError, ValueError) as error:
         print(f"\n[!] {error}", file=sys.stderr)
         return 2
-    except CollectionFailureStreakExceeded as error:
-        print(f"\n⛔ {error}", file=sys.stderr)
-        return 3
     return 0
 
 

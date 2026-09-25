@@ -207,13 +207,17 @@ data/
 - `late_fee_schedule_records` - 应缴滞纳金时间阶梯，对应 `data.zhinajin.svZnjList`
 - `paid_fee_records` - 已缴费信息，对应 `data.yijiaofei.svYijfList`
 - `fee_receipt_dispatch_records` - 收据发文信息，对应 `data.shoujufawen.svSjfwList`
-- `fee_snapshot_at` - 应缴费栏目成功采集时的 UTC 时间
+- `fee_snapshot_at` - 本轮响应至少包含一个有效费用栏目时的 UTC 时间（部分快照也有时间）
 
 **待采集/完成口径**: 自动计划来自用户导入的**费用数据集**（`fee_targets` 表，`import_fee_targets.py` 或 Dashboard 上传，导入即整表替换），与案件状态无关（见 decision-log D011）。数据集内已建档的记录中，`payable_fee_records`、`paid_fee_records`、`fee_receipt_dispatch_records` 三个必需栏目任一为 `NULL` 即待采集；三者均非 `NULL` 即完成，`[]` 也算接口明确返回并完成。数据集内主库无记录的申请号计为「未建档」，不进计划。正常缴费案件可能不返回 `late_fee_schedule_records`，因此该字段不作为完成条件。
 
 费用写入只更新费用字段和 `fee_snapshot_at`，不刷新基础案件状态使用的通用 `timestamp`。票据代码、票据号码和收据号按字符串保存。
 
+缺失、`null` 或结构异常的栏目不转换成空列表。代理在缓存中附加 `fee_section_issues` 结构诊断；采集器等待本轮三个必需栏目到齐，超时才保存部分快照，诊断元数据不进入费用主表。新部分快照按整组版本语义写入，缺项保持 `NULL`，不会借用旧快照拼成完整结果。详情导航由 `detail_search.py` 统一核验目标、等待唯一窗口和隔离失败尝试；费用每轮每件只尝试一次，普通失败在安全清理后记入失败账本并继续，不启用连续普通失败熔断。下一轮 `--retry-failed` 只读取仍失败的申请号，成功落库后清除账本记录；未建档目标在启动浏览器前跳过，登录失效、身份不符及浏览器状态不安全仍中断批次。
+
 Excel 将原始四表与分析表分开：应缴表中的未来年度费用不会被算作当前到期；滞纳金表的多行是互斥时间档，只选择分析日所在的一档，禁止求和。
+
+发文与费用的搜索确认由 `detail_search.py` 管理：采集器在输入申请号前建立尝试标记，MITM 将 `/api/search/undomestic/publicSearch` 请求绑定到当时的标记，响应只发布一个本机 `patent_detail_search_cache.json` 回执。回执记录申请号、结果数量和固定诊断原因，不记录原始请求参数或响应内容；已经撤销的尝试不能发布回执。确认不依赖主库是否处理过该申请号，也不使用旧基础专利缓存。采集器只轮询本地回执，不探测网页 DOM；详情 `sqxx` 核验仍是实际点击身份的最终依据。
 
 ### 4. 桌面浏览器互斥
 

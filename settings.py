@@ -25,6 +25,11 @@ if sys.platform == "win32":
 
 # 项目根目录（settings.py 所在的目录）
 BASE_DIR = Path(__file__).parent.absolute()
+DESKTOP_ICON_PNG_FILE = BASE_DIR / 'assets' / 'cnipa-desktop.png'
+DESKTOP_ICON_ICNS_FILE = BASE_DIR / 'assets' / 'cnipa-desktop.icns'
+DESKTOP_ICON_ICO_FILE = BASE_DIR / 'assets' / 'cnipa-desktop.ico'
+DESKTOP_APP_DIRECTORY = Path.home() / 'Desktop' / 'CNIPA 专利采集.app'
+MACOS_DESKTOP_LAUNCHER_SOURCE = BASE_DIR / 'scripts' / 'macos_desktop_launcher.c'
 
 
 def _load_env_file_into_environment(env_file: Path) -> None:
@@ -98,6 +103,16 @@ MASTER_SYNC_LOCK_FILE = DATA_DIR / 'master_sync.lock'
 COLLECTION_HEARTBEAT_FILE = DATA_DIR / 'collection_heartbeat.json'
 ALERT_STATUS_FILE = DATA_DIR / 'alert_status.json'
 WATCHDOG_EVENTS_FILE = DATA_DIR / 'watchdog_events.jsonl'
+CNIPA_SESSION_FILE = DATA_DIR / 'cnipa_session.json'
+CNIPA_SESSION_FAILURE_FILE = DATA_DIR / 'cnipa_session_failure.json'
+CNIPA_API_EVENTS_FILE = RESULTS_DIR / 'cnipa_api_events.jsonl'
+DASHBOARD_JOB_LOG_DIR = DATA_DIR / 'job_logs'
+DASHBOARD_SERVICE_LOG_FILE = DATA_DIR / 'dashboard_service.log'
+DASHBOARD_JOB_LOG_MAX_BYTES = int(os.getenv('CNIPA_DASHBOARD_JOB_LOG_MAX_BYTES', str(4 * 1024 * 1024)))
+DASHBOARD_JOB_LOG_BACKUP_COUNT = int(os.getenv('CNIPA_DASHBOARD_JOB_LOG_BACKUP_COUNT', '3'))
+DASHBOARD_JOB_LOG_RETENTION_COUNT = int(os.getenv('CNIPA_DASHBOARD_JOB_LOG_RETENTION_COUNT', '100'))
+if min(DASHBOARD_JOB_LOG_MAX_BYTES, DASHBOARD_JOB_LOG_BACKUP_COUNT, DASHBOARD_JOB_LOG_RETENTION_COUNT) < 1:
+    raise ValueError('任务日志大小、轮转备份数和保留任务数必须为正整数')
 ALERT_FORWARD_STATE_FILE = DATA_DIR / 'alert_forward_state.json'
 API_TOKEN_FILE = DATA_DIR / 'api_token.txt'
 
@@ -130,6 +145,7 @@ PATENT_AGENCY_CACHE_FILE = DATA_DIR / 'patent_agency_cache.json'
 PATENT_FWXX_CACHE_FILE = DATA_DIR / 'patent_fwxx_cache.json'
 PATENT_FEE_CACHE_FILE = DATA_DIR / 'patent_fee_cache.json'
 PATENT_DETAIL_IDENTITY_CACHE_FILE = DATA_DIR / 'patent_detail_identity_cache.json'
+PATENT_DETAIL_SEARCH_CACHE_FILE = DATA_DIR / 'patent_detail_search_cache.json'
 
 # 断点续传和状态标记
 MARKER_FILE = DATA_DIR / 'current_fwxx_target.json'
@@ -171,7 +187,8 @@ PYAUTOGUI_FAILSAFE = os.getenv('PYAUTOGUI_FAILSAFE', 'false').lower() in ('true'
 
 # 校准与采集共享同一窗口几何，绝对桌面坐标才可复用。
 BROWSER_WINDOW_X = int(os.getenv('BROWSER_WINDOW_X', '0'))
-BROWSER_WINDOW_Y = int(os.getenv('BROWSER_WINDOW_Y', '0'))
+# macOS reserves the top of the desktop for its menu bar; y=0 cannot be applied.
+BROWSER_WINDOW_Y = int(os.getenv('BROWSER_WINDOW_Y', '50' if sys.platform == 'darwin' else '0'))
 BROWSER_WINDOW_WIDTH = int(os.getenv('BROWSER_WINDOW_WIDTH', '1440'))
 BROWSER_WINDOW_HEIGHT = int(os.getenv('BROWSER_WINDOW_HEIGHT', '900'))
 
@@ -253,7 +270,10 @@ FWXX_INPUT_DELAY_MIN       = float(os.getenv('FWXX_INPUT_DELAY_MIN', '0.05'))
 FWXX_INPUT_DELAY_MAX       = float(os.getenv('FWXX_INPUT_DELAY_MAX', '0.18'))
 FWXX_INPUT_PAUSE_PROB      = float(os.getenv('FWXX_INPUT_PAUSE_PROB', '0.15'))
 FWXX_POST_SEARCH_WAIT      = float(os.getenv('FWXX_POST_SEARCH_WAIT', '3'))
+FWXX_SEARCH_READY_TIMEOUT  = float(os.getenv('FWXX_SEARCH_READY_TIMEOUT', '15'))
 FWXX_DETAIL_CLICK_WAIT     = float(os.getenv('FWXX_DETAIL_CLICK_WAIT', '4'))
+# 点击后的固定等待结束后，继续等待新详情标签页的最长时间。
+FWXX_DETAIL_OPEN_TIMEOUT   = float(os.getenv('FWXX_DETAIL_OPEN_TIMEOUT', '15'))
 FWXX_TAB_SWITCH_WAIT       = float(os.getenv('FWXX_TAB_SWITCH_WAIT', '0.5'))
 FWXX_MENU_CLICK_WAIT       = float(os.getenv('FWXX_MENU_CLICK_WAIT', '3'))
 FWXX_CACHE_POLL_TIMEOUT    = float(os.getenv('FWXX_CACHE_POLL_TIMEOUT', '10'))

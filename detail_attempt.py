@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from atomic_write import write_json_atomic
 from cache_utils import normalize_app_no, parse_timestamp, poll_cache_for_key, read_json_cache
+from cnipa_session import raise_if_cnipa_login_required
 from settings import MARKER_FILE, PATENT_DETAIL_IDENTITY_CACHE_FILE, FWXX_CACHE_POLL_TIMEOUT
 
 
@@ -13,6 +14,10 @@ _DETAIL_ATTEMPT_LIFETIME = timedelta(minutes=5)
 
 class DetailCollectionFatalError(RuntimeError):
     """The browser no longer has a verified, isolated detail-page lifecycle."""
+
+
+class DetailIdentityTimeout(DetailCollectionFatalError):
+    """The detail page is unverified; retry requires restoring the search page first."""
 
 
 def begin_detail_attempt(application_no: str) -> dict:
@@ -79,9 +84,12 @@ def wait_for_detail_identity(attempt: dict) -> None:
         attempt["attempt_id"],
         max_wait=FWXX_CACHE_POLL_TIMEOUT,
         validate=_is_detail_identity,
+        on_poll=raise_if_cnipa_login_required,
     )
     if identity is None:
-        raise DetailCollectionFatalError("未收到当前详情页的官方申请号，已停止批次")
+        raise DetailIdentityTimeout(
+            f"等待 {FWXX_CACHE_POLL_TIMEOUT:g} 秒仍未收到当前详情页的官方申请号"
+        )
     if identity["application_no"] != attempt["application_no"]:
         raise DetailCollectionFatalError(
             f"详情页申请号不匹配：目标 {attempt['application_no']}，"

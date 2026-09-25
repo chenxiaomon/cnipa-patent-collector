@@ -11,6 +11,11 @@ data/master_sync.lock
 data/collection_heartbeat.json
 data/alert_status.json
 data/watchdog_events.jsonl
+data/cnipa_session.json
+data/cnipa_session_failure.json
+data/results/cnipa_api_events.jsonl*
+data/job_logs/
+data/dashboard_service.log*
 data/alert_forward_state.json
 data/api_token.txt
 backups/
@@ -31,6 +36,8 @@ data/phase0_browser.lock
 data/public_browser.lock
 data/public_pagination.lock
 data/patent_detail_identity_cache.json
+data/patent_detail_search_cache.json
+data/**/*.lock
 data/fwxx_list.txt
 data/manual_fwxx_lists/
 data/checkpoint_resume.txt*
@@ -92,3 +99,6 @@ data/results/*_backup_*.jsonl
 data/results/*_backup_*.db*
 data/results/dashboard_*.log
 data/results/public_search_results.json
+
+# 本机运行诊断报告（含真实批次和业务记录）
+docs/runtime-log-review-*.md

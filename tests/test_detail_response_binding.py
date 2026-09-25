@@ -79,8 +79,9 @@ class TestDetailResponseTargetBinding(unittest.TestCase):
         attempt = detail_attempt.begin_detail_attempt(APPLICATION_NO)
         self.confirm_identity(OTHER_APPLICATION_NO)
 
-        with self.assertRaisesRegex(detail_attempt.DetailCollectionFatalError, "申请号不匹配"):
+        with self.assertRaisesRegex(detail_attempt.DetailCollectionFatalError, "申请号不匹配") as mismatch:
             detail_attempt.wait_for_detail_identity(attempt)
+        self.assertNotIsInstance(mismatch.exception, detail_attempt.DetailIdentityTimeout)
         for endpoint, payload in (("fwxx", FWXX_RESPONSE), ("fyxx", FYXX_RESPONSE)):
             with self.subTest(endpoint=endpoint):
                 flow = _make_flow(
@@ -267,11 +268,110 @@ class TestDetailResponseTargetBinding(unittest.TestCase):
             new_attempt["attempt_id"],
         ))
 
-    def test_missing_sqxx_confirmation_stops_collection(self):
+    def test_missing_sqxx_confirmation_raises_identity_timeout(self):
         attempt = detail_attempt.begin_detail_attempt(APPLICATION_NO)
         with patch.object(detail_attempt, "FWXX_CACHE_POLL_TIMEOUT", 0):
-            with self.assertRaisesRegex(detail_attempt.DetailCollectionFatalError, "未收到"):
+            with self.assertRaisesRegex(detail_attempt.DetailIdentityTimeout, "未收到") as timeout:
                 detail_attempt.wait_for_detail_identity(attempt)
+        self.assertIsInstance(timeout.exception, detail_attempt.DetailCollectionFatalError)
+        self.assertNotIn('已停止', str(timeout.exception))
+
+    def test_fee_identity_timeout_recovers_search_and_rejects_unverified_detail(self):
+        driver = MagicMock()
+        driver.window_handles = ['search']
+        driver.page_source = f'<table><tr><td>{APPLICATION_NO}</td></tr></table>'
+        driver.close.side_effect = lambda: driver.window_handles.remove('fee-detail')
+
+        with patch.object(collect_fees, 'is_browser_alive', return_value=True), patch.object(
+            collect_fees, 'InputService'
+        ) as input_service, patch.object(collect_fees.time, 'sleep'), patch.object(
+            detail_attempt, 'FWXX_CACHE_POLL_TIMEOUT', 0
+        ), patch.object(collect_fees, 'wait_for_fee_snapshot') as poll_fields, patch.object(
+            collect_fees, 'wait_for_detail_search_target'
+        ):
+            input_service.move_and_click.side_effect = lambda *_args, **_kwargs: driver.window_handles.append('fee-detail')
+
+            with self.assertRaises(collect_fees.DetailSearchRetryableError):
+                collect_fees.collect_one_fee(driver, APPLICATION_NO, 1, 2, 3, 4, 5, 6, 7, 8)
+
+        input_service.move_and_click.assert_called_once()
+        poll_fields.assert_not_called()
+        driver.close.assert_called_once()
+        driver.refresh.assert_called_once()
+        driver.switch_to.window.assert_called_with('search')
+        self.assertEqual(driver.window_handles, ['search'])
+        self.assertIsNone(detail_attempt.read_detail_attempt_marker())
+
+    def test_fwxx_retry_uses_new_identity_after_discarding_timed_out_attempt_responses(self):
+        driver = MagicMock()
+        driver.window_handles = ['search']
+        driver.page_source = f'<table><tr><td>{APPLICATION_NO}</td></tr></table>'
+        driver.switch_to.window.side_effect = lambda handle: setattr(driver, 'current_window_handle', handle)
+        driver.close.side_effect = lambda: driver.window_handles.remove(driver.current_window_handle)
+        refresh_markers = []
+        driver.refresh.side_effect = lambda: refresh_markers.append(detail_attempt.read_detail_attempt_marker())
+        collection_attempts = []
+        identities_after_late_responses = []
+        caches_after_late_responses = []
+        old_identity_flow = sqxx_flow(APPLICATION_NO)
+        old_fwxx_flow = _make_flow(
+            'https://cponline.cnipa.gov.cn/api/view/gn/fwxx?token=abc',
+            body=_json_body(FWXX_RESPONSE),
+        )
+
+        def open_unconfirmed_detail():
+            driver.window_handles.append('first-detail')
+            collection_attempts.append(detail_attempt.read_detail_attempt_marker())
+            self.scraper.request(old_identity_flow)
+            self.scraper.request(old_fwxx_flow)
+
+        def open_confirmed_detail():
+            driver.window_handles.append('retry-detail')
+            current_attempt = detail_attempt.read_detail_attempt_marker()
+            collection_attempts.append(current_attempt)
+            self.scraper.response(old_identity_flow)
+            self.scraper.response(old_fwxx_flow)
+            identities_after_late_responses.append(detail_attempt.read_detail_identity(current_attempt['attempt_id']))
+            caches_after_late_responses.append(read_json_cache(str(self.temporary_path / 'fwxx.json')))
+            self.confirm_identity(APPLICATION_NO)
+
+        def publish_current_fwxx():
+            current_fwxx_flow = _make_flow(
+                'https://cponline.cnipa.gov.cn/api/view/gn/fwxx?token=abc',
+                body=_json_body({'code': 200, 'data': {'tongzhishufw': {'tongzhishufwList': []}}}),
+            )
+            self.scraper.request(current_fwxx_flow)
+            self.scraper.response(current_fwxx_flow)
+
+        click_steps = iter((open_unconfirmed_detail, open_confirmed_detail, publish_current_fwxx))
+        with patch.object(collect_fwxx, 'is_browser_alive', return_value=True), patch.object(
+            collect_fwxx, 'InputService'
+        ) as input_service, patch.object(collect_fwxx.time, 'sleep'), patch.object(
+            collect_fwxx, 'wait_for_detail_search_target'
+        ):
+            input_service.move_and_click.side_effect = lambda *_args, **_kwargs: next(click_steps)()
+            with patch.object(detail_attempt, 'FWXX_CACHE_POLL_TIMEOUT', 0):
+                with self.assertRaises(collect_fwxx.FwxxCollectionRetryableError):
+                    collect_fwxx.collect_one_fwxx(driver, APPLICATION_NO, 1, 2, 3, 4, 5, 6, 7, 8)
+
+            self.assertEqual(driver.window_handles, ['search'])
+            self.assertIsNone(detail_attempt.read_detail_attempt_marker())
+
+            retry_fields = collect_fwxx.collect_one_fwxx(driver, APPLICATION_NO, 1, 2, 3, 4, 5, 6, 7, 8)
+
+        self.assertEqual(len(collection_attempts), 2)
+        self.assertNotEqual(collection_attempts[0]['attempt_id'], collection_attempts[1]['attempt_id'])
+        self.assertEqual(identities_after_late_responses, [None])
+        self.assertEqual(caches_after_late_responses, [{}])
+        self.assertEqual(refresh_markers, [None])
+        self.assertEqual(retry_fields['fwxx_list'], [])
+        self.assertNotIn('detail_attempt_id', retry_fields)
+        cached_fields = read_json_cache(str(self.temporary_path / 'fwxx.json'))[APPLICATION_NO]
+        self.assertEqual(cached_fields['detail_attempt_id'], collection_attempts[1]['attempt_id'])
+        self.assertEqual([click.args for click in input_service.move_and_click.call_args_list], [(5, 6), (5, 6), (7, 8)])
+        self.assertEqual(driver.close.call_count, 2)
+        self.assertEqual(driver.window_handles, ['search'])
+        self.assertIsNone(detail_attempt.read_detail_attempt_marker())
 
     def test_response_without_request_attempt_cannot_confirm_identity(self):
         detail_attempt.begin_detail_attempt(APPLICATION_NO)
@@ -326,8 +426,8 @@ class TestDetailResponseTargetBinding(unittest.TestCase):
                 with patch.object(collector_module, "is_browser_alive", return_value=True), patch.object(
                     collector_module, "InputService"
                 ) as input_service, patch.object(collector_module.time, "sleep"), patch.object(
-                    collector_module, "poll_cache_for_key"
-                ) as poll_fields:
+                    collector_module, "wait_for_fee_snapshot" if collector_module is collect_fees else "poll_cache_for_key"
+                ) as poll_fields, patch.object(collector_module, 'wait_for_detail_search_target'):
                     input_service.move_and_click.side_effect = open_wrong_detail
                     with self.assertRaisesRegex(detail_attempt.DetailCollectionFatalError, "申请号不匹配"):
                         collect_one(driver, APPLICATION_NO, *coordinates)

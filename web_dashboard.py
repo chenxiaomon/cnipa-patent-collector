@@ -14,6 +14,8 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import logging
+from logging.handlers import RotatingFileHandler
 import mimetypes
 import os
 import re
@@ -40,6 +42,10 @@ from settings import (
     CONFIG_FILE,
     CONFIG_FWXX_FILE,
     DATA_DIR,
+    DASHBOARD_JOB_LOG_DIR,
+    DASHBOARD_JOB_LOG_MAX_BYTES,
+    DASHBOARD_JOB_LOG_BACKUP_COUNT,
+    DASHBOARD_JOB_LOG_RETENTION_COUNT,
     DETECTION_LOG_FILE,
     DETECTION_LOG_JSONL_FILE,
     FWXX_MANUAL_LIST_DIR,
@@ -71,8 +77,11 @@ _ENVIRONMENT_DIAGNOSTICS_LOCK = threading.Lock()
 
 APP_NAME = "CNIPA 采集控制台"
 SERVER_VERSION = "CNIPADashboard/0.2"
+DASHBOARD_LOGGER = logging.getLogger("cnipa.dashboard")
 MAX_LOG_LINES = 1600
 MAX_COMPLETED_JOBS = 40
+DESKTOP_SHUTDOWN_TIMEOUT_SECONDS = 35.0
+JOB_LOG_FILENAME_PATTERN = re.compile(r"\d{8}T\d{6}Z-[0-9a-f]{10}-[a-z][a-z0-9_]*\.log(?:\.\d+)?")
 # 传给采集子进程的登录等待时间，与 settings.CNIPA_LOGIN_WAIT_SECONDS 保持一致
 DEFAULT_LOGIN_WAIT_SECONDS = str(int(CNIPA_LOGIN_WAIT_SECONDS))
 MAX_BODY_BYTES = 1 * 1024 * 1024   # 1 MB：防止超大请求体撑爆内存
@@ -111,6 +120,7 @@ PUBLIC_BROWSER_COMPANION_ACTIONS = {
 }
 
 CODE_MAINTENANCE_ACTIONS = {"upgrade_code", "fetch_update"}
+SHUTDOWN_PROTECTED_ACTIONS = CODE_MAINTENANCE_ACTIONS | {"db_rebuild"}
 
 DOWNLOADS = {
     "excel": PATENTS_EXCEL_FILE,
@@ -237,6 +247,18 @@ def port_open(host: str, port: int, timeout: float = 0.2) -> bool:
         return False
 
 
+def redact_job_secrets(line: str) -> str:
+    line = re.sub(
+        r"(?i)\b(authorization|proxy-authorization|cookie|set-cookie)([\"']?\s*[:=]\s*)[^\r\n]*",
+        r"\1\2[REDACTED]", line,
+    )
+    return re.sub(
+        r"(?i)\b(password|passwd|pwd|access_token|refresh_token|token|api_key|api-key|secret|cnipa_password)"
+        r"([\"']?\s*[:=]\s*|\s+)(?:\"[^\"]*\"|'[^']*'|[^\s&;,\]}]+)",
+        r"\1\2[REDACTED]", line,
+    )
+
+
 @dataclass
 class Job:
     id: str
@@ -250,12 +272,48 @@ class Job:
     returncode: int | None = None
     lines: deque[str] = field(default_factory=lambda: deque(maxlen=MAX_LOG_LINES))
     process: subprocess.Popen[str] | None = None
+    log_cursor: int = 0
+    log_filename: str | None = None
+    _log_writer: RotatingFileHandler | None = field(default=None, repr=False)
+    _log_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _completed: threading.Event = field(default_factory=threading.Event, repr=False)
+    _termination_thread: threading.Thread | None = field(default=None, repr=False)
+    _termination_error: Exception | None = field(default=None, repr=False)
+
+    def open_log(self) -> None:
+        DASHBOARD_JOB_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        self.log_filename = f"{stamp}-{self.id}-{self.action}.log"
+        self._log_writer = RotatingFileHandler(
+            DASHBOARD_JOB_LOG_DIR / self.log_filename,
+            maxBytes=DASHBOARD_JOB_LOG_MAX_BYTES,
+            backupCount=DASHBOARD_JOB_LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        )
+
+    def close_log(self) -> None:
+        with self._log_lock:
+            if self._log_writer:
+                self._log_writer.close()
+                self._log_writer = None
 
     def append(self, line: str) -> None:
-        self.lines.append(line.rstrip("\n"))
+        clean_line = redact_job_secrets(line.rstrip("\n"))
+        timestamped_line = f"[{iso_now()}] {clean_line}"
+        with self._log_lock:
+            self.lines.append(timestamped_line)
+            self.log_cursor += 1
+            if self._log_writer:
+                # Streaming logs append and flush each line so abrupt termination
+                # preserves the latest evidence without rewriting the full log.
+                self._log_writer.emit(logging.LogRecord(
+                    "dashboard.job", logging.INFO, "", 0, timestamped_line, (), None,
+                ))
 
     def to_dict(self, include_logs: bool = False) -> dict[str, Any]:
-        lines_list = list(self.lines)
+        with self._log_lock:
+            lines_list = list(self.lines)
+            log_cursor = self.log_cursor
         waiting = (
             self.status == "running"
             and next((
@@ -275,33 +333,55 @@ class Job:
             "finished_at": self.finished_at,
             "status": self.status,
             "returncode": self.returncode,
-            "log_count": len(self.lines),
+            "log_count": len(lines_list),
+            "log_cursor": log_cursor,
+            "log_filename": self.log_filename,
             "waiting_for_login": waiting,
         }
         if include_logs:
             data["logs"] = lines_list
         return data
 
+    def read_logs(self, after: int) -> dict[str, Any]:
+        snapshot = self.to_dict(include_logs=True)
+        first_cursor = snapshot["log_cursor"] - len(snapshot["logs"])
+        snapshot["logs_reset"] = after < first_cursor or after > snapshot["log_cursor"]
+        if not snapshot["logs_reset"]:
+            snapshot["logs"] = snapshot["logs"][after - first_cursor:]
+        return snapshot
+
 
 def printable_command(command: list[str]) -> str:
     return " ".join(command)
+
+
+class DashboardShutdownConflict(RuntimeError):
+    """The requested operation conflicts with the dashboard exit lifecycle."""
+
+
+class DashboardMaintenanceBusy(DashboardShutdownConflict):
+    """A non-interruptible maintenance job must finish before desktop exit."""
 
 
 class JobManager:
     def __init__(self) -> None:
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_started = False
 
     def list_jobs(self) -> list[dict[str, Any]]:
         with self._lock:
             active_jobs = [
                 job for job in self._jobs.values()
                 if job.status in {"running", "stopping"}
+                or (job._termination_thread is not None and job._termination_thread.is_alive())
             ]
+            active_ids = {job.id for job in active_jobs}
             completed_jobs = sorted(
                 (
                     job for job in self._jobs.values()
-                    if job.status not in {"running", "stopping"}
+                    if job.id not in active_ids
                 ),
                 key=lambda item: item.finished_at or item.started_at,
                 reverse=True,
@@ -319,9 +399,36 @@ class JobManager:
         with self._lock:
             return self._jobs.get(job_id)
 
+    def list_log_files(self) -> list[dict[str, Any]]:
+        archived_logs = []
+        for log_path in DASHBOARD_JOB_LOG_DIR.glob("*.log*"):
+            if not JOB_LOG_FILENAME_PATTERN.fullmatch(log_path.name) or log_path.is_symlink():
+                continue
+            try:
+                log_stat = log_path.stat()
+            except FileNotFoundError:
+                continue
+            archived_logs.append({"name": log_path.name, "size": log_stat.st_size})
+        return sorted(archived_logs, key=lambda item: item["name"], reverse=True)
+
+    def _prune_log_files_locked(self) -> None:
+        active_names = {
+            job.log_filename for job in self._jobs.values()
+            if job.status in {"running", "stopping"}
+        }
+        completed_names = sorted({
+            archived["name"].split(".log", 1)[0] + ".log"
+            for archived in self.list_log_files()
+        } - active_names, reverse=True)
+        for expired_name in completed_names[DASHBOARD_JOB_LOG_RETENTION_COUNT:]:
+            for log_path in DASHBOARD_JOB_LOG_DIR.glob(expired_name + "*"):
+                log_path.unlink(missing_ok=True)
+
     def start(self, action: str, params: dict[str, Any]) -> Job:
         action = action.strip()
         with self._lock:
+            if self._shutdown_started:
+                raise DashboardShutdownConflict("控制台正在退出，不能启动新任务")
             conflicting_job = self._start_conflict_locked(action)
             if conflicting_job:
                 if (
@@ -348,6 +455,10 @@ class JobManager:
                 command=spec["command"],
                 env_overrides=spec.get("env", {}),
             )
+            self._prune_log_files_locked()
+            job.open_log()
+            job.append(f"[dashboard] 开始任务: {job.title}；任务 ID: {job.id}")
+            job.append(f"$ {printable_command(job.command)}")
             env = os.environ.copy()
             env.update(job.env_overrides)
             env.setdefault("PYTHONUNBUFFERED", "1")
@@ -365,24 +476,29 @@ class JobManager:
             else:
                 extra_kwargs['start_new_session'] = True
 
-            process = subprocess.Popen(
-                job.command,
-                cwd=str(BASE_DIR),
-                env=env,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding='utf-8',
-                bufsize=1,
-                **extra_kwargs,
-            )
+            try:
+                process = subprocess.Popen(
+                    job.command,
+                    cwd=str(BASE_DIR),
+                    env=env,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    bufsize=1,
+                    **extra_kwargs,
+                )
+            except OSError as exc:
+                job.append(f"[dashboard] 任务启动失败: {exc}")
+                job.close_log()
+                raise
             job.process = process
             self._jobs[job.id] = job
 
         if process.stdin:
             process.stdin.close()
-        job.append(f"$ {printable_command(job.command)}")
         if requires_desktop:
             job.append("[dashboard] 此任务会在运行 Dashboard 的机器上启动/控制浏览器；远程访问网页不会在客户端电脑弹出浏览器。")
 
@@ -395,15 +511,82 @@ class JobManager:
             job = self._jobs.get(job_id)
             if not job or not job.process:
                 return False
-            if job.process.poll() is not None:
+            if job._termination_thread is not None and job._termination_thread.is_alive():
+                return True
+            # A root can exit while descendants still own stdout. Reaping it
+            # here would erase the ancestry needed by terminate_process_tree.
+            if job._completed.is_set():
                 return False
             job.status = "stopping"
-        job.append("[dashboard] 正在停止任务...")
-        # terminate_process_tree 内部最多等 8 秒再升级 SIGKILL，放后台线程执行
-        threading.Thread(
-            target=terminate_process_tree, args=(job.process,), daemon=True
-        ).start()
+            job._termination_error = None
+            job.append("[dashboard] 正在停止任务...")
+            # A single owner sends termination; shutdown joins it before exiting.
+            job._termination_thread = threading.Thread(
+                target=self._terminate_job, args=(job,), daemon=False,
+            )
+            job._termination_thread.start()
         return True
+
+    def _terminate_job(self, job: Job) -> None:
+        try:
+            terminate_process_tree(job.process)
+        except Exception as exc:
+            job._termination_error = exc
+            job.append(f"[dashboard] 停止任务失败，可重试：{exc}")
+
+    def shutdown_jobs(self) -> None:
+        """Stop owned jobs, preserving collection finalization before proxy exit."""
+        deadline = time.monotonic() + DESKTOP_SHUTDOWN_TIMEOUT_SECONDS
+        if not self._shutdown_lock.acquire(timeout=DESKTOP_SHUTDOWN_TIMEOUT_SECONDS):
+            raise RuntimeError("控制台正在停止任务，请稍后重试关闭")
+        try:
+            with self._lock:
+                owned_jobs = list(self._jobs.values())
+                protected_jobs = [
+                    job for job in owned_jobs
+                    if job.action in SHUTDOWN_PROTECTED_ACTIONS
+                    and job.status in {"running", "stopping"}
+                ]
+                if protected_jobs:
+                    titles = "、".join(job.title for job in protected_jobs)
+                    raise DashboardMaintenanceBusy(f"{titles}正在运行，请完成后再关闭软件")
+                # This gate shares the start lock, including subprocess creation.
+                self._shutdown_started = True
+            proxy_actions = {"mitm_proxy", "public_mitm_proxy"}
+            collection_jobs = [
+                job for job in owned_jobs if job.process is not None and job.action not in proxy_actions
+            ]
+            proxy_jobs = [
+                job for job in owned_jobs if job.process is not None and job.action in proxy_actions
+            ]
+            for shutdown_stage in (collection_jobs, proxy_jobs):
+                for job in shutdown_stage:
+                    self.stop(job.id)
+                for job in shutdown_stage:
+                    if job._termination_thread is not None:
+                        job._termination_thread.join(timeout=max(0, deadline - time.monotonic()))
+                        if job._termination_thread.is_alive():
+                            raise RuntimeError(f"停止“{job.title}”超时，请稍后重试关闭")
+                        if job._termination_error is not None:
+                            raise RuntimeError(f"停止“{job.title}”失败：{job._termination_error}；请重试关闭")
+                    if not job._completed.wait(max(0, deadline - time.monotonic())):
+                        raise RuntimeError(f"等待“{job.title}”保存日志超时，请稍后重试关闭")
+        finally:
+            self._shutdown_lock.release()
+
+    def finish_jobs_before_exit(self) -> None:
+        """A terminal exit waits for maintenance instead of interrupting writes."""
+        with self._lock:
+            self._shutdown_started = True
+            protected_jobs = [
+                job for job in self._jobs.values()
+                if job.action in SHUTDOWN_PROTECTED_ACTIONS
+                and job.status in {"running", "stopping"}
+            ]
+        for job in protected_jobs:
+            DASHBOARD_LOGGER.info("等待“%s”完成后退出控制台...", job.title)
+            job._completed.wait()
+        self.shutdown_jobs()
 
     def _start_conflict_locked(self, action: str) -> Job | None:
         active_jobs = [
@@ -442,18 +625,25 @@ class JobManager:
             for line in job.process.stdout:
                 job.append(line)
         finally:
-            job.process.stdout.close()
-            returncode = job.process.wait()
-            with self._lock:
-                job.returncode = returncode
-                job.finished_at = iso_now()
-                if job.status == "stopping":
-                    job.status = "stopped"
-                elif returncode == 0:
-                    job.status = "finished"
-                else:
-                    job.status = "failed"
-            job.append(f"[dashboard] 任务结束，退出码: {returncode}")
+            try:
+                job.process.stdout.close()
+                returncode = job.process.wait()
+                with self._lock:
+                    job.returncode = returncode
+                    job.finished_at = iso_now()
+                    if job.status == "stopping":
+                        job.status = "stopped"
+                    elif returncode == 0:
+                        job.status = "finished"
+                    else:
+                        job.status = "failed"
+                    try:
+                        job.append(f"[dashboard] 任务结束，状态: {job.status}，退出码: {returncode}")
+                    finally:
+                        job.close_log()
+                    self._prune_log_files_locked()
+            finally:
+                job._completed.set()
 
 
 def positive_int(value: Any, default: int | None = None, minimum: int = 1, maximum: int = 100000) -> int | None:
@@ -535,7 +725,7 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
         return {"action": action, "title": "公开查询 MITM 代理", "command": [py, "-u", "start_mitm_public_search.py"]}
     if action == "main_full":
         return {
-            "action": action, "title": "看门狗主流程采集",
+            "action": action, "title": "采集新增目标（看门狗）",
             "command": [py, "-u", "collection_watchdog.py"],
             "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
         }
@@ -1121,7 +1311,8 @@ HTML = r"""<!doctype html>
       <article class="panel" style="margin-bottom:14px">
         <div class="panel-head"><h2>快捷操作</h2><span class="hint">常用</span></div>
         <div class="button-row">
-          <button class="btn primary"   data-action="main_full">继续全量采集</button>
+          <button class="btn primary"   data-action="main_full">采集新增目标</button>
+          <button class="btn secondary" data-open-tab="logs">续跑未完成批次</button>
           <button class="btn secondary" data-action="collect_fwxx">补采发文</button>
           <button class="btn secondary" data-action="strategy_generate">生成策略清单</button>
           <button class="btn secondary" data-action="export_excel">导出 Excel</button>
@@ -1142,7 +1333,7 @@ HTML = r"""<!doctype html>
     <!-- ═══ Tab 2：采集控制 ═══ -->
     <div id="tab-collection" class="tab-panel">
       <article class="panel" style="margin-bottom:14px">
-        <div class="panel-head"><h2>采集进度</h2><span class="hint" id="collectProgressHint">—</span></div>
+        <div class="panel-head"><h2>输入清单建档情况</h2><span class="hint" id="collectProgressHint">—</span></div>
         <div class="prog-bar-wrap"><div class="prog-bar" id="collectProgBar" style="width:0%"></div></div>
       </article>
 
@@ -1155,7 +1346,12 @@ HTML = r"""<!doctype html>
             <button class="btn secondary" id="collectFwxxTest">补采测试</button>
           </div>
           <div class="button-row" style="margin-bottom:14px">
-            <button class="btn danger-soft" data-action="main_full">继续全量采集</button>
+            <button class="btn primary" data-action="main_full">采集新增目标</button>
+            <button class="btn secondary" data-open-tab="logs">续跑未完成批次</button>
+            <button class="btn secondary" data-open-tab="data">查看失败重试</button>
+          </div>
+          <p class="hint" id="mainRetryHint">新增目标会跳过已有成功或失败记录；上次未完成的申请号请从原批次继续。</p>
+          <div class="button-row" style="margin-bottom:14px">
             <button class="btn secondary"   data-action="phase0_browser">Phase 0 浏览器</button>
             <button class="btn secondary"   data-action="import_cache">导入缓存</button>
           </div>
@@ -1441,10 +1637,10 @@ HTML = r"""<!doctype html>
               「导入系统库」将采集数据写入 patents.db，可在概览和数据分析中查看
             </div>
             <div class="downloads">
-              <a href="/download/excel">Excel ↓</a>
-              <a href="/download/jsonl">JSONL ↓</a>
-              <a href="/download/json">JSON ↓</a>
-              <a href="/download/dynamic">动态清单 ↓</a>
+              <a href="/download/excel" download>Excel ↓</a>
+              <a href="/download/jsonl" download>JSONL ↓</a>
+              <a href="/download/json" download>JSON ↓</a>
+              <a href="/download/dynamic" download>动态清单 ↓</a>
             </div>
           </div>
         </article>
@@ -1650,7 +1846,7 @@ HTML = r"""<!doctype html>
         <div class="batch-toolbar">
           <label class="field batch-selector"><span>采集批次</span><select id="batchSelect"><option value="">暂无批次记录</option></select></label>
           <div class="button-row">
-            <button class="btn primary" id="resumeBatch" disabled>继续未完成项</button>
+            <button class="btn primary" id="resumeBatch" disabled>继续未完成项（含失败）</button>
             <button class="btn secondary" id="downloadBatch" disabled>下载记录</button>
           </div>
         </div>
@@ -1696,6 +1892,15 @@ HTML = r"""<!doctype html>
           <div id="jobList" class="job-list"></div>
         </article>
       </section>
+      <article class="panel operator-only" style="margin-top:14px">
+        <div class="panel-head"><h2>已保存日志</h2><button class="btn secondary" id="refreshSavedLogs">刷新文件列表</button></div>
+        <p class="hint">任务输出按文件大小轮转，重启后仍可下载保留的文件；编号越大越早，未编号文件为最新片段。</p>
+        <div class="control-grid">
+          <label class="field"><span>日志文件</span><select id="savedLogSelect"><option value="">暂无日志文件</option></select></label>
+          <button class="btn secondary" id="downloadSavedLog" disabled>下载日志</button>
+        </div>
+        <div id="savedLogFeedback" class="hint" role="status"></div>
+      </article>
     </div>
 
     <!-- ═══ Tab 9：系统配置 ═══ -->
@@ -2375,6 +2580,13 @@ JS = r"""const state = {
   followJobLog: true,
   jobLogRequestSequence: 0,
   jobLogAppliedSequence: 0,
+  jobLogCursor: 0,
+  jobLogLines: [],
+  jobLogStatus: '',
+  jobLogRefreshing: false,
+  jobsRequestSequence: 0,
+  jobsAppliedSequence: 0,
+  jobs: [],
   selectedBatchId: '',
   selectedBatch: null,
   batchItemPage: 0,
@@ -2476,7 +2688,11 @@ function switchTab(tab) {
   if (nav) nav.classList.add('active');
   location.hash = tab;
   state.currentTab = tab;
-  if (tab === 'logs' && state.roleDetermined) refreshCollectionBatches();
+  if (tab === 'logs' && state.roleDetermined) {
+    refreshCollectionBatches();
+    refreshSavedLogs();
+    refreshJobLog();
+  }
 }
 
 function initTabRouting() {
@@ -2629,32 +2845,47 @@ async function startJob(action, params = {}) {
 }
 
 async function refreshJobs() {
+  const requestSequence = ++state.jobsRequestSequence;
+  const selectedAtRequest = state.selectedJobId;
   const data = await api('/api/jobs');
+  if (requestSequence < state.jobsAppliedSequence) return;
+  state.jobsAppliedSequence = requestSequence;
   const jobs = data.jobs || [];
-  if (!state.selectedJobId && jobs.length) state.selectedJobId = jobs[0].id;
+  state.jobs = jobs;
+  if (state.selectedJobId === selectedAtRequest && !jobs.some(job => job.id === state.selectedJobId)) {
+    state.selectedJobId = jobs[0]?.id || null;
+  }
   renderJobList(jobs);
-  await refreshJobLog();
   // 全局登录横幅：任意运行中任务等待验证码时显示
   const needLogin = jobs.some(j => j.waiting_for_login);
   const banner = $('#loginBanner');
   if (banner) banner.classList.toggle('hidden', !needLogin);
+  await refreshJobLog();
 }
 
 async function refreshJobLog() {
+  if (state.currentTab !== 'logs' || document.hidden || state.jobLogRefreshing) return;
   const requestedJobId = state.selectedJobId;
-  const requestSequence = ++state.jobLogRequestSequence;
   if (!requestedJobId) { $('#jobLog').textContent = '等待任务启动...'; return; }
+  const term = $('#jobLog');
+  const changedJob = term.dataset.jobId !== requestedJobId;
+  const selectedJob = state.jobs.find(job => job.id === requestedJobId);
+  if (!changedJob && selectedJob && selectedJob.log_cursor === state.jobLogCursor && selectedJob.status === state.jobLogStatus) return;
+  const requestSequence = ++state.jobLogRequestSequence;
+  const after = changedJob ? 0 : state.jobLogCursor;
+  state.jobLogRefreshing = true;
   try {
-    const data = await api('/api/jobs/' + requestedJobId);
+    const data = await api('/api/jobs/' + requestedJobId + '?after=' + after);
     if (requestSequence < state.jobLogAppliedSequence || requestedJobId !== state.selectedJobId) return;
     state.jobLogAppliedSequence = requestSequence;
     const logs = data.job.logs || [];
-    const term = $('#jobLog');
-    const changedJob = term.dataset.jobId !== requestedJobId;
+    state.jobLogCursor = data.job.log_cursor;
+    state.jobLogStatus = data.job.status;
+    state.jobLogLines = changedJob || data.job.logs_reset ? logs : state.jobLogLines.concat(logs).slice(-1600);
     const previousScrollTop = term.scrollTop;
     if (changedJob) state.followJobLog = true;
-    if (changedJob || term.textContent !== logs.join('\n')) {
-      term.innerHTML = logs.map(colorLine).join('\n');
+    if (changedJob || data.job.logs_reset || logs.length) {
+      term.innerHTML = state.jobLogLines.map(colorLine).join('\n');
     }
     term.dataset.jobId = requestedJobId;
     term.scrollTop = state.followJobLog ? term.scrollHeight : previousScrollTop;
@@ -2663,9 +2894,45 @@ async function refreshJobLog() {
     const btn = $('#resumeLoginBtn');
     if (btn) btn.classList.toggle('hidden', !isWaiting);
   } catch {
-    if (requestSequence === state.jobLogRequestSequence && requestedJobId === state.selectedJobId) {
-      state.selectedJobId = null;
-    }
+    // A transient HTTP error leaves the current cursor intact for the next poll.
+  } finally {
+    state.jobLogRefreshing = false;
+  }
+}
+
+async function refreshSavedLogs() {
+  if (document.body.classList.contains('viewer-mode')) return;
+  try {
+    const response = await api('/api/job-logs');
+    const selection = $('#savedLogSelect');
+    const previousName = selection.value;
+    selection.innerHTML = response.files.length ? response.files.map(log =>
+      `<option value="${escHtml(log.name)}">${escHtml(log.name)} · ${fmtBytes(log.size)}</option>`
+    ).join('') : '<option value="">暂无日志文件</option>';
+    if (response.files.some(log => log.name === previousName)) selection.value = previousName;
+    $('#downloadSavedLog').disabled = !response.files.length;
+    $('#savedLogFeedback').textContent = `保留最近 ${response.retention_count} 个已结束任务；每片按 ${fmtBytes(response.max_bytes)} 轮转，另保留 ${response.backup_count} 个旧片段。`;
+  } catch (error) {
+    $('#savedLogFeedback').textContent = '读取日志文件失败：' + error.message;
+  }
+}
+
+async function downloadSavedLog() {
+  const filename = $('#savedLogSelect').value;
+  if (!filename) return;
+  try {
+    const response = await fetch('/api/job-logs/download?name=' + encodeURIComponent(filename), {
+      headers: { 'X-CNIPA-Token': state.apiToken },
+    });
+    if (!response.ok) throw new Error((await response.json()).error || response.status);
+    const url = URL.createObjectURL(await response.blob());
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) {
+    $('#savedLogFeedback').textContent = '下载日志失败：' + error.message;
   }
 }
 
@@ -2755,7 +3022,8 @@ function renderSummary(data) {
   const collected = data.lists.search_collected ?? 0;
   const pct = total > 0 ? Math.min(100, Math.round(collected / total * 100)) : 0;
   setStyle('#collectProgBar', 'width', pct + '%');
-  set('#collectProgressHint', '已采集 ' + fmtNumber(collected) + ' / 输入 ' + fmtNumber(total) + '（' + pct + '%）');
+  set('#collectProgressHint', '已有记录 ' + fmtNumber(collected) + ' / 输入 ' + fmtNumber(total) + '（' + pct + '%）');
+  set('#mainRetryHint', '新增目标会跳过已有成功或失败记录。当前数据库有 ' + fmtNumber(data.records.failed) + ' 条失败记录；请续跑原批次的未完成项，或前往「数据管理」生成失败重试清单。');
 
   // 策略管理 Tab
   set('#stratTracked', fmtNumber(data.business.tracked_total));
@@ -3051,7 +3319,10 @@ function _applyAgencyArrearsFilter() {
 }
 
 function downloadCompanyTemplate() {
-  window.location.href = '/api/company-meta/template';
+  const anchor = document.createElement('a');
+  anchor.href = '/api/company-meta/template';
+  anchor.download = 'company_meta_template.xlsx';
+  anchor.click();
 }
 
 async function uploadCompanyMeta(input) {
@@ -3099,6 +3370,10 @@ async function loadSearchList() {
 
 // ── Event Binding ────────────────────────────────────────────────────
 function bindEvents() {
+  $$('[data-open-tab]').forEach(button => button.addEventListener('click', () => switchTab(button.dataset.openTab)));
+  $('#refreshSavedLogs').addEventListener('click', refreshSavedLogs);
+  $('#downloadSavedLog').addEventListener('click', downloadSavedLog);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshJobs(); });
   $('#refreshBatches').addEventListener('click', refreshCollectionBatches);
   $('#batchSelect').addEventListener('change', () => {
     state.selectedBatchId = $('#batchSelect').value;
@@ -3635,7 +3910,7 @@ async function exportFiltered() {
     const m = cd.match(/filename="([^"]+)"/);
     a.download = m ? m[1] : 'patents_filtered.xlsx';
     a.click();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
     if (hint) hint.textContent = '✓ 已导出';
   } catch (e) {
     if (hint) hint.textContent = '导出失败：' + e.message;
@@ -3648,7 +3923,7 @@ async function boot() {
   bindEvents();
   await loadOperatorToken();
   await Promise.all([refreshSummary(), refreshJobs(), loadSearchList(), loadCredentials()]);
-  if (state.currentTab === 'logs') await refreshCollectionBatches();
+  if (state.currentTab === 'logs') await Promise.all([refreshCollectionBatches(), refreshSavedLogs()]);
   setInterval(() => { if (state.currentTab === 'logs') refreshCollectionBatches(); }, 5000);
   setInterval(refreshSummary, 5000);
   setInterval(refreshJobs, 2500);
@@ -3671,8 +3946,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     job_manager: JobManager
 
     def log_message(self, format: str, *args: Any) -> None:
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        print(f"[{timestamp}] {self.address_string()} {format % args}")
+        DASHBOARD_LOGGER.info("%s %s", self.address_string(), redact_job_secrets(format % args))
 
     @property
     def is_operator(self) -> bool:
@@ -3688,6 +3962,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_text(CSS, "text/css; charset=utf-8")
             elif path == "/app.js":
                 self.send_text(JS, "application/javascript; charset=utf-8")
+            elif path == "/api/desktop-status":
+                if not self.is_operator:
+                    self.send_json({"error": "仅本机可连接桌面控制台"}, status=403)
+                    return
+                self.send_json({
+                    "application": "cnipa-patent-collector",
+                    "desktop_protocol": 2,
+                    "instance_id": self.server.instance_id,
+                    "project_directory": str(BASE_DIR.resolve()),
+                    "pid": os.getpid(),
+                })
             elif path == "/api/summary":
                 # 浅拷贝：is_operator/machine_role 因请求而异，不能写进共享缓存
                 summary = dict(summary_snapshot(self.job_manager))
@@ -3753,6 +4038,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"requests": reqs})
             elif path == "/api/jobs":
                 self.send_json({"jobs": self.job_manager.list_jobs()})
+            elif path == "/api/job-logs" or path == "/api/job-logs/download":
+                if not self.is_operator and not api_token_matches(self.headers.get('X-CNIPA-Token')):
+                    self.send_json({"error": "任务日志需要操作员权限"}, status=403)
+                    return
+                if path == "/api/job-logs":
+                    self.send_json({
+                        "files": self.job_manager.list_log_files(),
+                        "retention_count": DASHBOARD_JOB_LOG_RETENTION_COUNT,
+                        "max_bytes": DASHBOARD_JOB_LOG_MAX_BYTES,
+                        "backup_count": DASHBOARD_JOB_LOG_BACKUP_COUNT,
+                    })
+                else:
+                    filename = parse_qs(parsed.query).get("name", [""])[0]
+                    if not JOB_LOG_FILENAME_PATTERN.fullmatch(filename):
+                        self.send_json({"error": "日志文件名不正确"}, status=400)
+                        return
+                    log_path = DASHBOARD_JOB_LOG_DIR / filename
+                    if log_path.is_symlink() or not log_path.is_file():
+                        self.send_json({"error": "日志已轮转清理或不存在，请刷新文件列表"}, status=404)
+                        return
+                    try:
+                        log_bytes = log_path.read_bytes()
+                    except FileNotFoundError:
+                        self.send_json({"error": "日志已轮转清理，请刷新文件列表"}, status=404)
+                        return
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                    self.send_header("Content-Length", str(len(log_bytes)))
+                    self.end_headers()
+                    self.wfile.write(log_bytes)
             elif path == "/api/collection-batches" or path.startswith("/api/collection-batches/"):
                 if not self.is_operator and not api_token_matches(self.headers.get('X-CNIPA-Token')):
                     self.send_json({"error": "批次记录需要操作员权限"}, status=403)
@@ -3879,11 +4195,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
-        if path != "/api/requests" and not api_token_matches(self.headers.get('X-CNIPA-Token')):
+        if path == "/api/desktop-shutdown":
+            if self.client_address[0] != "127.0.0.1" or not api_token_matches(self.headers.get('X-CNIPA-Token')):
+                self.send_json({"error": "关闭桌面控制台需要本机连接和有效的 X-CNIPA-Token"}, status=403)
+                return
+        elif path != "/api/requests" and not api_token_matches(self.headers.get('X-CNIPA-Token')):
             self.send_json({"error": "写操作需要有效的 X-CNIPA-Token"}, status=401)
             return
         try:
-            if path == "/api/environment-diagnostics":
+            if path == "/api/desktop-shutdown":
+                payload = self.read_json_body()
+                if payload.get("instance_id") != self.server.instance_id:
+                    self.send_json({"error": "控制台已重新启动，请重新打开桌面软件后再关闭"}, status=409)
+                    return
+                self.job_manager.shutdown_jobs()
+                self.send_json({"stopped": True, "instance_id": self.server.instance_id})
+                self.wfile.flush()
+                self.server.shutdown()
+            elif path == "/api/environment-diagnostics":
                 self.read_json_body()
                 if not _ENVIRONMENT_DIAGNOSTICS_LOCK.acquire(blocking=False):
                     self.send_json({"error": "已有环境诊断正在运行"}, status=409)
@@ -4222,6 +4551,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_error(HTTPStatus.NOT_FOUND, "Not found")
         except json.JSONDecodeError:
             self.send_json({"error": "JSON 格式不正确"}, status=400)
+        except DashboardMaintenanceBusy as exc:
+            self.send_json({"error": str(exc), "reason": "maintenance_running"}, status=409)
+        except DashboardShutdownConflict as exc:
+            self.send_json({"error": str(exc)}, status=409)
         except ValueError as exc:
             self.send_json({"error": str(exc)}, status=400)
         except Exception as exc:
@@ -4237,7 +4570,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not job:
             self.send_json({"error": "任务不存在"}, status=404)
             return
-        self.send_json({"job": job.to_dict(include_logs=True)})
+        raw_cursor = parse_qs(urlparse(self.path).query).get("after", ["0"])[0]
+        if not re.fullmatch(r"\d{1,18}", raw_cursor):
+            self.send_json({"error": "日志游标必须是非负整数"}, status=400)
+            return
+        self.send_json({"job": job.read_logs(int(raw_cursor))})
 
     def handle_download(self, path: str) -> None:
         key = path.rsplit("/", 1)[-1]
@@ -4285,19 +4622,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
+class DashboardHTTPServer(ThreadingHTTPServer):
+    daemon_threads = False
+
+    def __init__(self, *args, **kwargs) -> None:
+        self.instance_id = uuid.uuid4().hex
+        super().__init__(*args, **kwargs)
+
+    def handle_error(self, request, client_address) -> None:
+        DASHBOARD_LOGGER.exception("控制台请求处理失败：%s", client_address[0])
+
+
 def run_server(host: str, port: int) -> None:
     ensure_api_token()
     job_manager = JobManager()
     DashboardHandler.job_manager = job_manager
-    server = ThreadingHTTPServer((host, port), DashboardHandler)
-    print(f"{APP_NAME} 已启动: http://{host}:{port}")
-    print("按 Ctrl+C 停止控制台")
+    server = DashboardHTTPServer((host, port), DashboardHandler)
+    DASHBOARD_LOGGER.info("%s 已启动: http://%s:%s", APP_NAME, host, port)
+    DASHBOARD_LOGGER.info("关闭桌面窗口或按 Ctrl+C 会停止本控制台启动的任务并退出")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n正在停止控制台...")
+        DASHBOARD_LOGGER.info("正在停止控制台...")
     finally:
-        server.server_close()
+        try:
+            job_manager.finish_jobs_before_exit()
+        finally:
+            server.server_close()
 
 
 def main() -> None:
@@ -4305,7 +4656,19 @@ def main() -> None:
     parser.add_argument("--host", default="0.0.0.0", help="监听地址，默认 0.0.0.0（局域网可访问）")
     parser.add_argument("--port", type=int, default=8765, help="监听端口，默认 8765")
     args = parser.parse_args()
-    run_server(args.host, args.port)
+    service_output = logging.StreamHandler()
+    service_output.setFormatter(logging.Formatter("[%(asctime)s] %(message)s"))
+    DASHBOARD_LOGGER.addHandler(service_output)
+    DASHBOARD_LOGGER.setLevel(logging.INFO)
+    DASHBOARD_LOGGER.propagate = False
+    try:
+        run_server(args.host, args.port)
+    except Exception:
+        DASHBOARD_LOGGER.exception("控制台启动失败")
+        raise
+    finally:
+        DASHBOARD_LOGGER.removeHandler(service_output)
+        service_output.close()
 
 
 if __name__ == "__main__":

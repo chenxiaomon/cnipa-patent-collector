@@ -170,6 +170,79 @@ class TestCollectionHealth(unittest.TestCase):
         retry_delay.assert_not_called()
         record_alert.assert_called_once_with('login_required', 'login not confirmed', 0)
 
+    def test_watchdog_stops_at_coordinate_failure_without_retry_delay(self):
+        calibration_message = '浏览器窗口几何不匹配；请重新运行坐标校准'
+        collection_process = _FailedProcess()
+        collection_process.returncode = 2
+        with (
+            patch.object(collection_watchdog, '_stop_requested', False),
+            patch.object(collection_watchdog, 'write_collection_start_heartbeat'),
+            patch.object(collection_watchdog, 'start_collection_process', return_value=collection_process) as collection_start,
+            patch.object(collection_watchdog, 'read_alert_status', return_value={
+                'status': 'alert', 'reason': 'coordinate_calibration_required', 'details': calibration_message,
+            }),
+            patch.object(collection_watchdog, 'terminate_process_tree'),
+            patch.object(collection_watchdog, 'record_collection_alert') as record_alert,
+            patch.object(collection_watchdog.time, 'sleep') as retry_delay,
+            patch.object(collection_watchdog, 'read_collection_batch') as read_batch,
+        ):
+            exit_code = collection_watchdog._supervise_collection_batch('a' * 32)
+
+        self.assertEqual(exit_code, 1)
+        collection_start.assert_called_once_with('a' * 32)
+        retry_delay.assert_not_called()
+        read_batch.assert_not_called()
+        record_alert.assert_called_once_with('coordinate_calibration_required', calibration_message, 0)
+
+    def test_exit_two_without_coordinate_alert_keeps_retry_policy(self):
+        collection_process = _FailedProcess()
+        collection_process.returncode = 2
+        disk_usage = type('DiskUsage', (), {'free': 100 * 1024 ** 3})()
+        with (
+            patch.object(collection_watchdog, '_stop_requested', False),
+            patch.object(collection_watchdog, 'write_collection_start_heartbeat'),
+            patch.object(collection_watchdog, 'start_collection_process', return_value=collection_process) as collection_start,
+            patch.object(collection_watchdog.shutil, 'disk_usage', return_value=disk_usage),
+            patch.object(collection_watchdog, 'read_collection_heartbeat', return_value=None),
+            patch.object(collection_watchdog, 'terminate_process_tree'),
+            patch.object(collection_watchdog, 'record_collection_alert') as record_alert,
+            patch.object(collection_watchdog.time, 'sleep'),
+            patch.object(collection_watchdog, 'read_collection_batch', return_value={'remaining': 2}),
+            patch.object(collection_watchdog, 'WATCHDOG_MAX_RESTARTS', 3),
+        ):
+            exit_code = collection_watchdog._supervise_collection_batch('a' * 32)
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(collection_start.call_count, 3)
+        self.assertEqual(record_alert.call_args_list[0].args, ('collection_exited', '采集进程退出码 2', 1))
+        self.assertEqual(record_alert.call_args_list[-1].args[0], 'restart_limit_reached')
+
+    def test_new_watchdog_run_clears_old_coordinate_alert(self):
+        with (
+            tempfile.TemporaryDirectory() as temporary_directory,
+            patch.object(collection_health, 'ALERT_STATUS_FILE', Path(temporary_directory) / 'alert.json'),
+            patch.object(collection_health, 'WATCHDOG_EVENTS_FILE', Path(temporary_directory) / 'events.jsonl'),
+            patch.object(collection_watchdog, 'read_alert_status', collection_health.read_alert_status),
+            patch.object(collection_watchdog.signal, 'signal'),
+            patch.object(collection_watchdog, '_stop_requested', False),
+            patch.object(collection_watchdog, 'reserve_supervised_collection', _reserved_operation),
+            patch.object(collection_watchdog, 'reserve_detail_collection_desktop', _reserved_operation),
+            patch.object(collection_watchdog, 'select_main_collection_targets', return_value=['A']),
+            patch.object(collection_watchdog.CollectionBatch, 'prepare', return_value='a' * 32),
+            patch.object(collection_watchdog, 'write_collection_start_heartbeat'),
+            patch.object(collection_watchdog, 'start_collection_process', return_value=_SuccessfulProcess()) as collection_start,
+            patch.object(collection_watchdog, 'read_collection_heartbeat', return_value=None),
+            patch.object(collection_watchdog, 'read_collection_batch', return_value={'status': 'completed', 'remaining': 0}),
+            patch.object(collection_watchdog.shutil, 'disk_usage', return_value=type('DiskUsage', (), {'free': 100 * 1024 ** 3})()),
+        ):
+            collection_health.record_collection_alert('coordinate_calibration_required', 'old coordinates', 0)
+
+            exit_code = collection_watchdog.run_supervised_collection()
+
+            self.assertEqual(collection_health.read_alert_status()['status'], 'ok')
+        self.assertEqual(exit_code, 0)
+        collection_start.assert_called_once_with('a' * 32)
+
     def test_watchdog_prepares_exact_targets_before_supervision(self):
         call_order = []
 
