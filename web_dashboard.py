@@ -56,6 +56,7 @@ from settings import (
     PATENTS_EXCEL_FILE,
     RETRY_FAILED_FILE,
     SEARCH_LIST_FILE,
+    WORKER_TASKS_DIR,
     CNIPA_LOGIN_WAIT_SECONDS,
 )
 from db_manager import PatentsDB
@@ -69,6 +70,13 @@ from manual_fwxx_requests import create_manual_fwxx_request
 from code_release_safety import CodeReleaseVerificationError, CodeReleaseVersion
 from collection_checkpoint import list_collection_batches, read_collection_batch
 from environment_diagnostics import run_environment_diagnostics
+from collection_distribution import (
+    MAX_COLLECTION_TRANSFER_BYTES,
+    DistributionAuthorizationError,
+    DistributionConflictError,
+    DistributionValidationError,
+)
+from distributed_worker import list_worker_assignments, register_worker_assignment
 
 _patents_db = PatentsDB(PATENTS_DB_FILE)
 _RUNNING_CODE_RELEASE = CodeReleaseVersion.read()
@@ -88,7 +96,14 @@ MAX_BODY_BYTES = 1 * 1024 * 1024   # 1 MB：防止超大请求体撑爆内存
 MAX_REQUEST_APP_NOS = 500           # 单次提交申请号上限
 MAX_NOTE_LEN = 500                  # 备注字段长度上限
 _SAFE_ID_RE = re.compile(r'^[0-9a-f\-]{8,36}$')
+_WORKER_ASSIGNMENT_ROUTE = re.compile(r'/api/worker/assignments/([0-9a-f]{32})')
+_WORKER_PROGRESS_ROUTE = re.compile(r'/api/worker/assignments/([0-9a-f]{32})/progress')
+_WORKER_RESULTS_ROUTE = re.compile(r'/api/worker/assignments/([0-9a-f]{32})/results')
+_DISTRIBUTION_INVITATION_ROUTE = re.compile(r'/api/distribution/assignments/([0-9a-f]{32})/invitation')
+_DISTRIBUTION_CANCEL_ROUTE = re.compile(r'/api/distribution/assignments/([0-9a-f]{32})/cancel')
 DESKTOP_BROWSER_ACTIONS = {
+    "distributed_collect",
+    "distributed_resume",
     "resume_collection_batch",
     "main_full",
     "main_test",
@@ -704,6 +719,46 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
     py = resolve_task_python()
     action = action.strip()
 
+    if action == "distributed_collect":
+        task_id = register_worker_assignment(
+            params.get("coordinator_url"), params.get("task_id"), params.get("access_token"),
+        )
+        return {
+            "action": action, "title": f"执行协同采集 {task_id[:8]}",
+            "command": [py, "-u", "distributed_worker.py", "run", "--task-id", task_id],
+            "env": {
+                "CNIPA_DATA_DIR": str(WORKER_TASKS_DIR / task_id),
+                "USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS,
+            },
+        }
+    if action == "distributed_resume":
+        task_id = params.get("task_id")
+        if not isinstance(task_id, str) or not re.fullmatch(r'[0-9a-f]{32}', task_id):
+            raise DistributionValidationError("任务编号格式不正确")
+        if not any(assignment["task_id"] == task_id for assignment in list_worker_assignments()):
+            raise DistributionValidationError("本机没有这个协同任务，请先粘贴任务码")
+        return {
+            "action": action, "title": f"继续协同任务 {task_id[:8]}",
+            "command": [py, "-u", "distributed_worker.py", "run", "--task-id", task_id],
+            "env": {
+                "CNIPA_DATA_DIR": str(WORKER_TASKS_DIR / task_id),
+                "USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS,
+            },
+        }
+    if action == "distributed_deliver":
+        task_id = params.get("task_id")
+        if not isinstance(task_id, str) or not re.fullmatch(r'[0-9a-f]{32}', task_id):
+            raise DistributionValidationError("任务编号格式不正确")
+        if not any(assignment["task_id"] == task_id for assignment in list_worker_assignments()):
+            raise DistributionValidationError("本机没有这个协同任务，请先粘贴任务码")
+        return {
+            "action": action, "title": f"重传协同结果 {task_id[:8]}",
+            "command": [py, "-u", "distributed_worker.py", "deliver", "--task-id", task_id],
+            "env": {
+                "CNIPA_DATA_DIR": str(WORKER_TASKS_DIR / task_id),
+                "USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS,
+            },
+        }
     if action == "resume_collection_batch":
         batch = read_collection_batch(params.get("batch_id", ""))
         if not batch["resumable"]:
@@ -1240,6 +1295,7 @@ HTML = r"""<!doctype html>
     <a class="nav-item operator-only" data-tab="collection"><span>⚡</span>采集控制</a>
     <a class="nav-item" data-tab="strategy">               <span>📅</span>策略管理</a>
     <a class="nav-item" data-tab="fwxx">                   <span>📋</span>发文与费用</a>
+    <a class="nav-item operator-only" data-tab="distribution"><span>💻</span>多机协同</a>
     <a class="nav-item operator-only" data-tab="public">   <span>🔍</span>公开查询</a>
     <a class="nav-item" data-tab="analytics">              <span>📈</span>数据分析</a>
     <a class="nav-item operator-only" data-tab="data">     <span>🗄</span>数据管理</a>
@@ -1592,6 +1648,68 @@ HTML = r"""<!doctype html>
             <tbody id="agencyArrearsRows"></tbody>
           </table>
         </div>
+      </article>
+    </div>
+
+    <div id="tab-distribution" class="tab-panel">
+      <div class="panel-head">
+        <div><h2>多机协同采集</h2><p class="hint" style="margin-top:6px">主库电脑分单，各工作机分别采集；结果由主库确认后计入完成。</p></div>
+        <button class="btn secondary" id="refreshDistribution">刷新</button>
+      </div>
+      <p id="distributionFeedback" class="hint" role="status" style="margin-bottom:14px"></p>
+      <section class="grid two" style="margin-bottom:14px">
+        <article class="panel">
+          <div class="panel-head"><h2>在主库电脑分单</h2></div>
+          <p id="distributionRoleHint" class="hint" style="margin-bottom:12px">正在确认本机角色…</p>
+          <fieldset id="distributionCreateFields" disabled class="distribution-fields">
+            <label class="field"><span>采集内容</span><select id="distributionCollector">
+              <option value="main">案件状态</option><option value="fwxx">发文信息</option><option value="fees">费用信息</option>
+            </select></label>
+            <label class="field"><span>申请号（最多 500 个）</span>
+              <textarea id="distributionAppNos" class="codebox" rows="6" placeholder="每行一个申请号，也支持逗号分隔"></textarea>
+            </label>
+            <label class="field"><span>分给哪些设备（每行一个名称，最多 8 台）</span>
+              <textarea id="distributionDeviceNames" rows="3" placeholder="例如：办公室电脑&#10;Mac 工作机"></textarea>
+            </label>
+            <div class="button-row"><button class="btn primary" id="createDistribution">平均分单</button></div>
+          </fieldset>
+        </article>
+        <article class="panel">
+          <div class="panel-head"><h2>在工作机接单</h2></div>
+          <p class="hint" style="margin-bottom:12px">在这台电脑采集：填写主库地址，粘贴分给本机的任务码，再点击开始。每台电脑同时执行一个采集任务。</p>
+          <div class="distribution-fields">
+            <label class="field"><span>主库电脑地址</span>
+              <input id="distributionCoordinatorUrl" type="url" placeholder="例如：http://192.168.1.10:8765" autocomplete="off">
+            </label>
+            <label class="field"><span>任务码</span>
+              <textarea id="distributionTaskCode" class="codebox" rows="5" placeholder="从主库电脑的任务列表复制，粘贴到这里" autocomplete="off" spellcheck="false"></textarea>
+            </label>
+            <div class="button-row"><button class="btn primary" id="startDistributedCollection">开始本机采集</button></div>
+          </div>
+          <p class="hint" style="margin-top:12px">启动后进入任务日志；按提示完成官网登录和验证码，然后让程序继续。断网时结果保留在本机，恢复连接后可重传。</p>
+        </article>
+      </section>
+      <article class="panel" style="margin-bottom:14px">
+        <div class="panel-head"><h2>主库分单进度</h2><span class="hint" id="distributionSummary"></span></div>
+        <div id="distributionInvitation" class="hidden" style="margin-bottom:14px">
+          <label class="field"><span id="distributionInvitationLabel">任务码</span>
+            <textarea id="distributionInvitationCode" class="codebox" rows="3" readonly spellcheck="false"></textarea>
+          </label>
+          <div class="button-row" style="margin-top:8px"><button class="btn secondary" id="hideDistributionInvitation">收起任务码</button></div>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>设备 / 任务</th><th>采集内容</th><th>状态</th><th>主库已收</th><th>成功</th><th>需重分</th><th>最近联系</th><th>操作</th></tr></thead>
+          <tbody id="distributionRows"><tr><td colspan="8" class="hint">暂无分单</td></tr></tbody>
+        </table></div>
+        <p class="hint" style="margin-top:10px">成功数以主库接收的结果为准。失败、中断、冲突或已撤销的申请号可填回上方重新分单。</p>
+      </article>
+      <article class="panel">
+        <div class="panel-head"><h2>本机协同任务</h2><span class="hint">采集结束后仍有待确认结果时，请重传</span></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>设备 / 任务</th><th>采集内容</th><th>状态</th><th>本机已处理</th><th>主库已确认</th><th>待回传</th><th>说明</th><th>操作</th></tr></thead>
+          <tbody id="distributionWorkerRows"><tr><td colspan="8" class="hint">本机尚未接单</td></tr></tbody>
+        </table></div>
+        <p class="hint" style="margin-top:10px">异常退出后可点击恢复回传；如果任务仍在采集，请先到任务日志停止，再恢复回传。</p>
       </article>
     </div>
 
@@ -2137,6 +2255,10 @@ button, input, select, textarea { font: inherit; }
 .viewer-only   { display: none; }
 body.viewer-mode .operator-only { display: none !important; }
 body.viewer-mode .viewer-only   { display: block; }
+.distribution-fields { display: grid; gap: 12px; border: 0; padding: 0; margin: 0; min-width: 0; }
+.distribution-fields textarea, #distributionInvitationCode { min-height: 100px; }
+.distribution-fields textarea[rows="6"] { min-height: 150px; }
+#distributionRows .button-row { flex-wrap: wrap; }
 
 /* ── Type ── */
 h1, h2, h3, p { margin: 0; }
@@ -2593,6 +2715,8 @@ JS = r"""const state = {
   batchListRefreshing: false,
   batchDetailRequestSequence: 0,
   diagnosticReport: null,
+  distributionAssignments: [],
+  distributionRefreshing: false,
   searchLoaded: false,
   roleDetermined: false,
   apiToken: localStorage.getItem('cnipaApiToken') || '',
@@ -2693,6 +2817,7 @@ function switchTab(tab) {
     refreshSavedLogs();
     refreshJobLog();
   }
+  if (tab === 'distribution' && state.roleDetermined) refreshDistribution();
 }
 
 function initTabRouting() {
@@ -2706,6 +2831,133 @@ const BATCH_STATUS_LABELS = {
   running: '运行中', completed: '已完成', paused: '已暂停', failed: '失败',
   interrupted: '已中断', pending: '未尝试', success: '成功', unreadable: '记录损坏',
 };
+
+const DISTRIBUTION_STATE_LABELS = {
+  pending: '待领取', running: '执行中', completed: '主库已收齐', cancelled: '已撤销',
+  registered: '待领取', prepared: '准备就绪', collecting: '采集中', delivery_pending: '等待回传',
+  delivered: '主库已确认', interrupted: '已中断', unreadable: '任务记录需检查',
+  rejected: '主库拒绝接收，请检查分单',
+};
+
+async function refreshDistribution() {
+  if (state.currentTab !== 'distribution' || document.hidden || state.distributionRefreshing) return;
+  state.distributionRefreshing = true;
+  try {
+    const [coordinator, workerTasks] = await Promise.all([
+      api('/api/distribution'), api('/api/distribution/worker-tasks'),
+    ]);
+    state.distributionAssignments = coordinator.assignments;
+    $('#distributionCreateFields').disabled = coordinator.role !== 'master';
+    $('#distributionRoleHint').textContent = coordinator.role === 'master'
+      ? '本机是主库。填写申请号和设备名称，系统会平均分成互不重叠的清单。'
+      : '本机是副本或尚未设置主库角色，可以在右侧接单。请到主库电脑创建分单。';
+    renderDistributionAssignments(coordinator.assignments);
+    renderDistributionWorkerTasks(workerTasks.tasks);
+    $('#distributionFeedback').textContent = '已更新：' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  } catch (exception) {
+    $('#distributionFeedback').textContent = '更新失败：' + exception.message;
+  } finally {
+    state.distributionRefreshing = false;
+  }
+}
+
+function renderDistributionAssignments(assignments) {
+  const totals = assignments.reduce((counts, assignment) => ({
+    total: counts.total + assignment.counts.total,
+    success: counts.success + assignment.counts.success,
+  }), { total: 0, success: 0 });
+  $('#distributionSummary').textContent = assignments.length + ' 个任务 · 主库成功 ' + totals.success + ' / ' + totals.total + ' 件次';
+  $('#distributionRows').innerHTML = assignments.map(assignment => {
+    const counts = assignment.counts;
+    const received = counts.success + counts.failed + counts.interrupted + counts.conflict;
+    const retryCount = counts.failed + counts.interrupted + counts.conflict + counts.cancelled;
+    const retryItems = assignment.items.filter(item => ['failed', 'interrupted', 'conflict', 'cancelled'].includes(item.status));
+    const taskId = escHtml(assignment.task_id);
+    const closed = ['completed', 'cancelled'].includes(assignment.state);
+    const failureDetails = retryItems.length ? '<details><summary>查看原因</summary>' + retryItems.map(item =>
+      '<div class="hint">' + escHtml(item.application_no) + '：' + escHtml(item.status === 'cancelled' ? '任务已撤销' : item.reason || item.status) + '</div>'
+    ).join('') + '</details>' : '';
+    return '<tr><td>' + escHtml(assignment.device_name) + '<div class="hint">' + taskId.slice(0, 8) + '</div></td>' +
+      '<td>' + escHtml(COLLECTION_LABELS[assignment.collector]) + '</td>' +
+      '<td>' + escHtml(DISTRIBUTION_STATE_LABELS[assignment.state]) +
+      '<div class="hint">本机已尝试 ' + fmtNumber(assignment.progress.completed || 0) + ' 件</div></td>' +
+      '<td>' + received + ' / ' + counts.total + '</td><td>' + counts.success + '</td>' +
+      '<td>' + retryCount + failureDetails + '</td><td>' + escHtml(shortTime(assignment.last_seen)) + '</td>' +
+      '<td><div class="button-row"><button class="btn secondary" data-distribution-task="' + taskId +
+      '" data-distribution-operation="copy"' + (closed ? ' disabled' : '') + '>复制任务码</button>' +
+      '<button class="btn secondary" data-distribution-task="' + taskId + '" data-distribution-operation="retry"' +
+      (retryCount ? '' : ' disabled') + '>重分未成功项</button>' +
+      '<button class="btn secondary" data-distribution-task="' + taskId + '" data-distribution-operation="cancel"' +
+      (closed ? ' disabled' : '') + '>撤销</button></div></td></tr>';
+  }).join('') || '<tr><td colspan="8" class="hint">暂无分单</td></tr>';
+}
+
+function renderDistributionWorkerTasks(assignments) {
+  $('#distributionWorkerRows').innerHTML = assignments.map(assignment =>
+    '<tr><td>' + escHtml(assignment.device_name || '待领取') + '<div class="hint">' + escHtml(assignment.task_id.slice(0, 8)) + '</div></td>' +
+    '<td>' + escHtml(COLLECTION_LABELS[assignment.collector] || '待领取') + '</td>' +
+    '<td>' + escHtml(DISTRIBUTION_STATE_LABELS[assignment.state] || assignment.state) + '</td>' +
+    '<td>' + fmtNumber(assignment.completed) + ' / ' + fmtNumber(assignment.total) + '</td>' +
+    '<td>' + fmtNumber(assignment.acknowledged) + '<div class="hint">成功 ' + fmtNumber(assignment.acknowledged_counts.success) +
+    ' · 失败 ' + fmtNumber(assignment.acknowledged_counts.failed) + ' · 中断 ' + fmtNumber(assignment.acknowledged_counts.interrupted) +
+    ' · 冲突 ' + fmtNumber(assignment.acknowledged_counts.conflict) + '</div></td><td>' + fmtNumber(assignment.delivery_pending) + '</td>' +
+    '<td>' + escHtml(assignment.reason || '—') + '</td><td><div class="button-row">' +
+    (assignment.state === 'registered' ? '<button class="btn primary" data-resume-task="' + escHtml(assignment.task_id) + '">继续接单</button>' : '') +
+    '<button class="btn secondary" data-deliver-task="' + escHtml(assignment.task_id) + '"' +
+    (['registered', 'delivered', 'unreadable', 'rejected'].includes(assignment.state) ? ' disabled' : '') + '>' +
+    (assignment.state === 'collecting' ? '恢复回传' : '重传结果') + '</button></div></td></tr>'
+  ).join('') || '<tr><td colspan="8" class="hint">本机尚未接单</td></tr>';
+}
+
+async function createDistributionAssignments() {
+  const button = $('#createDistribution');
+  button.disabled = true;
+  try {
+    await api('/api/distribution/assignments', { method: 'POST', body: JSON.stringify({
+      collector: $('#distributionCollector').value,
+      application_nos: $('#distributionAppNos').value.split(/[\s,，;；]+/).filter(Boolean),
+      device_names: $('#distributionDeviceNames').value.split(/\r?\n/).map(name => name.trim()).filter(Boolean),
+    }) });
+    showToast('已分单，请在下方分别复制任务码给对应工作机');
+    await refreshDistribution();
+  } catch (exception) { showToast('分单失败：' + exception.message); }
+  finally { button.disabled = false; }
+}
+
+async function openDistributionInvitation(taskId) {
+  const invitation = await api('/api/distribution/assignments/' + encodeURIComponent(taskId) + '/invitation');
+  const code = JSON.stringify({ task_id: invitation.task_id, access_token: invitation.access_token });
+  $('#distributionInvitationCode').value = code;
+  $('#distributionInvitationLabel').textContent = invitation.device_name + ' 的任务码';
+  $('#distributionInvitation').classList.remove('hidden');
+  try {
+    await navigator.clipboard.writeText(code);
+    showToast('任务码已复制，请粘贴到对应工作机');
+  } catch (_) {
+    $('#distributionInvitationCode').focus();
+    $('#distributionInvitationCode').select();
+    showToast('请复制已选中的任务码');
+  }
+}
+
+async function startDistributedCollection() {
+  const button = $('#startDistributedCollection');
+  button.disabled = true;
+  try {
+    let invitation;
+    try { invitation = JSON.parse($('#distributionTaskCode').value); }
+    catch (_) { throw new Error('任务码不完整，请重新从主库复制'); }
+    if (!invitation || typeof invitation.task_id !== 'string' || typeof invitation.access_token !== 'string') {
+      throw new Error('任务码缺少必要内容，请重新从主库复制');
+    }
+    const started = await startJob('distributed_collect', {
+      coordinator_url: $('#distributionCoordinatorUrl').value.trim(),
+      task_id: invitation.task_id, access_token: invitation.access_token,
+    });
+    if (started) $('#distributionTaskCode').value = '';
+  } catch (exception) { showToast(exception.message); }
+  finally { button.disabled = false; }
+}
 
 async function refreshCollectionBatches() {
   if (state.batchListRefreshing || document.body.classList.contains('viewer-mode')) return;
@@ -2841,6 +3093,7 @@ async function startJob(action, params = {}) {
     showToast('已启动：' + data.job.title);
     switchTab('logs');
     await refreshJobs();
+    return data.job;
   } catch (e) { showToast('启动失败：' + e.message); }
 }
 
@@ -3371,6 +3624,49 @@ async function loadSearchList() {
 // ── Event Binding ────────────────────────────────────────────────────
 function bindEvents() {
   $$('[data-open-tab]').forEach(button => button.addEventListener('click', () => switchTab(button.dataset.openTab)));
+  $('#refreshDistribution').addEventListener('click', refreshDistribution);
+  $('#createDistribution').addEventListener('click', createDistributionAssignments);
+  $('#startDistributedCollection').addEventListener('click', startDistributedCollection);
+  $('#hideDistributionInvitation').addEventListener('click', () => {
+    $('#distributionInvitationCode').value = '';
+    $('#distributionInvitation').classList.add('hidden');
+  });
+  $('#distributionRows').addEventListener('click', async event => {
+    const button = event.target.closest('button[data-distribution-task]');
+    if (!button || button.disabled) return;
+    const taskId = button.dataset.distributionTask;
+    const operation = button.dataset.distributionOperation;
+    if (operation === 'retry') {
+      const assignment = state.distributionAssignments.find(item => item.task_id === taskId);
+      $('#distributionCollector').value = assignment.collector;
+      $('#distributionAppNos').value = assignment.items.filter(item =>
+        ['failed', 'interrupted', 'conflict', 'cancelled'].includes(item.status)
+      ).map(item => item.application_no).join('\n');
+      $('#distributionDeviceNames').value = assignment.device_name;
+      $('#distributionAppNos').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      showToast('已填入未成功项，确认设备名称后点击平均分单');
+      return;
+    }
+    button.disabled = true;
+    try {
+      if (operation === 'copy') await openDistributionInvitation(taskId);
+      if (operation === 'cancel') {
+        await api('/api/distribution/assignments/' + encodeURIComponent(taskId) + '/cancel', { method: 'POST', body: '{}' });
+        showToast('任务已撤销，主库已经收到的数据保留');
+        await refreshDistribution();
+      }
+    } catch (exception) { showToast(exception.message); }
+    finally { button.disabled = false; }
+  });
+  $('#distributionWorkerRows').addEventListener('click', event => {
+    const resumeButton = event.target.closest('button[data-resume-task]');
+    if (resumeButton && !resumeButton.disabled) {
+      startJob('distributed_resume', { task_id: resumeButton.dataset.resumeTask });
+      return;
+    }
+    const button = event.target.closest('button[data-deliver-task]');
+    if (button && !button.disabled) startJob('distributed_deliver', { task_id: button.dataset.deliverTask });
+  });
   $('#refreshSavedLogs').addEventListener('click', refreshSavedLogs);
   $('#downloadSavedLog').addEventListener('click', downloadSavedLog);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshJobs(); });
@@ -3924,7 +4220,9 @@ async function boot() {
   await loadOperatorToken();
   await Promise.all([refreshSummary(), refreshJobs(), loadSearchList(), loadCredentials()]);
   if (state.currentTab === 'logs') await Promise.all([refreshCollectionBatches(), refreshSavedLogs()]);
+  if (state.currentTab === 'distribution') await refreshDistribution();
   setInterval(() => { if (state.currentTab === 'logs') refreshCollectionBatches(); }, 5000);
+  setInterval(() => { if (state.currentTab === 'distribution') refreshDistribution(); }, 5000);
   setInterval(refreshSummary, 5000);
   setInterval(refreshJobs, 2500);
   checkUpdate();                              // 启动时检查一次
@@ -3955,13 +4253,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        worker_assignment = _WORKER_ASSIGNMENT_ROUTE.fullmatch(path)
+        distribution_invitation = _DISTRIBUTION_INVITATION_ROUTE.fullmatch(path)
         try:
+            if path in {"/api/distribution", "/api/distribution/worker-tasks"} or distribution_invitation:
+                if not self.is_operator or not api_token_matches(self.headers.get('X-CNIPA-Token')):
+                    raise DistributionAuthorizationError("请在本机控制台查看协同任务")
+            if worker_assignment or distribution_invitation:
+                if read_machine_role() != MASTER_ROLE:
+                    raise DistributionAuthorizationError("只有主库电脑可以分发任务和接收采集结果")
             if path == "/":
                 self.send_text(HTML, "text/html; charset=utf-8")
             elif path == "/app.css":
                 self.send_text(CSS, "text/css; charset=utf-8")
             elif path == "/app.js":
                 self.send_text(JS, "application/javascript; charset=utf-8")
+            elif path == "/api/distribution":
+                role = read_machine_role()
+                self.send_json({
+                    "role": role,
+                    "assignments": _patents_db.list_collection_assignments() if role == MASTER_ROLE else [],
+                })
+            elif path == "/api/distribution/worker-tasks":
+                self.send_json({"tasks": list_worker_assignments()})
+            elif distribution_invitation:
+                self.send_json(_patents_db.get_collection_assignment_invitation(distribution_invitation.group(1)))
+            elif worker_assignment:
+                self.send_json({"assignment": _patents_db.claim_collection_assignment(
+                    worker_assignment.group(1),
+                    self.headers.get('X-CNIPA-Task-Token'), self.headers.get('X-CNIPA-Worker-ID'),
+                )})
             elif path == "/api/desktop-status":
                 if not self.is_operator:
                     self.send_json({"error": "仅本机可连接桌面控制台"}, status=403)
@@ -4189,21 +4510,61 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.handle_download(path)
             else:
                 self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+        except DistributionAuthorizationError as exc:
+            self.send_json({"error": str(exc)}, status=403)
+        except DistributionConflictError as exc:
+            self.send_json({"error": str(exc)}, status=409)
+        except DistributionValidationError as exc:
+            self.send_json({"error": str(exc)}, status=400)
         except Exception as exc:
             self.send_json({"error": str(exc)}, status=500)
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        worker_progress = _WORKER_PROGRESS_ROUTE.fullmatch(path)
+        worker_results = _WORKER_RESULTS_ROUTE.fullmatch(path)
+        distribution_cancel = _DISTRIBUTION_CANCEL_ROUTE.fullmatch(path)
         if path == "/api/desktop-shutdown":
             if self.client_address[0] != "127.0.0.1" or not api_token_matches(self.headers.get('X-CNIPA-Token')):
                 self.send_json({"error": "关闭桌面控制台需要本机连接和有效的 X-CNIPA-Token"}, status=403)
                 return
-        elif path != "/api/requests" and not api_token_matches(self.headers.get('X-CNIPA-Token')):
+        elif (
+            path != "/api/requests" and not worker_progress and not worker_results
+            and not api_token_matches(self.headers.get('X-CNIPA-Token'))
+        ):
             self.send_json({"error": "写操作需要有效的 X-CNIPA-Token"}, status=401)
             return
         try:
-            if path == "/api/desktop-shutdown":
+            if path == "/api/distribution/assignments" or distribution_cancel:
+                if not self.is_operator:
+                    raise DistributionAuthorizationError("请在主库电脑本机分发或撤销任务")
+            if path == "/api/distribution/assignments" or distribution_cancel or worker_progress or worker_results:
+                if read_machine_role() != MASTER_ROLE:
+                    raise DistributionAuthorizationError("只有主库电脑可以分发任务和接收采集结果")
+            if worker_progress:
+                self.send_json({"assignment": _patents_db.record_collection_worker_progress(
+                    worker_progress.group(1),
+                    self.headers.get('X-CNIPA-Task-Token'), self.headers.get('X-CNIPA-Worker-ID'),
+                    self.read_json_body(),
+                )})
+            elif worker_results:
+                self.send_json({"receipt": _patents_db.accept_collection_transfer(
+                    worker_results.group(1),
+                    self.headers.get('X-CNIPA-Task-Token'), self.headers.get('X-CNIPA-Worker-ID'),
+                    self.read_collection_transfer(),
+                )})
+            elif path == "/api/distribution/assignments":
+                assignment_request = self.read_json_body()
+                self.send_json({"assignments": _patents_db.create_collection_assignments(
+                    assignment_request.get("collector"), assignment_request.get("application_nos"),
+                    assignment_request.get("device_names"),
+                )}, status=201)
+            elif distribution_cancel:
+                self.read_json_body()
+                _patents_db.cancel_collection_assignment(distribution_cancel.group(1))
+                self.send_json({"ok": True})
+            elif path == "/api/desktop-shutdown":
                 payload = self.read_json_body()
                 if payload.get("instance_id") != self.server.instance_id:
                     self.send_json({"error": "控制台已重新启动，请重新打开桌面软件后再关闭"}, status=409)
@@ -4223,7 +4584,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     _ENVIRONMENT_DIAGNOSTICS_LOCK.release()
             elif path == "/api/jobs":
                 payload = self.read_json_body()
-                job = self.job_manager.start(payload.get("action", ""), payload.get("params") or {})
+                action = payload.get("action", "")
+                if isinstance(action, str) and action.strip() in {"distributed_collect", "distributed_resume", "distributed_deliver"} and not self.is_operator:
+                    raise DistributionAuthorizationError("请在执行采集的电脑本机启动协同任务")
+                job = self.job_manager.start(action, payload.get("params") or {})
                 self.send_json({"job": job.to_dict(include_logs=True)}, status=201)
             elif path.startswith("/api/jobs/") and path.endswith("/stop"):
                 job_id = _parse_path_segment(path, 3)
@@ -4555,6 +4919,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc), "reason": "maintenance_running"}, status=409)
         except DashboardShutdownConflict as exc:
             self.send_json({"error": str(exc)}, status=409)
+        except DistributionAuthorizationError as exc:
+            self.send_json({"error": str(exc)}, status=403)
+        except DistributionConflictError as exc:
+            self.send_json({"error": str(exc)}, status=409)
         except ValueError as exc:
             self.send_json({"error": str(exc)}, status=400)
         except Exception as exc:
@@ -4590,6 +4958,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Disposition", f'attachment; filename="{target.name}"')
         self.end_headers()
         self.wfile.write(data)
+
+    def read_collection_transfer(self) -> dict[str, Any]:
+        """Accept larger collection records only on the worker results route."""
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        if not 0 < length <= MAX_COLLECTION_TRANSFER_BYTES:
+            raise DistributionValidationError("采集结果需要 JSON 内容，且不能超过 8 MB")
+        transfer = json.loads(self.rfile.read(length).decode("utf-8"))
+        if not isinstance(transfer, dict):
+            raise DistributionValidationError("采集结果必须是 JSON 对象")
+        return transfer
 
     def read_json_body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0") or "0")

@@ -66,8 +66,12 @@ MANUAL_CHROMEDRIVER_DIRS = tuple(
     )
 )
 
-# 数据目录
-DATA_DIR = BASE_DIR / 'data'
+# 任务数据可隔离，桌面坐标和互斥锁始终属于本机。
+LOCAL_DATA_DIR = BASE_DIR / 'data'
+DATA_DIR = Path(os.getenv('CNIPA_DATA_DIR', str(LOCAL_DATA_DIR))).expanduser()
+if not DATA_DIR.is_absolute():
+    raise ValueError('CNIPA_DATA_DIR 必须为绝对路径')
+DATA_DIR = DATA_DIR.absolute()
 RESULTS_DIR = DATA_DIR / 'results'
 RAW_RESPONSES_DIR = DATA_DIR / 'raw_responses'
 RAW_SEARCHES_DIR = DATA_DIR / 'raw_searches'
@@ -88,13 +92,23 @@ MAIN_COLLECTION_CHECKPOINT_FILE = DATA_DIR / 'checkpoint_resume.txt'
 FWXX_COLLECTION_CHECKPOINT_FILE = DATA_DIR / 'checkpoint_fwxx.txt'
 FEE_COLLECTION_CHECKPOINT_FILE = DATA_DIR / 'checkpoint_fees.txt'
 COLLECTION_BATCHES_DIR = DATA_DIR / 'collection_batches'
+WORKER_TASKS_DIR = LOCAL_DATA_DIR / 'worker_tasks'
+WORKER_ID_FILE = LOCAL_DATA_DIR / 'worker_id.json'
+WORKER_REGISTRY_LOCK_FILE = LOCAL_DATA_DIR / 'worker_registry.lock'
+WORKER_CONNECTION_FILE = DATA_DIR / 'connection.json'
+WORKER_ASSIGNMENT_FILE = DATA_DIR / 'assignment.json'
+WORKER_STATE_FILE = DATA_DIR / 'worker_state.json'
+WORKER_OUTBOX_FILE = DATA_DIR / 'outbox.json'
+WORKER_RECEIPTS_FILE = DATA_DIR / 'receipts.json'
+WORKER_EXECUTION_LOCK_FILE = DATA_DIR / 'worker_execution.lock'
+WORKER_PROXY_LOG_FILE = DATA_DIR / 'worker_proxy.log'
 
 # ============================================================================
 # 配置文件（鼠标坐标等）
 # ============================================================================
 
-CONFIG_FILE = DATA_DIR / 'config.json'
-CONFIG_FWXX_FILE = DATA_DIR / 'config_fwxx.json'
+CONFIG_FILE = LOCAL_DATA_DIR / 'config.json'
+CONFIG_FWXX_FILE = LOCAL_DATA_DIR / 'config_fwxx.json'
 FORCE_UPDATE_FLAG = DATA_DIR / 'force_update.flag'
 MACHINE_ROLE_FILE = DATA_DIR / 'machine_role.txt'
 MASTER_SYNC_CONFIG_FILE = DATA_DIR / 'master_sync.json'
@@ -153,12 +167,12 @@ AGENCY_ATTEMPT_MARKER_FILE = DATA_DIR / 'current_agency_attempt.json'
 FWXX_UNMATCHED_FILE = DATA_DIR / 'fwxx_unmatched.json'
 FEE_UNMATCHED_FILE = DATA_DIR / 'fee_unmatched.json'
 AGENCY_UNMATCHED_FILE = DATA_DIR / 'agency_unmatched.json'
-DETAIL_COLLECTION_LOCK_FILE = DATA_DIR / 'detail_collection.lock'
-SUPERVISED_COLLECTION_LOCK_FILE = DATA_DIR / 'supervised_collection.lock'
-PHASE0_BROWSER_LOCK_FILE = DATA_DIR / 'phase0_browser.lock'
-PUBLIC_BROWSER_LOCK_FILE = DATA_DIR / 'public_browser.lock'
-PUBLIC_PAGINATION_LOCK_FILE = DATA_DIR / 'public_pagination.lock'
-LOGIN_READY_FLAG_FILE = DATA_DIR / 'login_ready.flag'
+DETAIL_COLLECTION_LOCK_FILE = LOCAL_DATA_DIR / 'detail_collection.lock'
+SUPERVISED_COLLECTION_LOCK_FILE = LOCAL_DATA_DIR / 'supervised_collection.lock'
+PHASE0_BROWSER_LOCK_FILE = LOCAL_DATA_DIR / 'phase0_browser.lock'
+PUBLIC_BROWSER_LOCK_FILE = LOCAL_DATA_DIR / 'public_browser.lock'
+PUBLIC_PAGINATION_LOCK_FILE = LOCAL_DATA_DIR / 'public_pagination.lock'
+LOGIN_READY_FLAG_FILE = LOCAL_DATA_DIR / 'login_ready.flag'
 
 # 补采独立模式的结果
 FWXX_STANDALONE_RESULTS_FILE = RESULTS_DIR / 'fwxx_standalone_results.json'

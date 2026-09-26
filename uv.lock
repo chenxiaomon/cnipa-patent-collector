@@ -373,7 +373,7 @@ wheels = [
 
 [[package]]
 name = "cnipa-patent-collector"
-version = "2026.9.19"
+version = "2026.9.26"
 source = { virtual = "." }
 dependencies = [
     { name = "mitmproxy" },

@@ -9,9 +9,12 @@ SQLite 数据库管理模块
 - 迁移：python db_manager.py migrate  （从现有 JSONL 导入）
 """
 
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import sqlite3
 import sys
 import tempfile
@@ -22,6 +25,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cache_utils import is_supported_cn_application_no, normalize_app_no, parse_timestamp
+from collection_distribution import (
+    COLLECTION_FIELDS, PROTOCOL_VERSION,
+    DistributionAuthorizationError, DistributionConflictError, DistributionValidationError,
+    canonical_collection_json, collection_domain_fingerprint,
+    validate_collection_assignment, validate_collection_credentials,
+    validate_collection_progress, validate_collection_task_id, validate_collection_transfer,
+)
 
 _JSON_FIELDS = {
     'fwxx_list',
@@ -127,6 +137,37 @@ CREATE TABLE IF NOT EXISTS collection_failures (
     attempt_count   INTEGER NOT NULL CHECK(attempt_count > 0),
     last_failed_at  TEXT NOT NULL,
     PRIMARY KEY (collection_kind, application_no)
+)
+"""
+
+
+_CREATE_COLLECTION_ASSIGNMENTS_TABLE = """
+CREATE TABLE IF NOT EXISTS collection_assignments (
+    task_id TEXT PRIMARY KEY,
+    collector TEXT NOT NULL CHECK(collector IN ('main', 'fwxx', 'fees')),
+    device_name TEXT NOT NULL,
+    access_token TEXT NOT NULL,
+    worker_id TEXT,
+    state TEXT NOT NULL CHECK(state IN ('pending', 'running', 'completed', 'cancelled')),
+    created_at TEXT NOT NULL,
+    last_seen TEXT,
+    completed_at TEXT,
+    progress_json TEXT NOT NULL DEFAULT '{}'
+)
+"""
+_CREATE_COLLECTION_ASSIGNMENT_ITEMS_TABLE = """
+CREATE TABLE IF NOT EXISTS collection_assignment_items (
+    task_id TEXT NOT NULL REFERENCES collection_assignments(task_id),
+    application_no TEXT NOT NULL,
+    collector TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    baseline_fingerprint TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending'
+        CHECK(state IN ('pending', 'success', 'failed', 'interrupted', 'conflict', 'cancelled')),
+    transfer_sha256 TEXT,
+    receipt_json TEXT,
+    released_at TEXT,
+    PRIMARY KEY(task_id, application_no)
 )
 """
 
@@ -247,6 +288,12 @@ class PatentsDB:
             conn.execute(_CREATE_REQUESTS_TABLE)
             conn.execute(_CREATE_FEE_TARGETS_TABLE)
             conn.execute(_CREATE_COLLECTION_FAILURES_TABLE)
+            conn.execute(_CREATE_COLLECTION_ASSIGNMENTS_TABLE)
+            conn.execute(_CREATE_COLLECTION_ASSIGNMENT_ITEMS_TABLE)
+            conn.execute(
+                'CREATE UNIQUE INDEX IF NOT EXISTS idx_collection_assignment_reserved '
+                'ON collection_assignment_items(collector, application_no) WHERE released_at IS NULL'
+            )
             # 对已有数据库做无损迁移：列已存在时 SQLite 抛 "duplicate column name"，忽略即可
             for col in (
                 'daili_jg TEXT',
@@ -437,6 +484,256 @@ class PatentsDB:
                 (app_no,),
             ).fetchone()
             return self._decode(stored_snapshot)
+
+    # ── 多设备固定分单与事务回传 ────────────────────────────────────────────
+
+    @staticmethod
+    def _collection_assignment_summary(conn, task_id: str) -> dict:
+        assignment = conn.execute(
+            'SELECT * FROM collection_assignments WHERE task_id=?', (task_id,)
+        ).fetchone()
+        assigned_items = conn.execute(
+            'SELECT application_no, state, receipt_json FROM collection_assignment_items '
+            'WHERE task_id=? ORDER BY position', (task_id,),
+        ).fetchall()
+        counts = dict.fromkeys(('pending', 'success', 'failed', 'interrupted', 'conflict', 'cancelled'), 0)
+        item_summaries = []
+        for assigned_item in assigned_items:
+            counts[assigned_item['state']] += 1
+            receipt = json.loads(assigned_item['receipt_json']) if assigned_item['receipt_json'] else {}
+            item_summaries.append({
+                'application_no': assigned_item['application_no'],
+                'status': assigned_item['state'],
+                'reason': receipt.get('reason', ''),
+                'received_at': receipt.get('received_at'),
+            })
+        counts['total'] = len(assigned_items)
+        return {
+            'protocol_version': PROTOCOL_VERSION,
+            'task_id': task_id,
+            'collector': assignment['collector'],
+            'device_name': assignment['device_name'],
+            'state': assignment['state'],
+            'created_at': assignment['created_at'],
+            'last_seen': assignment['last_seen'],
+            'completed_at': assignment['completed_at'],
+            'worker_id': assignment['worker_id'],
+            'progress': json.loads(assignment['progress_json']),
+            'application_nos': [item['application_no'] for item in assigned_items],
+            'counts': counts,
+            'items': item_summaries,
+        }
+
+    @staticmethod
+    def _authorized_collection_assignment(conn, task_id: str, token: str, worker_id: str):
+        assignment = conn.execute(
+            'SELECT * FROM collection_assignments WHERE task_id=?', (task_id,)
+        ).fetchone()
+        if assignment is None or not hmac.compare_digest(assignment['access_token'], token):
+            raise DistributionAuthorizationError('分单编号或凭据不正确')
+        if assignment['worker_id'] is not None and assignment['worker_id'] != worker_id:
+            raise DistributionAuthorizationError('此分单已绑定另一台工作机')
+        if assignment['state'] == 'cancelled':
+            raise DistributionConflictError('分单已撤销，不能再领取或回传')
+        return assignment
+
+    def create_collection_assignments(self, collector, application_nos, device_names) -> list[dict]:
+        collector, application_nos, device_names = validate_collection_assignment(
+            collector, application_nos, device_names,
+        )
+        with self._patent_write_transaction() as (conn, commit_cursor):
+            placeholders = ','.join('?' for _ in application_nos)
+            reserved = conn.execute(
+                'SELECT application_no FROM collection_assignment_items '
+                f'WHERE collector=? AND application_no IN ({placeholders}) AND released_at IS NULL',
+                [collector, *application_nos],
+            ).fetchall()
+            if reserved:
+                raise DistributionConflictError('以下申请号已有未完成分单：' + '、'.join(row[0] for row in reserved[:10]))
+            existing_patents = {
+                row['application_no']: self._decode(row)
+                for row in conn.execute(
+                    f'SELECT * FROM patents WHERE application_no IN ({placeholders})', application_nos,
+                ).fetchall()
+            }
+            if collector != 'main':
+                missing_patents = [number for number in application_nos if number not in existing_patents]
+                if missing_patents:
+                    raise DistributionValidationError('发文和费用分单需要先在主库建档：' + '、'.join(missing_patents[:10]))
+            assignments = []
+            for device_index, device_name in enumerate(device_names):
+                task_id = secrets.token_hex(16)
+                access_token = secrets.token_urlsafe(32)
+                conn.execute(
+                    'INSERT INTO collection_assignments '
+                    '(task_id,collector,device_name,access_token,state,created_at) VALUES (?,?,?,?,?,?)',
+                    (task_id, collector, device_name, access_token, 'pending', commit_cursor),
+                )
+                for position, application_no in enumerate(application_nos[device_index::len(device_names)]):
+                    conn.execute(
+                        'INSERT INTO collection_assignment_items '
+                        '(task_id,application_no,collector,position,baseline_fingerprint) VALUES (?,?,?,?,?)',
+                        (task_id, application_no, collector, position,
+                         collection_domain_fingerprint(collector, existing_patents.get(application_no))),
+                    )
+                assignments.append({**self._collection_assignment_summary(conn, task_id), 'access_token': access_token})
+            return assignments
+
+    def list_collection_assignments(self) -> list[dict]:
+        with self._connect() as conn:
+            conn.execute('BEGIN')
+            assignment_ids = conn.execute(
+                'SELECT task_id FROM collection_assignments ORDER BY created_at DESC, task_id'
+            ).fetchall()
+            return [self._collection_assignment_summary(conn, row['task_id']) for row in assignment_ids]
+
+    def get_collection_assignment_invitation(self, task_id) -> dict:
+        task_id = validate_collection_task_id(task_id)
+        with self._connect() as conn:
+            conn.execute('BEGIN')
+            assignment = conn.execute(
+                'SELECT access_token FROM collection_assignments WHERE task_id=?', (task_id,)
+            ).fetchone()
+            if assignment is None:
+                raise DistributionConflictError('分单不存在')
+            return {**self._collection_assignment_summary(conn, task_id), 'access_token': assignment['access_token']}
+
+    def claim_collection_assignment(self, task_id, token, worker_id) -> dict:
+        task_id, token, worker_id = validate_collection_credentials(task_id, token, worker_id)
+        with self._patent_write_transaction() as (conn, commit_cursor):
+            assignment = self._authorized_collection_assignment(conn, task_id, token, worker_id)
+            conn.execute(
+                'UPDATE collection_assignments SET worker_id=?,last_seen=?,state=? WHERE task_id=?',
+                (worker_id, commit_cursor, 'completed' if assignment['state'] == 'completed' else 'running', task_id),
+            )
+            return self._collection_assignment_summary(conn, task_id)
+
+    def record_collection_worker_progress(self, task_id, token, worker_id, progress) -> dict:
+        task_id, token, worker_id = validate_collection_credentials(task_id, token, worker_id)
+        progress = validate_collection_progress(progress)
+        with self._patent_write_transaction() as (conn, commit_cursor):
+            assignment = self._authorized_collection_assignment(conn, task_id, token, worker_id)
+            if assignment['worker_id'] is None:
+                raise DistributionConflictError('工作机需要先领取分单')
+            assigned_numbers = {
+                row[0] for row in conn.execute(
+                    'SELECT application_no FROM collection_assignment_items WHERE task_id=?', (task_id,),
+                ).fetchall()
+            }
+            if any(progress.get(name, 0) > len(assigned_numbers) for name in ('completed', 'succeeded', 'failed')):
+                raise DistributionValidationError('进度数量不能超过分单目标数')
+            if progress.get('current_application_no') and progress['current_application_no'] not in assigned_numbers:
+                raise DistributionValidationError('当前申请号不属于此分单')
+            conn.execute(
+                'UPDATE collection_assignments SET last_seen=?,progress_json=? WHERE task_id=?',
+                (commit_cursor, canonical_collection_json(progress), task_id),
+            )
+            return self._collection_assignment_summary(conn, task_id)
+
+    def accept_collection_transfer(self, task_id, token, worker_id, transfer) -> dict:
+        task_id, token, worker_id = validate_collection_credentials(task_id, token, worker_id)
+        with self._patent_write_transaction() as (conn, commit_cursor):
+            assignment = self._authorized_collection_assignment(conn, task_id, token, worker_id)
+            if assignment['worker_id'] is None:
+                raise DistributionConflictError('工作机需要先领取分单')
+            collector = assignment['collector']
+            transfer = validate_collection_transfer(collector, transfer)
+            application_no = transfer['application_no']
+            assigned_item = conn.execute(
+                'SELECT * FROM collection_assignment_items WHERE task_id=? AND application_no=?',
+                (task_id, application_no),
+            ).fetchone()
+            if assigned_item is None:
+                raise DistributionAuthorizationError('申请号不属于此分单')
+            transfer_sha256 = hashlib.sha256(canonical_collection_json(transfer).encode('utf-8')).hexdigest()
+            if assigned_item['receipt_json'] is not None:
+                if assigned_item['transfer_sha256'] != transfer_sha256:
+                    raise DistributionConflictError('此项已封存，不能用不同内容覆盖；请创建新的分单')
+                return {**json.loads(assigned_item['receipt_json']), 'duplicate': True}
+            patent_row = conn.execute('SELECT * FROM patents WHERE application_no=?', (application_no,)).fetchone()
+            stored_patent = self._decode(patent_row) if patent_row is not None else None
+            status, reason = transfer['status'], transfer['reason']
+            if status == 'success':
+                if collection_domain_fingerprint(collector, stored_patent) != assigned_item['baseline_fingerprint']:
+                    status, reason = 'conflict', '主库此采集领域在分单后已更新，请重新分单'
+                else:
+                    captured_fields = {field: transfer['fields'].get(field) for field in COLLECTION_FIELDS[collector]}
+                    version_field = {'main': 'timestamp', 'fwxx': 'fwxx_collected_at', 'fees': 'fee_snapshot_at'}[collector]
+                    captured_fields[version_field] = commit_cursor
+                    captured_fields['updated_at'] = commit_cursor
+                    if collector == 'main':
+                        # A main result never owns fee, notice, or agency columns.
+                        captured_fields = {
+                            field: value for field, value in captured_fields.items()
+                            if value is not None or field == 'error_message'
+                        }
+                        columns = ['application_no', *captured_fields]
+                        conn.execute(
+                            f"INSERT INTO patents ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)}) "
+                            'ON CONFLICT(application_no) DO UPDATE SET '
+                            + ','.join(f'{column}=excluded.{column}' for column in captured_fields),
+                            [application_no, *captured_fields.values()],
+                        )
+                    else:
+                        serialized_fields = {
+                            field: json.dumps(value, ensure_ascii=False) if field in _JSON_FIELDS and value is not None else value
+                            for field, value in captured_fields.items()
+                        }
+                        conn.execute(
+                            'UPDATE patents SET ' + ','.join(f'{field}=?' for field in serialized_fields)
+                            + ' WHERE application_no=?', [*serialized_fields.values(), application_no],
+                        )
+                    if collector == 'fees':
+                        conn.execute(
+                            "DELETE FROM collection_failures WHERE collection_kind='fees' AND application_no=?",
+                            (application_no,),
+                        )
+            if collector == 'fees' and status in ('failed', 'interrupted'):
+                conn.execute(
+                    'INSERT INTO collection_failures '
+                    '(collection_kind,application_no,reason,attempt_count,last_failed_at) VALUES (?,?,?,?,?) '
+                    'ON CONFLICT(collection_kind,application_no) DO UPDATE SET '
+                    'reason=excluded.reason,attempt_count=collection_failures.attempt_count + 1,'
+                    'last_failed_at=excluded.last_failed_at',
+                    ('fees', application_no, reason or ('工作机采集失败' if status == 'failed' else '工作机采集中断'), 1, commit_cursor),
+                )
+            receipt = {
+                'protocol_version': PROTOCOL_VERSION, 'task_id': task_id,
+                'application_no': application_no, 'status': status, 'reason': reason,
+                'received_at': commit_cursor, 'duplicate': False,
+            }
+            conn.execute(
+                'UPDATE collection_assignment_items SET state=?,transfer_sha256=?,receipt_json=? '
+                'WHERE task_id=? AND application_no=?',
+                (status, transfer_sha256, canonical_collection_json(receipt), task_id, application_no),
+            )
+            pending_count = conn.execute(
+                "SELECT COUNT(*) FROM collection_assignment_items WHERE task_id=? AND state='pending'", (task_id,),
+            ).fetchone()[0]
+            conn.execute('UPDATE collection_assignments SET last_seen=? WHERE task_id=?', (commit_cursor, task_id))
+            if pending_count == 0:
+                conn.execute(
+                    "UPDATE collection_assignments SET state='completed',completed_at=? WHERE task_id=?", (commit_cursor, task_id),
+                )
+                conn.execute('UPDATE collection_assignment_items SET released_at=? WHERE task_id=?', (commit_cursor, task_id))
+            return receipt
+
+    def cancel_collection_assignment(self, task_id) -> dict:
+        task_id = validate_collection_task_id(task_id)
+        with self._patent_write_transaction() as (conn, commit_cursor):
+            assignment = conn.execute('SELECT state FROM collection_assignments WHERE task_id=?', (task_id,)).fetchone()
+            if assignment is None:
+                raise DistributionConflictError('分单不存在')
+            if assignment['state'] == 'completed':
+                raise DistributionConflictError('已完成的分单不能撤销')
+            conn.execute(
+                "UPDATE collection_assignments SET state='cancelled',completed_at=? WHERE task_id=?", (commit_cursor, task_id),
+            )
+            conn.execute(
+                "UPDATE collection_assignment_items SET state=CASE WHEN state='pending' THEN 'cancelled' ELSE state END, "
+                'released_at=? WHERE task_id=?', (commit_cursor, task_id),
+            )
+            return self._collection_assignment_summary(conn, task_id)
 
     def snapshot_previous_status(self) -> int:
         """

@@ -15,6 +15,8 @@ data/cnipa_session.json
 data/cnipa_session_failure.json
 data/results/cnipa_api_events.jsonl*
 data/job_logs/
+data/worker_tasks/
+data/worker_id.json
 data/dashboard_service.log*
 data/alert_forward_state.json
 data/api_token.txt
