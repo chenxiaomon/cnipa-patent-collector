@@ -212,10 +212,12 @@ def run_supervised_collection() -> int:
 
 def _supervise_collection_batch(batch_id: str) -> int:
     restart_count = 0
+    # Supervision starts right after CollectionBatch.prepare, so no target has succeeded yet.
+    succeeded_before_run = 0
     while not _stop_requested:
         write_collection_start_heartbeat(0)
         process = start_collection_process(batch_id)
-        print(f'[watchdog] 采集进程已启动，PID={process.pid}，重启次数={restart_count}')
+        print(f'[watchdog] 采集进程已启动，PID={process.pid}，连续失败轮次={restart_count}')
         failure: tuple[str, str] | None = None
         while not _stop_requested:
             failure = supervision_failure(process)
@@ -245,13 +247,17 @@ def _supervise_collection_batch(batch_id: str) -> int:
             record_collection_alert('batch_finalization_failed', details, restart_count)
             print(f'[watchdog] 申请号已采集完成，但收尾失败: {details}；已停止。')
             return 1
+        if batch['succeeded'] > succeeded_before_run:
+            # New successes end the streak: the limit applies to consecutive runs, not the whole batch.
+            restart_count = 0
+        succeeded_before_run = batch['succeeded']
         restart_count += 1
         record_collection_alert(reason, details, restart_count)
-        print(f'[watchdog] {details}，准备第 {restart_count} 次重启。')
+        print(f'[watchdog] {details}，连续失败 {restart_count} 轮，准备重启。')
         if restart_count >= WATCHDOG_MAX_RESTARTS:
             record_collection_alert(
                 'restart_limit_reached',
-                f'连续重启失败 {restart_count} 次，已彻底停止。最后原因: {details}',
+                f'连续 {restart_count} 轮采集失败，已彻底停止。最后原因: {details}',
                 restart_count,
             )
             return 1

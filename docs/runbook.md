@@ -335,7 +335,7 @@ uv run python collection_watchdog.py
 SERVERCHAN_SENDKEY=... uv run python poll_master_alerts.py
 ```
 
-看门狗检查 10 分钟心跳超时、磁盘空间和连续失败次数；连续重启失败 3 次后停止并写入 `data/alert_status.json`。
+看门狗检查 10 分钟心跳超时、磁盘空间和连续失败次数；同一批次连续 3 轮采集失败（`WATCHDOG_MAX_RESTARTS`，默认 3，即首次运行加 2 次自动重启）后停止并写入 `data/alert_status.json`。只要某一轮有新的申请号采集成功，计数就重新开始，长批次中相隔很久的偶发故障不会累计到停机。
 
 ### 部署现场验收清单
 

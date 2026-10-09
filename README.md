@@ -325,7 +325,7 @@ USE_MITM_PROXY=true python collect_fees.py --input data/fwxx_list.txt --force
 python start_mitm_proxy.py
 
 # 终端 2：打开带代理浏览器，手动登录、按申请人搜索、翻页
-python start_browser_for_phase0.py
+USE_MITM_PROXY=true python start_browser_for_phase0.py
 
 # 浏览完成后：把 patent_cache.json 导入 SQLite
 python import_from_cache.py

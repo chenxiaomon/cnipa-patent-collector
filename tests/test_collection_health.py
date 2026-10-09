@@ -111,7 +111,7 @@ class TestCollectionHealth(unittest.TestCase):
         ), patch.object(collection_watchdog, 'terminate_process_tree'), patch.object(
             collection_watchdog, 'record_collection_alert'
         ) as record_alert, patch.object(collection_watchdog.time, 'sleep'), patch.object(
-            collection_watchdog, 'read_collection_batch', return_value={'remaining': 2}
+            collection_watchdog, 'read_collection_batch', return_value={'remaining': 2, 'succeeded': 0}
         ), patch.object(
             collection_watchdog, 'WATCHDOG_MAX_RESTARTS', 3
         ):
@@ -119,6 +119,39 @@ class TestCollectionHealth(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertEqual(start_process.call_count, 3)
         self.assertEqual([call.args for call in start_process.call_args_list], [('a' * 32,)] * 3)
+        self.assertEqual(record_alert.call_args_list[-1].args[0], 'restart_limit_reached')
+
+    def test_new_successes_restart_the_failure_streak(self):
+        batch_snapshots = [
+            {'remaining': 10, 'succeeded': 0},
+            {'remaining': 6, 'succeeded': 4},
+            {'remaining': 6, 'succeeded': 4},
+            {'remaining': 6, 'succeeded': 4},
+        ]
+        with patch.object(collection_watchdog, '_stop_requested', False), patch.object(
+            collection_watchdog, 'write_collection_start_heartbeat'
+        ), patch.object(
+            collection_watchdog, 'start_collection_process', side_effect=[
+                _FailedProcess(), _FailedProcess(), _FailedProcess(), _FailedProcess(),
+            ]
+        ) as start_process, patch.object(
+            collection_watchdog, 'supervision_failure',
+            return_value=('collection_exited', 'exit 1'),
+        ), patch.object(collection_watchdog, 'terminate_process_tree'), patch.object(
+            collection_watchdog, 'record_collection_alert'
+        ) as record_alert, patch.object(collection_watchdog.time, 'sleep'), patch.object(
+            collection_watchdog, 'read_collection_batch', side_effect=batch_snapshots
+        ), patch.object(
+            collection_watchdog, 'WATCHDOG_MAX_RESTARTS', 3
+        ):
+            exit_code = collection_watchdog._supervise_collection_batch('a' * 32)
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(start_process.call_count, 4)
+        self.assertEqual(
+            [call.args[2] for call in record_alert.call_args_list if call.args[0] == 'collection_exited'],
+            [1, 1, 2, 3],
+        )
         self.assertEqual(record_alert.call_args_list[-1].args[0], 'restart_limit_reached')
 
     def test_watchdog_requires_noninteractive_login_confirmation(self):
@@ -207,7 +240,7 @@ class TestCollectionHealth(unittest.TestCase):
             patch.object(collection_watchdog, 'terminate_process_tree'),
             patch.object(collection_watchdog, 'record_collection_alert') as record_alert,
             patch.object(collection_watchdog.time, 'sleep'),
-            patch.object(collection_watchdog, 'read_collection_batch', return_value={'remaining': 2}),
+            patch.object(collection_watchdog, 'read_collection_batch', return_value={'remaining': 2, 'succeeded': 0}),
             patch.object(collection_watchdog, 'WATCHDOG_MAX_RESTARTS', 3),
         ):
             exit_code = collection_watchdog._supervise_collection_batch('a' * 32)
@@ -310,9 +343,9 @@ class TestCollectionHealth(unittest.TestCase):
 
     def test_zero_exit_with_remaining_targets_restarts_same_batch(self):
         snapshots = [
-            {'status': 'paused', 'remaining': 1},
-            {'status': 'paused', 'remaining': 1},
-            {'status': 'completed', 'remaining': 0},
+            {'status': 'paused', 'remaining': 1, 'succeeded': 1},
+            {'status': 'paused', 'remaining': 1, 'succeeded': 1},
+            {'status': 'completed', 'remaining': 0, 'succeeded': 2},
         ]
         with patch.object(collection_watchdog, '_stop_requested', False), patch.object(
             collection_watchdog, 'write_collection_start_heartbeat'

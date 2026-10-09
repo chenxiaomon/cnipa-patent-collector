@@ -72,7 +72,7 @@
 ```
 python start_mitm_proxy.py
     ↓
-python start_browser_for_phase0.py
+USE_MITM_PROXY=true python start_browser_for_phase0.py
     ↓
 用户手动登录 CNIPA、输入申请人、点击查询、逐页浏览
     ↓

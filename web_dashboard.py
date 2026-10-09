@@ -944,7 +944,11 @@ def build_job_spec(action: str, params: dict[str, Any]) -> dict[str, Any]:
             },
         }
     if action == "phase0_browser":
-        return {"action": action, "title": "Phase 0 浏览器", "command": [py, "-u", "start_browser_for_phase0.py"]}
+        return {
+            "action": action, "title": "Phase 0 浏览器",
+            "command": [py, "-u", "start_browser_for_phase0.py"],
+            "env": {"USE_MITM_PROXY": "true", "CNIPA_LOGIN_WAIT_SECONDS": DEFAULT_LOGIN_WAIT_SECONDS},
+        }
     if action == "import_cache":
         return {"action": action, "title": "导入 MITM 缓存", "command": [py, "-u", "import_from_cache.py"]}
     if action == "import_public_search":
