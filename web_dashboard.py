@@ -1642,7 +1642,7 @@ HTML = r"""<!doctype html>
             </div>
             <div class="downloads">
               <a href="/download/excel" download>Excel ↓</a>
-              <a href="/download/jsonl" download>JSONL ↓</a>
+              <a href="/download/jsonl" download>JSONL.gz ↓</a>
               <a href="/download/json" download>JSON ↓</a>
               <a href="/download/dynamic" download>动态清单 ↓</a>
             </div>

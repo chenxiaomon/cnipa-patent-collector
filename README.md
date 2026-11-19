@@ -150,7 +150,7 @@ MITM 代理 (127.0.0.1:8083) 拦截 API 响应
     ↓
 PatentsDB 写入 patents.db
     ↓
-批次结束导出 patents_data.xlsx + detection_log.jsonl Git 备份
+批次结束导出 patents_data.xlsx + detection_log.jsonl.gz Git 备份
 ```
 
 ---
@@ -202,7 +202,7 @@ data/
 ├── raw_responses/            # 公开查询原始响应
 ├── raw_searches/             # 公开查询 JSONL 记录
 └── results/
-    ├── detection_log.jsonl   # Git 备份（由 replica 拉取增量后刷新并提交）
+    ├── detection_log.jsonl.gz  # Git 备份，gzip 压缩的 JSONL（由 replica 拉取增量后刷新并提交）
     ├── patents_data.xlsx     # 输出：最终报表（Excel，.gitignore 排除）
     └── public_search_results.xlsx/json
 ```
@@ -226,7 +226,7 @@ data/
 
 部署机是唯一数据 master；开发机和 Mac 是 replica。每台机器必须在不入 Git 的 `data/machine_role.txt` 中写入角色。
 
-**数据架构**：master 的 `patents.db` 是生产真相源；replica 通过 Dashboard HTTP 增量接口拉取数据，并把刷新后的 `detection_log.jsonl` 提交到 Git。
+**数据架构**：master 的 `patents.db` 是生产真相源；replica 通过 Dashboard HTTP 增量接口拉取数据，并把刷新后的 `detection_log.jsonl.gz` 提交到 Git。
 
 ### 新机器一键初始化
 

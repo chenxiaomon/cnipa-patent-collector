@@ -23,15 +23,15 @@
     },
     {
       "path": ".gitignore",
-      "sha256": "4d09215db4471311b6a62a9013e173516eb297e684d9831e688fd8a382a99d21"
+      "sha256": "f6d30dbf0aa9a1def175522464025509dea4c406d100597e30c02aa411de6b98"
     },
     {
       "path": "CHANGELOG.md",
-      "sha256": "83af2e83da55b035bb236e805e2b04a5b3987e4921aff650c3bb230a0d6a18aa"
+      "sha256": "476a96651da9ffb97b91374553d431862316479955afe52e1a8c51b5645b0a4d"
     },
     {
       "path": "CLAUDE.md",
-      "sha256": "151aa5ee067c4c1d0b46bf8e6083eeda3f566009c956767ee4e5ff3f9f6cb415"
+      "sha256": "d05c48161a522b996e8d5d228e4c4c646e066e82cc6d46852df34fdd48bf50aa"
     },
     {
       "path": "Dockerfile",
@@ -143,7 +143,7 @@
     },
     {
       "path": "db_manager.py",
-      "sha256": "e75db8f77160e3f6d0f4e015083d6878627bfb054c7cc86c5eb0ac87d125eed8"
+      "sha256": "532642687ac76c796780364db81d0185276db6d4ae0a0283fd404a10590db2d6"
     },
     {
       "path": "desktop.bat",
@@ -170,8 +170,12 @@
       "sha256": "037f3cc7acd2ba3f4a592343041529d0dd25d21af987d261d1ab5161ee028b4c"
     },
     {
+      "path": "detection_log_backup.py",
+      "sha256": "9bf560faeb5753836b3b2b18a4e851a45f75a31edea7dc2cf8680db88d23f579"
+    },
+    {
       "path": "detection_logger.py",
-      "sha256": "18eb8e51af51661b8d97b34f326b64614cb0d18d12f8e2d38d1b7355fe187713"
+      "sha256": "6850a1a62862ca9c6706483329dfc19cebce323a67af7a70cca7439c2488ba56"
     },
     {
       "path": "docker-compose.yml",
@@ -183,11 +187,11 @@
     },
     {
       "path": "docs/ai-context.md",
-      "sha256": "70e17a671df208fbb0d5a80b223cbf9f8a7862653876c13ab5ab46e6cdedd4e7"
+      "sha256": "7a88e03977436b685c035790e125902ab84190f865e7743b43efea38c5bf476f"
     },
     {
       "path": "docs/architecture.md",
-      "sha256": "48f84344458812abf67e9d35cee7b636a0016e2613804c69f6c8595ba7b8aaeb"
+      "sha256": "6a0dd68da1b298c505ec9fe7ee867590dd069667d4a289fcaf831487a88a5539"
     },
     {
       "path": "docs/batch-diagnostics.md",
@@ -203,7 +207,7 @@
     },
     {
       "path": "docs/decision-log.md",
-      "sha256": "482db49c04e397dff2e5047294e9c6eeb830ce0fc4c630b6727b7c54086fa086"
+      "sha256": "97869309e8bb2bb44cd3aeae7f73eda2f1182bc2c586bb7db83b7db2af52f27b"
     },
     {
       "path": "docs/domain-rules.md",
@@ -279,7 +283,7 @@
     },
     {
       "path": "docs/runbook.md",
-      "sha256": "916e4aee1e3721e9c2ef3a34a096578f3c5453c9d04a9b23258c686fecd4ee56"
+      "sha256": "dbe013087e39a83f6803d6523ff592596dd2b10fd3f6d0d669ad4295de00d2bb"
     },
     {
       "path": "docs/worklog.md",
@@ -435,7 +439,7 @@
     },
     {
       "path": "settings.py",
-      "sha256": "4fa8a4a6c577cae2703da036eb0b39d74432197a62d9ca05d688e1612746378e"
+      "sha256": "1cfec04dc6f7b89a4cbf3f634986d20c250c5057a34d6e6116a6a9ac2c3b5117"
     },
     {
       "path": "setup.bat",
@@ -459,7 +463,7 @@
     },
     {
       "path": "sync.py",
-      "sha256": "7b690ef8783513eae9c1df21a58cbaecbbd77c87e76ab564d685a7b2407b6e48"
+      "sha256": "ab43dba8d8b1a94b42e03ab975a8b3b8a684044cc8bb70b3e2cb18cdac489f3b"
     },
     {
       "path": "sync_pull_from_master.py",
@@ -634,8 +638,12 @@
       "sha256": "c8ef0f40900cc13f24494fb0a2234b78058b916d0f1a49b1039864d034d9666e"
     },
     {
+      "path": "tests/test_detection_log_backup.py",
+      "sha256": "9b6a4e8de83140452194cd0988c9e95a1ba28fe354cf9630e9c27c1c8955a032"
+    },
+    {
       "path": "tests/test_detection_logger.py",
-      "sha256": "3f400b85b25c29dedcff5788b58ddf22cdf2c01d634c3a5ffa4de1c5b3bf1a49"
+      "sha256": "e5744b7c765176e7ff6d82a2ef3de2c8fe766365dd0902f3ea5041be7195e49a"
     },
     {
       "path": "tests/test_environment_diagnostics.py",
@@ -783,11 +791,11 @@
     },
     {
       "path": "tests/test_sync_init.py",
-      "sha256": "8c66a8cd11700cd839838a55af510e50331032eda26b0ff0b3fd137eff7ccabe"
+      "sha256": "272b26b22cd7721494320606adc08485d21ca350e2df0784f0ec0961b3476b56"
     },
     {
       "path": "tests/test_sync_pull_from_master.py",
-      "sha256": "b2fae0344e226e2a59f3dad338d5c0c1e6204cc6d1a4198ff12443c5e2ca7f7d"
+      "sha256": "7c2d736b1037e1f10c130598493574fba8d70f21a4b88ab0c3b9de10f0c9e01d"
     },
     {
       "path": "tests/test_update_readme_stats.py",
@@ -807,7 +815,7 @@
     },
     {
       "path": "update_by_strategy.py",
-      "sha256": "67983ac3a6c2bfe2781f2ba4980733330dc112182d65602bdcb207b85eaea3a2"
+      "sha256": "5b8b5b38962331aae9dc5d65cc038632e4b49c1c9ab8ea0b9171c2d2b2005847"
     },
     {
       "path": "update_readme_stats.py",
@@ -831,7 +839,7 @@
     },
     {
       "path": "web_dashboard.py",
-      "sha256": "93497f5d4039b7a83bd47dce401269e096fabde3c38924f6916609bb0666138a"
+      "sha256": "887df410fb8eaab3cdd22612579e8e9bbe2d24c5d4d635493f16e10469c4bbcc"
     }
   ]
 }

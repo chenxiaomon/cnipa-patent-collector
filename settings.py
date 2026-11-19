@@ -122,7 +122,7 @@ API_TOKEN_FILE = DATA_DIR / 'api_token.txt'
 
 # 检测日志（主要输出）
 DETECTION_LOG_FILE = RESULTS_DIR / 'detection_log.json'
-DETECTION_LOG_JSONL_FILE = RESULTS_DIR / 'detection_log.jsonl'
+DETECTION_LOG_JSONL_FILE = RESULTS_DIR / 'detection_log.jsonl.gz'
 AGENCY_VERIFICATION_REPORT_JSON_FILE = RESULTS_DIR / 'agency_verification_report.json'
 AGENCY_VERIFICATION_REPORT_CSV_FILE = RESULTS_DIR / 'agency_verification_report.csv'
 

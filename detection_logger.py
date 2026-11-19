@@ -17,6 +17,7 @@ from typing import Optional, Dict, Any
 from settings import DETECTION_LOG_JSONL_FILE, PATENTS_DB_FILE
 from atomic_write import write_json_atomic
 from db_manager import PatentsDB
+from detection_log_backup import append_backup_lines
 from cache_utils import normalize_app_no as _normalize_app_no
 from payment_obligations import (
     LATE_FEE_APPLICABLE,
@@ -191,9 +192,7 @@ class DetectionLogger:
 
         # 2. 追加 JSONL（双写备份）。不 fsync：DB 已提交（SSOT），
         #    JSONL 尾行丢失可由 export_to_jsonl() 完整重建
-        line = json.dumps(d, ensure_ascii=False) + '\n'
-        with open(self.log_file, 'a', encoding='utf-8') as f:
-            f.write(line)
+        append_backup_lines(self.log_file, [json.dumps(d, ensure_ascii=False)])
 
         self._auto_backup()
 
@@ -219,9 +218,7 @@ class DetectionLogger:
         if not rows:
             return 0
         self._db.upsert_batch(rows)
-        with open(self.log_file, 'a', encoding='utf-8') as f:
-            for d in rows:
-                f.write(json.dumps(d, ensure_ascii=False) + '\n')
+        append_backup_lines(self.log_file, (json.dumps(d, ensure_ascii=False) for d in rows))
         self._auto_backup(written=len(rows))
         return len(rows)
 
@@ -229,13 +226,22 @@ class DetectionLogger:
     # 备份（本进程每写 500 条生成一次完整 SQLite 快照）
     # ------------------------------------------------------------------
 
+    def _log_base_name(self) -> str:
+        """日志文件名第一个点之前的部分，快照与 JSON 导出都按它命名。
+
+        不用 Path.stem：日志改为 .jsonl.gz 后 stem 会变成 'detection_log.jsonl'，
+        快照名随之改变，清理时就匹配不到磁盘上已有的 detection_log_backup_*.db。
+        """
+        return Path(self.log_file).name.split('.', 1)[0]
+
     def _auto_backup(self, written: int = 1, interval: int = 500) -> None:
         self._writes_since_backup += written
         if self._writes_since_backup < interval:
             return
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-        log_path = Path(self.log_file)
-        backup_path = log_path.with_name(f'{log_path.stem}_backup_{timestamp}.db')
+        backup_path = Path(self.log_file).with_name(
+            f'{self._log_base_name()}_backup_{timestamp}.db'
+        )
         self._db.backup_to(backup_path)
         self._writes_since_backup = 0
         print(f"[✓] SQLite 完整备份: {backup_path.name}")
@@ -243,7 +249,7 @@ class DetectionLogger:
 
     def _prune_backups(self, keep: int = 5) -> None:
         log_path = Path(self.log_file)
-        for old in sorted(log_path.parent.glob(f'{log_path.stem}_backup_*.db'))[:-keep]:
+        for old in sorted(log_path.parent.glob(f'{self._log_base_name()}_backup_*.db'))[:-keep]:
             try:
                 old.unlink()
             except OSError:
@@ -636,7 +642,7 @@ class DetectionLogger:
     def export_to_json(self, json_file: str = None) -> bool:
         """导出为 JSON 格式（兼容旧格式）"""
         if json_file is None:
-            json_file = self.log_file.replace('.jsonl', '.json')
+            json_file = str(Path(self.log_file).with_name(f'{self._log_base_name()}.json'))
         records = self._load_records()
         success = sum(1 for r in records if r.get('status_code') == 200)
         data = {

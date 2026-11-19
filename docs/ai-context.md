@@ -14,7 +14,7 @@
 
 - `data/patents.db` 是运行时唯一真相源，所有业务读写通过 `PatentsDB`。
 - 部署机是唯一数据 `master`；开发机与 Mac 是 `replica`。
-- `data/results/detection_log.jsonl` 只作为 Git 备份与跨机传输载体，由数据库导出刷新。
+- `data/results/detection_log.jsonl.gz` 只作为 Git 备份与跨机传输载体，由数据库导出刷新（gzip 压缩，2026-11 起）。
 - replica 使用 `sync_pull_from_master.py` 从 Dashboard HTTP 增量接口拉取数据；旧 `sync.py pull/push` 已禁用。
 - 代码发布使用 `release_manifest.json` 逐文件校验，失败自动恢复；`rollback.py` 回滚最近备份。
 - 无人值守采集由 `collection_watchdog.py` 监管，replica 通过 `poll_master_alerts.py` 转发 ServerChan 报警。
@@ -66,7 +66,7 @@
 
 - **状态存储** ✅ 已升级（2026-07）
   - `patents.db` 是运行时唯一真相源，采集、补采、分析和 Dashboard 均通过 `PatentsDB` 访问。
-  - `detection_log.jsonl` 是由数据库生成的只读 Git 备份，运行时禁止直接读取。
+  - `detection_log.jsonl.gz` 是由数据库生成的只读 Git 备份，运行时禁止直接读取。
 
 ### 依赖约束
 
@@ -382,7 +382,7 @@ data/
 ├── raw_responses/            # 公开查询原始响应
 ├── raw_searches/             # 公开查询 JSONL 记录
 ├── results/
-│   ├── detection_log.jsonl   # Git 备份，由 PatentsDB 导出刷新
+│   ├── detection_log.jsonl.gz  # Git 备份（gzip），由 PatentsDB 导出刷新
 │   ├── detection_log.json    # 兼容导出
 │   ├── patents_data.xlsx     # ⭐ 最终报表
 │   └── public_search_results.xlsx/json

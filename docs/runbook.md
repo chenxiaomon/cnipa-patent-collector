@@ -192,10 +192,10 @@ echo replica > data/machine_role.txt
 部署机 patents.db (master)
         │ Dashboard /api/export/delta?since=...
         ▼
-开发机 patents.db (replica) → detection_log.jsonl + README → Git commit → 人工 git push
+开发机 patents.db (replica) → detection_log.jsonl.gz + README → Git commit → 人工 git push
 ```
 
-`patents.db` 是各机器的运行时唯一真相源。`detection_log.jsonl` 只作为 Git 备份，运行时禁止直接读取。
+`patents.db` 是各机器的运行时唯一真相源。`detection_log.jsonl.gz` 只作为 Git 备份，运行时禁止直接读取。它是 gzip 压缩的 JSONL：同样的数据总是导出同样的字节，数据没变时不会产生新提交。查看内容用 `gzip -dc data/results/detection_log.jsonl.gz | head`。
 
 ### 新机器初始化
 
@@ -208,6 +208,15 @@ uv run python sync.py init   # 仅 replica 从 JSONL 备份初始化 SQLite
 ```
 
 `init` 只接受 `git pull --ff-only` 成功后的备份；网络失败、分支分叉或合并冲突时停止，不导入数据库。需要离线恢复已核实的本地 JSONL 时，单独执行 `sync.py rebuild`。导入前会验证整份 JSONL，损坏行或无效申请号会使整次导入失败；旧版追加日志中的同申请号多条记录仍按文件顺序重放。
+
+2026-11 之前的备份是纯文本 `data/results/detection_log.jsonl`，导入只接受 gzip 格式。需要从旧提交恢复时先转换，再执行 `rebuild`：
+
+```bash
+git show <提交号>:data/results/detection_log.jsonl | gzip > data/results/detection_log.jsonl.gz
+uv run python sync.py rebuild
+```
+
+只通过 `upgrade.bat` 更新代码的机器上，旧的纯文本 `detection_log.jsonl` 会留在磁盘上，不再被读写，可以手动删除；下一次批次结束或拉取增量时会生成 `.gz`。在那之前运行 `sync.py rebuild` 会提示文件不存在并停止。
 
 ### replica 拉取 master 增量
 

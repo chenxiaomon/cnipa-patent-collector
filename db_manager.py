@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cache_utils import is_supported_cn_application_no, normalize_app_no, parse_timestamp
+from detection_log_backup import read_backup_lines, write_backup_lines
 
 _JSON_FIELDS = {
     'fwxx_list',
@@ -1287,29 +1288,24 @@ class PatentsDB:
     def import_from_jsonl(self, path: Path) -> int:
         """先验证整份备份，再事务导入；旧追加日志按文件顺序重放。"""
         records = []
-        with open(path, 'r', encoding='utf-8') as f:
-            for line_number, line in enumerate(f, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"JSONL 第 {line_number} 行损坏，未导入任何记录") from exc
-                application_no = record.get('application_no') if isinstance(record, dict) else None
-                if not isinstance(application_no, str) or not application_no.strip():
-                    raise ValueError(f"JSONL 第 {line_number} 行缺少有效申请号，未导入任何记录")
-                records.append(record)
+        for line_number, line in enumerate(read_backup_lines(path), 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"JSONL 第 {line_number} 行损坏，未导入任何记录") from exc
+            application_no = record.get('application_no') if isinstance(record, dict) else None
+            if not isinstance(application_no, str) or not application_no.strip():
+                raise ValueError(f"JSONL 第 {line_number} 行缺少有效申请号，未导入任何记录")
+            records.append(record)
         return self.upsert_batch(records)
 
     def export_to_jsonl(self, path: Path) -> int:
-        """将 DB 全量导出为 JSONL（用于备份 / git 共享）"""
+        """将 DB 全量导出为 gzip 压缩的 JSONL（用于备份 / git 共享）"""
         records = self.get_all_records()
-        tmp = Path(str(path) + '.tmp')
-        with open(tmp, 'w', encoding='utf-8') as f:
-            for r in records:
-                f.write(json.dumps(r, ensure_ascii=False) + '\n')
-        tmp.replace(path)
+        write_backup_lines(path, (json.dumps(r, ensure_ascii=False) for r in records))
         return len(records)
 
 

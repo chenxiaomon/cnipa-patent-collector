@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import sync_pull_from_master
 from db_manager import SYNC_CURSOR_FIELD, PatentsDB
+from detection_log_backup import read_backup_lines
 
 
 class _FakeResponse:
@@ -180,7 +181,7 @@ class TestSyncPullFromMaster(unittest.TestCase):
     def test_merge_master_delta_updates_database_and_backup(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / 'patents.db'
-            backup_path = Path(tmpdir) / 'detection_log.jsonl'
+            backup_path = Path(tmpdir) / 'detection_log.jsonl.gz'
             PatentsDB(db_path).upsert({
                 'application_no': '2023000000001',
                 'timestamp': '2026-01-01T00:00:00Z',
@@ -195,7 +196,7 @@ class TestSyncPullFromMaster(unittest.TestCase):
                 summary = sync_pull_from_master.merge_master_delta(records)
             self.assertEqual(summary['new_applications'], 1)
             self.assertEqual(summary['updated_applications'], 1)
-            self.assertEqual(len(backup_path.read_text(encoding='utf-8').splitlines()), 2)
+            self.assertEqual(len(list(read_backup_lines(backup_path))), 2)
 
     def test_master_reset_restores_pending_status_and_clears_stale_fields(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -203,7 +204,7 @@ class TestSyncPullFromMaster(unittest.TestCase):
             master = PatentsDB(root / 'master.db')
             replica_path = root / 'replica.db'
             replica = PatentsDB(replica_path)
-            backup_path = root / 'detection_log.jsonl'
+            backup_path = root / 'detection_log.jsonl.gz'
             application_no = '202310411762X'
             master.upsert({
                 'application_no': application_no,
@@ -233,8 +234,8 @@ class TestSyncPullFromMaster(unittest.TestCase):
             self.assertEqual(replica.get_stats()['pending'], 1)
             self.assertEqual(replica.get_stats()['failed'], 0)
             self.assertEqual(
-                json.loads(backup_path.read_text(encoding='utf-8')),
-                master.get_record(application_no),
+                [json.loads(line) for line in read_backup_lines(backup_path)],
+                [master.get_record(application_no)],
             )
 
     def test_save_sync_cursor_is_atomic_and_reloadable(self):
@@ -311,7 +312,7 @@ class TestSyncPullFromMaster(unittest.TestCase):
             root = Path(tmpdir)
             master_db = PatentsDB(root / 'master.db')
             replica_db_path = root / 'replica.db'
-            backup_path = root / 'data' / 'results' / 'detection_log.jsonl'
+            backup_path = root / 'data' / 'results' / 'detection_log.jsonl.gz'
             state_path = root / 'data' / 'master_sync_state.json'
             readme_path = root / 'README.md'
             backup_path.parent.mkdir(parents=True)

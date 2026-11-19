@@ -215,17 +215,6 @@ def ensure_previous_status(detection_log: Dict) -> Dict:
     return detection_log
 
 
-def save_detection_log_with_previous_status(detection_log: Dict):
-    """保存包含 previous_status 字段的 detection_log（JSONL 格式，原子重写）。"""
-    from settings import DETECTION_LOG_JSONL_FILE
-    log_file = str(DETECTION_LOG_JSONL_FILE)
-    tmp = log_file + '.tmp'
-    with open(tmp, 'w', encoding='utf-8') as f:
-        for record in detection_log.get('records', []):
-            f.write(json.dumps(record, ensure_ascii=False) + '\n')
-    os.replace(tmp, log_file)
-
-
 def get_status_change_type(prev_status: Optional[str], curr_status: Optional[str]) -> Optional[str]:
     """判断状态变化类型。"""
     if not prev_status or not curr_status:

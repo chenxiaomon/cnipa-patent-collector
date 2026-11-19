@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 from db_manager import PatentsDB
+from detection_log_backup import read_backup_lines
 from detection_logger import DetectionLogger, DetectionRecord
 
 
@@ -188,7 +189,7 @@ class TestDetectionRecordSerialization(unittest.TestCase):
         self.assertEqual(loaded['shenqingrxm'], '张三李四')
 
 
-def _logger_in(tmpdir: str, name: str = 'log.jsonl') -> DetectionLogger:
+def _logger_in(tmpdir: str, name: str = 'log.jsonl.gz') -> DetectionLogger:
     """在临时目录中构造 DetectionLogger（DB 也落在临时目录，不碰仓库数据）"""
     db_path = Path(tmpdir) / 'patents.db'
     with mock.patch('detection_logger.PATENTS_DB_FILE', db_path):
@@ -203,7 +204,7 @@ class TestDetectionLoggerWritePath(unittest.TestCase):
             logger = _logger_in(tmpdir)
             logger.add_record(DetectionRecord(application_no='2023000000001', status_code=200))
             logger.add_record(DetectionRecord(application_no='2023000000002', status_code=0))
-            lines = Path(logger.log_file).read_text(encoding='utf-8').splitlines()
+            lines = list(read_backup_lines(logger.log_file))
             self.assertEqual(len(lines), 2)
             self.assertEqual(logger._db.count(), 2)
 
@@ -233,7 +234,9 @@ class TestDetectionLoggerWritePath(unittest.TestCase):
                 application_no='2023000000001', status_code=200, zhuanlimc='updated title',
             ))
 
-            self.assertEqual(json.loads(Path(logger.log_file).read_text())['status_code'], 0)
+            self.assertEqual(
+                [json.loads(line)['status_code'] for line in read_backup_lines(logger.log_file)], [0]
+            )
             backup_paths = list(Path(tmpdir).glob('log_backup_*.db'))
             self.assertEqual(len(backup_paths), 1)
             restored = PatentsDB(backup_paths[0]).get_record('2023000000001')
@@ -295,8 +298,28 @@ class TestDetectionLoggerWritePath(unittest.TestCase):
                 without_write_stamp(looped._db.get_all_records()),
             )
             self.assertEqual(
-                Path(batched.log_file).read_text(encoding='utf-8'),
-                Path(looped.log_file).read_text(encoding='utf-8'),
+                list(read_backup_lines(batched.log_file)),
+                list(read_backup_lines(looped.log_file)),
+            )
+
+    def test_compressed_log_keeps_snapshot_and_json_export_names(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            logger = _logger_in(tmpdir, 'detection_log.jsonl.gz')
+            logger.add_record(DetectionRecord(application_no='2023000000001', status_code=200))
+            for sequence in range(6):
+                logger._db.backup_to(root / f'detection_log_backup_20260101_00000{sequence}.db')
+
+            logger._auto_backup(written=500)
+            logger.export_to_json()
+
+            snapshot_names = sorted(path.name for path in root.glob('*.db') if path.name != 'patents.db')
+            self.assertEqual(len(snapshot_names), 5)
+            self.assertTrue(all(name.startswith('detection_log_backup_') for name in snapshot_names))
+            self.assertNotIn('detection_log_backup_20260101_000000.db', snapshot_names)
+            self.assertEqual(
+                json.loads((root / 'detection_log.json').read_text(encoding='utf-8'))['metadata']['total_records'],
+                1,
             )
 
 

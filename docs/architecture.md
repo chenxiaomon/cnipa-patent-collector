@@ -152,7 +152,7 @@ data/
 ├── raw_responses/           # 公开查询原始响应
 ├── raw_searches/            # 公开查询 JSONL 记录
 ├── results/
-│   ├── detection_log.jsonl  # Git 备份与跨机传输载体（运行时禁止直接读取）
+│   ├── detection_log.jsonl.gz  # Git 备份与跨机传输载体，gzip 压缩（运行时禁止直接读取）
 │   ├── detection_log.json   # 兼容导出/备份 JSON
 │   ├── patents_data.xlsx    # ⭐ 最终报表（Excel）
 │   └── public_search_results.xlsx/json
