@@ -1736,6 +1736,19 @@ HTML = r"""<!doctype html>
           <span id="exportFilterHint" class="hint" style="margin-left:8px"></span>
         </div>
       </article>
+      <article class="panel" style="margin-bottom:14px">
+        <div class="panel-head"><h2>按申请号清单导出</h2><span class="hint">只导出清单里的专利，按清单顺序排列</span></div>
+        <label class="field">
+          <span>申请号清单（可从 Excel 复制一整列粘贴；换行、逗号、空格分隔均可，CN 前缀和点号会自动去掉）</span>
+          <textarea id="exportAppNosText" class="codebox" rows="6" spellcheck="false"
+            placeholder="每行一个申请号，也支持逗号分隔"></textarea>
+        </label>
+        <div class="button-row" style="margin-top:10px;align-items:center">
+          <button class="btn secondary" id="exportAppNosPreviewBtn">预估数量</button>
+          <button class="btn primary" id="exportAppNosBtn">📥 导出这批</button>
+          <span id="exportAppNosHint" class="hint" style="margin-left:8px"></span>
+        </div>
+      </article>
       <article class="panel">
         <div class="panel-head"><h2>最近记录</h2><span class="hint">最新写入 16 条</span></div>
         <div class="table-wrap">
@@ -3479,6 +3492,8 @@ function bindEvents() {
   if (exportPreviewBtn) exportPreviewBtn.addEventListener('click', previewExport);
   const exportFilteredBtn = $('#exportFilteredBtn');
   if (exportFilteredBtn) exportFilteredBtn.addEventListener('click', exportFiltered);
+  $('#exportAppNosPreviewBtn').addEventListener('click', previewAppNoExport);
+  $('#exportAppNosBtn').addEventListener('click', exportByAppNos);
 
   $('#generateStrategy').addEventListener('click', () =>
     startJob('strategy_generate', { frequency: $('#strategyFrequency').value }));
@@ -3918,6 +3933,48 @@ async function exportFiltered() {
     if (hint) hint.textContent = '✓ 已导出';
   } catch (e) {
     if (hint) hint.textContent = '导出失败：' + e.message;
+  }
+}
+
+async function previewAppNoExport() {
+  const hint = $('#exportAppNosHint');
+  hint.textContent = '统计中...';
+  try {
+    const d = await api('/api/export/excel-by-app-nos?preview=true', {
+      method: 'POST',
+      body: JSON.stringify({ text: $('#exportAppNosText').value }),
+    });
+    hint.textContent = '识别 ' + fmtNumber(d.requested) + ' 个申请号，库里有 ' + fmtNumber(d.found) + ' 个' +
+      (d.missing_sample.length ? '；库里没有的如：' + d.missing_sample.join('、') : '');
+  } catch (e) {
+    hint.textContent = '统计失败：' + e.message;
+  }
+}
+
+async function exportByAppNos() {
+  const hint = $('#exportAppNosHint');
+  hint.textContent = '正在生成 Excel...';
+  try {
+    const res = await fetch('/api/export/excel-by-app-nos', {
+      method: 'POST',
+      headers: writeHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ text: $('#exportAppNosText').value }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || res.statusText);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const m = (res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/);
+    a.download = m ? m[1] : 'patents_by_list.xlsx';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    hint.textContent = '✓ 已导出';
+  } catch (e) {
+    hint.textContent = '导出失败：' + e.message;
   }
 }
 
@@ -4384,6 +4441,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
                 self.send_header("Content-Disposition", f'attachment; filename="patents_filtered_{ts_label}.xlsx"')
+                self.send_header("Content-Length", str(len(excel_data)))
+                self.end_headers()
+                self.wfile.write(excel_data)
+            elif path == "/api/export/excel-by-app-nos":
+                payload = self.read_json_body()
+                requested_app_nos = parse_app_no_list(str(payload.get("text", "")))
+                if not requested_app_nos:
+                    self.send_json({"error": "没有识别到申请号"}, status=400)
+                    return
+                records = _patents_db.records_for_application_nos(requested_app_nos)
+
+                if parse_qs(parsed.query).get("preview"):
+                    found_app_nos = {record["application_no"] for record in records}
+                    self.send_json({
+                        "requested": len(requested_app_nos),
+                        "found": len(records),
+                        "missing_sample": [
+                            app_no for app_no in requested_app_nos if app_no not in found_app_nos
+                        ][:5],
+                    })
+                    return
+                if not records:
+                    self.send_json({"error": "清单里的申请号库里都还没有采集记录"}, status=404)
+                    return
+
+                excel_data = build_filtered_excel(records)
+
+                ts_label = datetime.now().strftime("%Y%m%d_%H%M%S")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                self.send_header("Content-Disposition", f'attachment; filename="patents_by_list_{ts_label}.xlsx"')
                 self.send_header("Content-Length", str(len(excel_data)))
                 self.end_headers()
                 self.wfile.write(excel_data)

@@ -178,21 +178,22 @@ def validate_json_excel_consistency(records, excel_df):
     else:
         print(f"❌ 行数不一致（差异: {abs(json_count - excel_count)}）")
 
-    # 检查发文列表一��性
+    # 发文只在「发文信息」表按行展开（主表不内嵌），按申请号去重即为有发文的专利数；
+    # 没有任何发文时导出不生成该表。
     json_fwxx_count = sum(1 for r in records if r.get('fwxx_list'))
-    excel_fwxx_col = '发文列表'
+    try:
+        fwxx_sheet = pd.read_excel(PATENTS_EXCEL, sheet_name='发文信息', usecols=['专利申请号'], dtype=str)
+        excel_fwxx_count = fwxx_sheet['专利申请号'].nunique()
+    except ValueError:
+        excel_fwxx_count = 0
 
-    if excel_fwxx_col in excel_df.columns:
-        excel_fwxx_count = (excel_df[excel_fwxx_col].notna() &
-                           (excel_df[excel_fwxx_col] != 'N/A')).sum()
+    print(f"\nJSON 发文列表非空: {json_fwxx_count}")
+    print(f"Excel 有发文的专利: {excel_fwxx_count}")
 
-        print(f"\nJSON 发文列表非空: {json_fwxx_count}")
-        print(f"Excel 发文列表非空: {excel_fwxx_count}")
-
-        if json_fwxx_count == excel_fwxx_count:
-            print("✅ 发文列表数一致")
-        else:
-            print(f"❌ 发文列表数不一致（差异: {abs(json_fwxx_count - excel_fwxx_count)}）")
+    if json_fwxx_count == excel_fwxx_count:
+        print("✅ 发文列表数一致")
+    else:
+        print(f"❌ 发文列表数不一致（差异: {abs(json_fwxx_count - excel_fwxx_count)}）")
 
     return {
         'json_count': json_count,

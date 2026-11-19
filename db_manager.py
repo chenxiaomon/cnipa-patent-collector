@@ -747,6 +747,21 @@ class PatentsDB:
             )
         ]
 
+    def records_for_application_nos(self, app_nos: list[str]) -> list[dict]:
+        """按清单顺序返回库内已有的记录，库里没有的申请号直接略过。
+
+        app_nos 须已规范化且不重复（parse_app_no_list 的输出）。清单整体作为一个 JSON
+        参数传入，不受 SQLite 绑定变量个数上限影响，上万个申请号也是一次查询。
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT patents.* FROM json_each(?) AS requested "
+                "JOIN patents ON patents.application_no = requested.value "
+                "ORDER BY requested.key",
+                (json.dumps(app_nos),),
+            ).fetchall()
+        return [self._decode(row) for row in rows]
+
     def query_update_candidates(self, status: str, freq_days: int) -> tuple[list[dict], list[dict]]:
         """
         Return records with anjianywzt=status, split by whether the update interval has elapsed.

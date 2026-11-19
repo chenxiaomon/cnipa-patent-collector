@@ -27,7 +27,7 @@
     },
     {
       "path": "CHANGELOG.md",
-      "sha256": "7ea25601852bd98f45dd8712d4070986c5a24102efb187f33b3f60d73d52aa67"
+      "sha256": "83af2e83da55b035bb236e805e2b04a5b3987e4921aff650c3bb230a0d6a18aa"
     },
     {
       "path": "CLAUDE.md",
@@ -143,7 +143,7 @@
     },
     {
       "path": "db_manager.py",
-      "sha256": "66bb643c0f30b46b3fa5f83ca0206ed2f9012aa54c22540489aea9c557587456"
+      "sha256": "e75db8f77160e3f6d0f4e015083d6878627bfb054c7cc86c5eb0ac87d125eed8"
     },
     {
       "path": "desktop.bat",
@@ -171,7 +171,7 @@
     },
     {
       "path": "detection_logger.py",
-      "sha256": "2c323ad97a76b9ef314cc89a86744aca4baa93d348a18e0782f4f8bc51d5c024"
+      "sha256": "18eb8e51af51661b8d97b34f326b64614cb0d18d12f8e2d38d1b7355fe187713"
     },
     {
       "path": "docker-compose.yml",
@@ -574,6 +574,10 @@
       "sha256": "b8c35ba682ef7d36e3fc538ceeedb1f1e329eaab7c5220f88b8674fde792c7f6"
     },
     {
+      "path": "tests/test_dashboard_app_no_export.py",
+      "sha256": "b3eeef13dc2b9c0f234593aacad2b2f2af89ad7e5a85c45f24da5ceab81e623e"
+    },
+    {
       "path": "tests/test_dashboard_batch_diagnostics.py",
       "sha256": "d5cd64bf4f67b25e21dc66222e00706d95c21b4cbac802780efc512296f35db5"
     },
@@ -631,7 +635,7 @@
     },
     {
       "path": "tests/test_detection_logger.py",
-      "sha256": "98eb3da76045d7628f04c8875fbd4f0d4df9761d8682bd05012a745860454cdd"
+      "sha256": "3f400b85b25c29dedcff5788b58ddf22cdf2c01d634c3a5ffa4de1c5b3bf1a49"
     },
     {
       "path": "tests/test_environment_diagnostics.py",
@@ -823,11 +827,11 @@
     },
     {
       "path": "validate_results.py",
-      "sha256": "b7c03fb3523f654a5f080de2bff9f744a2c01542c2b3d049e0ad13b0669d7c33"
+      "sha256": "2d7cbf2538d363ed4c2ddf050728da7ec0488f13c3bf012d486f6b0ec36bbaf9"
     },
     {
       "path": "web_dashboard.py",
-      "sha256": "df40959e739c925b950abe3830444c661b9ec0c35666cba6257d7864350dcec6"
+      "sha256": "93497f5d4039b7a83bd47dce401269e096fabde3c38924f6916609bb0666138a"
     }
   ]
 }

@@ -401,5 +401,47 @@ class TestFeeExcelExport(unittest.TestCase):
             workbook.close()
 
 
+class TestPatentSheetColumns(unittest.TestCase):
+    def test_patent_sheet_leaves_details_to_their_own_sheets(self):
+        from openpyxl import load_workbook
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = _logger_in(tmpdir)
+            notice = {
+                'tongzhismc': '驳回决定', 'fawenr': '20250926', 'shoujianrxm': '某人',
+                'shoujianryb': '310009', 'fawenfs': '电子发文',
+                'xiazaisj': '2025-09-28', 'xiazaiip': '1.2.3.4',
+            }
+            logger.add_record(DetectionRecord(
+                application_no='2023106418871',
+                status_code=200,
+                response_time_ms=6500.0,
+                zhuanlimc='一种步态训练双梯',
+                fwxx_list=[notice],
+                bhsjtzs_xiazaisj='2025-09-28',
+                bhsjtzs_data=notice,
+                fwxx_collected_at='2026-07-18T07:30:00Z',
+            ))
+            excel_path = Path(tmpdir) / 'patents.xlsx'
+
+            self.assertTrue(logger.export_to_excel(str(excel_path)))
+
+            workbook = load_workbook(excel_path)
+            patent_headers = [cell.value for cell in workbook['专利主信息'][1]]
+            self.assertEqual(patent_headers, [
+                '专利申请号', '发明公布号', '授权公告号', '专利名称', '申请人',
+                '企业实际专利总数', '专利类型', '申请日', '法律状态', '公开公告日',
+                '主分类号', '案件业务状态', '时间戳', '驳回时间', '发文采集时间',
+                '费用采集时间', '代理机构', '代理人',
+            ])
+            fwxx_sheet = workbook['发文信息']
+            self.assertEqual(
+                [cell.value for cell in fwxx_sheet[2]],
+                ['2023106418871', '驳回决定', '20250926', '某人', '310009',
+                 '电子发文', '2025-09-28', '1.2.3.4'],
+            )
+            workbook.close()
+
+
 if __name__ == '__main__':
     unittest.main()

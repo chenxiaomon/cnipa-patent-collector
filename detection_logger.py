@@ -296,6 +296,10 @@ class DetectionLogger:
             records = self._load_records()
             analysis_date = fee_analysis_date or datetime.now(_CHINA_STANDARD_TIME).date()
 
+            # 主表只放一件一行的字段，控制体积让 Excel 能流畅打开。发文列表、驳回决定详情
+            # 和四类费用记录已在各自工作表按行展开，不再以长文本列重复（曾占主表约 1/4）。
+            # 公开公告号、授权公告日、案件编号检索接口从未返回值；状态码、响应时间只供采集
+            # 程序内部使用。这些字段仍保存在 patents.db。
             column_mapping = {
                 'application_no': '专利申请号',
                 'famingzlsqgbg': '发明公布号',
@@ -304,24 +308,13 @@ class DetectionLogger:
                 'shenqingrxm': '申请人',
                 'zhuanlilx': '专利类型',
                 'shenqingr': '申请日',
-                'gongkaiggh': '公开公告号',
                 'falvzt': '法律状态',
                 'gongkaiggr': '公开公告日',
-                'shouquanggr': '授权公告日',
                 'zhufenlh': '主分类号',
-                'anjianbh': '案件编号',
                 'anjianywzt': '案件业务状态',
-                'status_code': '状态码',
-                'response_time_ms': '响应时间(ms)',
                 'timestamp': '时间戳',
-                'fwxx_list': '发文列表',
                 'bhsjtzs_xiazaisj': '驳回时间',
-                'bhsjtzs_data': '驳回决定详情',
                 'fwxx_collected_at': '发文采集时间',
-                'payable_fee_records': '应缴费记录',
-                'late_fee_schedule_records': '应缴滞纳金记录',
-                'paid_fee_records': '已缴费记录',
-                'fee_receipt_dispatch_records': '收据发文记录',
                 'fee_snapshot_at': '费用采集时间',
                 'daili_jg': '代理机构',
                 'daili_r': '代理人',
