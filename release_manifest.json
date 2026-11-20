@@ -159,7 +159,7 @@
     },
     {
       "path": "desktop_dashboard.py",
-      "sha256": "370f22c110892c55dbcfec139af1c7b2d2223f94c02206ff4e5ed76daa3033d2"
+      "sha256": "ee49c42fccb2a1ac5fe82ef7945d0964d04b6fdab2cee6e6ed72f3cc398fd239"
     },
     {
       "path": "detail_attempt.py",
@@ -631,7 +631,7 @@
     },
     {
       "path": "tests/test_desktop_window_shutdown.py",
-      "sha256": "ede8a32804b569b069df0a6efe7ccce6e514a2010a0ff37e66b8c30eb61be63e"
+      "sha256": "a0041415510ec5d1e89fc5c82e4f61591a895f4af75a2a1f0a496a9a288455bc"
     },
     {
       "path": "tests/test_detail_response_binding.py",
@@ -695,7 +695,7 @@
     },
     {
       "path": "tests/test_fwxx_detail_window.py",
-      "sha256": "57880f550f51f9338b5cc33edfe43eb78e65f74859bd61195c1befa53919d6e2"
+      "sha256": "d56d727d7ad3ebf1de839adc6eaa13a73670c9a66d23ad9660c7825b15324f27"
     },
     {
       "path": "tests/test_fwxx_empty_cache.py",
@@ -723,7 +723,7 @@
     },
     {
       "path": "tests/test_macos_coordinate_capture.py",
-      "sha256": "f70dd41466af3c666d2f237abffa182121d8cb7f644820ef30e3e86ba5db4a60"
+      "sha256": "6d36b095272f43c8653744696dfc977eb6fe75a689d7eae59c40f48f32f6c5f4"
     },
     {
       "path": "tests/test_main_collection_resume.py",
@@ -839,7 +839,7 @@
     },
     {
       "path": "web_dashboard.py",
-      "sha256": "887df410fb8eaab3cdd22612579e8e9bbe2d24c5d4d635493f16e10469c4bbcc"
+      "sha256": "c82bcc7395f79309f814b330ff9f04122520193148ab3454f79fe0b19ed9f699"
     }
   ]
 }

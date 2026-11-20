@@ -325,16 +325,19 @@ class TestFwxxFatalExit(unittest.TestCase):
             browser = patches.enter_context(patch.object(browser_service, 'BrowserService'))
             browser.launch_and_login.side_effect = collect_fwxx.DetailCollectionFatalError('详情页测试中断')
             patches.enter_context(patch('sys.argv', [str(settings.BASE_DIR / 'collect_fwxx.py')]))
-            output = io.StringIO()
+            # collect_fwxx reconfigures stdout/stderr on Windows, which io.StringIO does not support.
+            output_bytes = io.BytesIO()
+            output = io.TextIOWrapper(output_bytes, encoding='utf-8', write_through=True)
 
             with redirect_stdout(output), redirect_stderr(output), self.assertRaises(SystemExit) as stopped:
                 runpy.run_path(str(settings.BASE_DIR / 'collect_fwxx.py'), run_name='__main__')
 
+            printed = output_bytes.getvalue().decode('utf-8')
             self.assertEqual(stopped.exception.code, 1)
-            self.assertEqual(output.getvalue().count('详情页测试中断'), 1)
-            self.assertNotIn('Traceback', output.getvalue())
-            self.assertNotIn('[✓] 程序结束', output.getvalue())
-            self.assertIn('续跑命令:', output.getvalue())
+            self.assertEqual(printed.count('详情页测试中断'), 1)
+            self.assertNotIn('Traceback', printed)
+            self.assertNotIn('[✓] 程序结束', printed)
+            self.assertIn('续跑命令:', printed)
             self.assertEqual(checkpoint_path.read_text(encoding='utf-8'), '2022114339006\n2022114363024\n')
             saved_batch = collection_checkpoint.read_collection_batch(next(batch_directory.glob('*.json')).stem)
             self.assertEqual(saved_batch['status'], 'interrupted')

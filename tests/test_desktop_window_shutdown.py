@@ -184,7 +184,7 @@ class DesktopShutdownConnectionTests(unittest.TestCase):
         server = self.start_shutdown_server()
         connection = desktop_dashboard.DashboardConnection(server.server_port, self.instance_id)
         with (
-            patch.object(desktop_dashboard.time, "monotonic", side_effect=[0, 0, 6]),
+            patch.object(desktop_dashboard.time, "monotonic", side_effect=[0, 0, 16]),
             patch.object(desktop_dashboard.time, "sleep"),
         ):
             with self.assertRaisesRegex(RuntimeError, "端口尚未关闭"):

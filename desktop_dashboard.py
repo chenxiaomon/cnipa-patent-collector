@@ -46,7 +46,9 @@ def run_desktop_service(port: int) -> None:
 
 def read_dashboard_identity(port: int) -> dict | None:
     """Only an absent listener permits startup; another service must never be reused."""
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
+    # Windows refuses a loopback connect to a closed port only after about 2 s of SYN
+    # retries; a shorter timeout reports an absent listener as an error, not as absent.
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     try:
         connection.request("GET", "/api/desktop-status")
         response = connection.getresponse()
@@ -127,7 +129,8 @@ class DashboardConnection:
         finally:
             connection.close()
 
-        deadline = time.monotonic() + 5
+        # On Windows each probe of the closed port takes about 2 s (see read_dashboard_identity).
+        deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             try:
                 identity = read_dashboard_identity(self.port)

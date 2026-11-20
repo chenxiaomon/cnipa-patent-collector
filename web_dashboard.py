@@ -4115,8 +4115,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     if not JOB_LOG_FILENAME_PATTERN.fullmatch(filename):
                         self.send_json({"error": "日志文件名不正确"}, status=400)
                         return
-                    log_path = DASHBOARD_JOB_LOG_DIR / filename
-                    if log_path.is_symlink() or not log_path.is_file():
+                    # Serve a file found in the log directory, never a path built from the request.
+                    log_path = next(
+                        (entry for entry in DASHBOARD_JOB_LOG_DIR.glob("*.log*") if entry.name == filename),
+                        None,
+                    )
+                    if log_path is None or log_path.is_symlink() or not log_path.is_file():
                         self.send_json({"error": "日志已轮转清理或不存在，请刷新文件列表"}, status=404)
                         return
                     try:
@@ -4126,7 +4130,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         return
                     self.send_response(HTTPStatus.OK)
                     self.send_header("Content-Type", "text/plain; charset=utf-8")
-                    self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                    self.send_header("Content-Disposition", f'attachment; filename="{log_path.name}"')
                     self.send_header("Content-Length", str(len(log_bytes)))
                     self.end_headers()
                     self.wfile.write(log_bytes)

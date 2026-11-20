@@ -202,7 +202,10 @@ class TestMacCoordinateCapture(unittest.TestCase):
 
 class TestMacCalibrationDispatch(unittest.TestCase):
     def test_existing_coordinate_operations_use_native_mac_capture(self):
+        # Off macOS, patch.dict dropped the stub-backed module from sys.modules after the
+        # import above; coordinate_service's lazy imports must resolve to this patched module.
         with (
+            patch.dict(sys.modules, {"macos_coordinate_capture": mac_capture}),
             patch.object(coordinate_service.sys, "platform", "darwin"),
             patch.object(mac_capture, "select_calibration_window", return_value=123) as select_window,
             patch.object(mac_capture, "capture_target_click", return_value=(200, 300)) as capture_click,
