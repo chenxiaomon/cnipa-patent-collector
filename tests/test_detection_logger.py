@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 from db_manager import PatentsDB
+from detection_log_backup import read_backup_lines
 from detection_logger import DetectionLogger, DetectionRecord
 
 
@@ -188,7 +189,7 @@ class TestDetectionRecordSerialization(unittest.TestCase):
         self.assertEqual(loaded['shenqingrxm'], '张三李四')
 
 
-def _logger_in(tmpdir: str, name: str = 'log.jsonl') -> DetectionLogger:
+def _logger_in(tmpdir: str, name: str = 'log.jsonl.gz') -> DetectionLogger:
     """在临时目录中构造 DetectionLogger（DB 也落在临时目录，不碰仓库数据）"""
     db_path = Path(tmpdir) / 'patents.db'
     with mock.patch('detection_logger.PATENTS_DB_FILE', db_path):
@@ -203,7 +204,7 @@ class TestDetectionLoggerWritePath(unittest.TestCase):
             logger = _logger_in(tmpdir)
             logger.add_record(DetectionRecord(application_no='2023000000001', status_code=200))
             logger.add_record(DetectionRecord(application_no='2023000000002', status_code=0))
-            lines = Path(logger.log_file).read_text(encoding='utf-8').splitlines()
+            lines = list(read_backup_lines(logger.log_file))
             self.assertEqual(len(lines), 2)
             self.assertEqual(logger._db.count(), 2)
 
@@ -233,7 +234,9 @@ class TestDetectionLoggerWritePath(unittest.TestCase):
                 application_no='2023000000001', status_code=200, zhuanlimc='updated title',
             ))
 
-            self.assertEqual(json.loads(Path(logger.log_file).read_text())['status_code'], 0)
+            self.assertEqual(
+                [json.loads(line)['status_code'] for line in read_backup_lines(logger.log_file)], [0]
+            )
             backup_paths = list(Path(tmpdir).glob('log_backup_*.db'))
             self.assertEqual(len(backup_paths), 1)
             restored = PatentsDB(backup_paths[0]).get_record('2023000000001')
@@ -295,8 +298,28 @@ class TestDetectionLoggerWritePath(unittest.TestCase):
                 without_write_stamp(looped._db.get_all_records()),
             )
             self.assertEqual(
-                Path(batched.log_file).read_text(encoding='utf-8'),
-                Path(looped.log_file).read_text(encoding='utf-8'),
+                list(read_backup_lines(batched.log_file)),
+                list(read_backup_lines(looped.log_file)),
+            )
+
+    def test_compressed_log_keeps_snapshot_and_json_export_names(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            logger = _logger_in(tmpdir, 'detection_log.jsonl.gz')
+            logger.add_record(DetectionRecord(application_no='2023000000001', status_code=200))
+            for sequence in range(6):
+                logger._db.backup_to(root / f'detection_log_backup_20260101_00000{sequence}.db')
+
+            logger._auto_backup(written=500)
+            logger.export_to_json()
+
+            snapshot_names = sorted(path.name for path in root.glob('*.db') if path.name != 'patents.db')
+            self.assertEqual(len(snapshot_names), 5)
+            self.assertTrue(all(name.startswith('detection_log_backup_') for name in snapshot_names))
+            self.assertNotIn('detection_log_backup_20260101_000000.db', snapshot_names)
+            self.assertEqual(
+                json.loads((root / 'detection_log.json').read_text(encoding='utf-8'))['metadata']['total_records'],
+                1,
             )
 
 
@@ -398,6 +421,48 @@ class TestFeeExcelExport(unittest.TestCase):
             self.assertEqual(paid_sheet.freeze_panes, 'A2')
             self.assertGreaterEqual(paid_sheet.column_dimensions['E'].width, 40)
             self.assertEqual(receipt_sheet.max_column, 13)
+            workbook.close()
+
+
+class TestPatentSheetColumns(unittest.TestCase):
+    def test_patent_sheet_leaves_details_to_their_own_sheets(self):
+        from openpyxl import load_workbook
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = _logger_in(tmpdir)
+            notice = {
+                'tongzhismc': '驳回决定', 'fawenr': '20250926', 'shoujianrxm': '某人',
+                'shoujianryb': '310009', 'fawenfs': '电子发文',
+                'xiazaisj': '2025-09-28', 'xiazaiip': '1.2.3.4',
+            }
+            logger.add_record(DetectionRecord(
+                application_no='2023106418871',
+                status_code=200,
+                response_time_ms=6500.0,
+                zhuanlimc='一种步态训练双梯',
+                fwxx_list=[notice],
+                bhsjtzs_xiazaisj='2025-09-28',
+                bhsjtzs_data=notice,
+                fwxx_collected_at='2026-07-18T07:30:00Z',
+            ))
+            excel_path = Path(tmpdir) / 'patents.xlsx'
+
+            self.assertTrue(logger.export_to_excel(str(excel_path)))
+
+            workbook = load_workbook(excel_path)
+            patent_headers = [cell.value for cell in workbook['专利主信息'][1]]
+            self.assertEqual(patent_headers, [
+                '专利申请号', '发明公布号', '授权公告号', '专利名称', '申请人',
+                '企业实际专利总数', '专利类型', '申请日', '法律状态', '公开公告日',
+                '主分类号', '案件业务状态', '时间戳', '驳回时间', '发文采集时间',
+                '费用采集时间', '代理机构', '代理人',
+            ])
+            fwxx_sheet = workbook['发文信息']
+            self.assertEqual(
+                [cell.value for cell in fwxx_sheet[2]],
+                ['2023106418871', '驳回决定', '20250926', '某人', '310009',
+                 '电子发文', '2025-09-28', '1.2.3.4'],
+            )
             workbook.close()
 
 

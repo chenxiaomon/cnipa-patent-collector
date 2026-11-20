@@ -10,6 +10,7 @@ CNIPA 专利数据 MITM 拦截脚本
 import json
 import os
 import threading
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 from typing import Optional
 from mitmproxy import http
@@ -23,7 +24,9 @@ from detail_attempt import (
     read_detail_identity,
     read_detail_attempt_marker,
 )
+from detail_search import DETAIL_SEARCH_API_PATH, publish_detail_search_response
 from detection_logger import DetectionLogger
+from cnipa_session import observe_cnipa_api_response, read_cnipa_session
 from cache_utils import normalize_app_no, read_json_cache, write_json_cache
 from settings import (
     AGENCY_UNMATCHED_FILE,
@@ -69,6 +72,19 @@ class PatentMITMScraper:
         if 'cponline.cnipa.gov.cn' not in url:
             return
 
+        request_url = urlsplit(url)
+        hostname = request_url.hostname or ''
+        if (
+            (hostname == 'cponline.cnipa.gov.cn' or hostname.endswith('.cponline.cnipa.gov.cn'))
+            and request_url.path.startswith('/api/')
+        ):
+            flow.metadata['cnipa_session'] = read_cnipa_session()
+            if request_url.path == DETAIL_SEARCH_API_PATH:
+                search_attempt = read_detail_attempt_marker()
+                if search_attempt is not None:
+                    flow.metadata[_DETAIL_ATTEMPT_METADATA_KEY] = search_attempt
+                return
+
         if not any(pattern in url for pattern in (*_DETAIL_API_PATTERNS, _SQXX_API_PATTERN)):
             return
         detail_attempt = read_detail_attempt_marker()
@@ -98,9 +114,32 @@ class PatentMITMScraper:
             print(f"[✓] 详情请求已绑定官方确认的申请号: {detail_attempt['application_no']}")
 
     def response(self, flow: http.HTTPFlow) -> None:
-        """拦截响应的钩子函数：CNIPA 域名 + 200 + JSON 才处理。"""
+        """先记录请求绑定的被动回执，再处理成功的 JSON 业务响应。"""
         if 'cponline.cnipa.gov.cn' not in flow.request.pretty_url:
             return
+        response_url = urlsplit(flow.request.pretty_url)
+        response_hostname = response_url.hostname or ''
+        is_detail_search = (
+            (response_hostname == 'cponline.cnipa.gov.cn' or response_hostname.endswith('.cponline.cnipa.gov.cn'))
+            and response_url.path == DETAIL_SEARCH_API_PATH
+        )
+        if 'cnipa_session' in flow.metadata or is_detail_search:
+            try:
+                response_payload = json.loads(flow.response.content.decode('utf-8'))
+            except (UnicodeError, ValueError, AttributeError):
+                response_payload = None
+            # Serialize failure receipts and event rotation across concurrent responses.
+            with self._cache_lock:
+                if 'cnipa_session' in flow.metadata:
+                    observe_cnipa_api_response(
+                        flow.metadata.get('cnipa_session'), flow.request.pretty_url,
+                        flow.response.status_code, response_payload,
+                    )
+                if is_detail_search:
+                    publish_detail_search_response(
+                        flow.metadata.get(_DETAIL_ATTEMPT_METADATA_KEY),
+                        flow.response.status_code, response_payload,
+                    )
         if flow.response.status_code != 200:
             return
         content_type = flow.response.headers.get('content-type', '')
@@ -114,7 +153,7 @@ class PatentMITMScraper:
                 getattr(self, method_name)(flow)
                 return
 
-        print(f"\n[+] 拦截到 JSON 响应: {url[:100]}")
+        print(f"\n[+] 拦截到 JSON 响应: {urlsplit(url).path}")
 
         try:
             # 显式 UTF-8 解码，避免 mitmproxy 在响应头无 charset 时回退到 latin-1
@@ -127,7 +166,7 @@ class PatentMITMScraper:
             if isinstance(data, dict):
                 # 检查 code 字段（如果存在）
                 if "code" in data and data.get("code") != 200:
-                    print(f"[-] API 错误: code={data.get('code')}, msg={data.get('msg')}")
+                    print('[-] API 返回错误，已记录接口失败事件')
                     return
 
                 # 尝试从不同位置提取 records
@@ -168,6 +207,13 @@ class PatentMITMScraper:
             print(f"[!] JSON 解析失败: {e}")
         except Exception as e:
             print(f"[!] 处理响应失败: {e}")
+
+    def error(self, flow: http.HTTPFlow) -> None:
+        """Record transport failures without persisting proxy errors containing request secrets."""
+        url = flow.request.pretty_url
+        if 'cnipa_session' in flow.metadata:
+            with self._cache_lock:
+                observe_cnipa_api_response(flow.metadata.get('cnipa_session'), url, 0, None)
 
     def _process_record(self, api_record: dict) -> None:
         """
@@ -434,7 +480,7 @@ class PatentMITMScraper:
 
             # 检查 API 响应状态
             if data.get("code") != 200:
-                print(f"[-] 发文信息 API 错误: code={data.get('code')}, msg={data.get('msg')}")
+                print('[-] 发文信息 API 返回错误，已记录接口失败事件')
                 return
 
             response_data = data.get('data')
@@ -482,38 +528,62 @@ class PatentMITMScraper:
         try:
             response_text = flow.response.content.decode('utf-8', errors='replace')
             response_payload = json.loads(response_text)
+            json_type_names = {
+                type(None): 'null', bool: 'boolean', int: 'number', float: 'number',
+                str: 'string', list: 'array', dict: 'object',
+            }
 
+            if not isinstance(response_payload, dict):
+                print(f'[-] 费用信息响应不是对象: {json_type_names[type(response_payload)]}')
+                return
             if response_payload.get('code') != 200:
-                print(
-                    f"[-] 费用信息 API 错误: code={response_payload.get('code')}, "
-                    f"msg={response_payload.get('msg')}"
-                )
+                print('[-] 费用信息 API 返回错误，已记录接口失败事件')
                 return
 
             fee_sections = response_payload.get('data')
             if not isinstance(fee_sections, dict):
-                print('[-] 费用信息响应缺少 data 对象')
+                print(f'[-] 费用信息响应缺少 data 对象: {json_type_names[type(fee_sections)]}')
                 return
 
-            def extract_section_records(section_name: str, list_name: str):
+            fee_section_issues = {}
+
+            def extract_section_records(cache_field: str, section_name: str, list_name: str):
                 if section_name not in fee_sections:
-                    print(f'[*] 费用栏目 {section_name} 未返回，已省略')
-                    return None
-                section = fee_sections.get(section_name)
-                if not isinstance(section, dict):
-                    print(f'[-] 费用栏目 {section_name} 不是对象，已省略')
-                    return None
-                if list_name not in section:
-                    print(f'[*] 费用栏目 {section_name}.{list_name} 未返回，已省略')
-                    return None
-                records = section[list_name]
-                if not isinstance(records, list):
-                    print(f'[-] 费用栏目 {section_name}.{list_name} 不是列表')
-                    return None
-                if not all(isinstance(record, dict) for record in records):
-                    print(f'[-] 费用栏目 {section_name}.{list_name} 包含非对象记录')
-                    return None
-                return records
+                    section_issue = {'reason': 'section_missing'}
+                else:
+                    section = fee_sections[section_name]
+                    section_issue = {'section_type': json_type_names[type(section)]}
+                    if not isinstance(section, dict):
+                        section_issue['reason'] = 'section_not_object'
+                    else:
+                        if type(section.get('isShow')) is bool:
+                            section_issue['is_show'] = section['isShow']
+                        # The official 6.2c5a1d02.js renders a section only when
+                        # section && section.isShow. Hidden/null is not evidence
+                        # of an empty fee list; only an explicit empty list proves
+                        # that. Diagnostics never include financial records.
+                        if list_name not in section:
+                            section_issue['reason'] = 'records_missing'
+                        else:
+                            records = section[list_name]
+                            section_issue['records_type'] = json_type_names[type(records)]
+                            if not isinstance(records, list):
+                                section_issue['reason'] = 'records_not_list'
+                            else:
+                                invalid_record_count = sum(not isinstance(record, dict) for record in records)
+                                if not invalid_record_count:
+                                    return records
+                                section_issue.update({
+                                    'reason': 'records_not_objects',
+                                    'record_count': len(records),
+                                    'invalid_record_count': invalid_record_count,
+                                })
+                fee_section_issues[cache_field] = section_issue
+                print(
+                    f'[-] 费用栏目 {section_name}.{list_name} 未确认: '
+                    f'{json.dumps(section_issue, ensure_ascii=False, sort_keys=True)}'
+                )
+                return None
 
             fee_section_specs = (
                 ('payable_fee_records', 'yingjiaofei', 'svYingjfList'),
@@ -523,18 +593,19 @@ class PatentMITMScraper:
             )
             fee_cache_entry = {}
             for cache_field, section_name, list_name in fee_section_specs:
-                records = extract_section_records(section_name, list_name)
+                records = extract_section_records(cache_field, section_name, list_name)
                 if records is not None:
                     fee_cache_entry[cache_field] = records
-
-            if 'payable_fee_records' in fee_cache_entry:
-                fee_cache_entry['fee_snapshot_at'] = (
-                    datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-                )
 
             if not fee_cache_entry:
                 print('[-] 费用信息响应没有可缓存的有效栏目')
                 return
+
+            # Every observed snapshot owns its missing sections as well. An
+            # unversioned partial response must not preserve an older full one.
+            fee_cache_entry['fee_snapshot_at'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+            if fee_section_issues:
+                fee_cache_entry['fee_section_issues'] = fee_section_issues
 
             if not self._cache_verified_detail_fields(flow, str(PATENT_FEE_CACHE_FILE), fee_cache_entry):
                 return
@@ -623,3 +694,7 @@ def request(flow: http.HTTPFlow) -> None:
 def response(flow: http.HTTPFlow) -> None:
     """mitmproxy 的响应拦截钩子。"""
     scraper.response(flow)
+
+
+def error(flow: http.HTTPFlow) -> None:
+    scraper.error(flow)

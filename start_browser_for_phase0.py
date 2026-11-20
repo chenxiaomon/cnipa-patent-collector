@@ -11,7 +11,7 @@ Phase 0 浏览器启动脚本
   python start_mitm_proxy.py
 
   # 终端 2：启动配置好代理的浏览器
-  python start_browser_for_phase0.py
+  USE_MITM_PROXY=true python start_browser_for_phase0.py
 
 使用场景：
   1. 浏览器启动后自动打开 CNIPA 登录页并填写账密
@@ -30,7 +30,7 @@ from desktop_collection_lock import (
     DetailCollectionDesktopBusyError,
     reserve_phase0_browser,
 )
-from settings import MITM_HOST, MITM_PORT, CNIPA_URL
+from settings import MITM_HOST, MITM_PORT, CNIPA_URL, USE_MITM_PROXY
 
 
 def run_phase0_browser_session():
@@ -38,6 +38,12 @@ def run_phase0_browser_session():
     print("\n" + "=" * 70)
     print("🌐 Phase 0 浏览器启动程序")
     print("=" * 70)
+
+    # 浏览器只在 USE_MITM_PROXY 启用时带 --proxy-server；未启用时代理端口检查仍会通过
+    if not USE_MITM_PROXY:
+        print("\n[⚠️ ] 未启用 MITM 代理（USE_MITM_PROXY），浏览器不会经过代理，无法拦截数据")
+        print("请在 Dashboard 点击【Phase 0 浏览器】，或在终端运行：USE_MITM_PROXY=true python start_browser_for_phase0.py")
+        sys.exit(1)
 
     # 检查主 MITM 代理（8083）
     print(f"\n[*] 检查 MITM 代理状态（{MITM_HOST}:{MITM_PORT}）...")

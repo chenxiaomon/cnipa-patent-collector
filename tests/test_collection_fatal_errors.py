@@ -5,7 +5,7 @@ import unittest
 from argparse import Namespace
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, PropertyMock, call, patch
 
 import collect_fees
 import collect_fwxx
@@ -70,8 +70,10 @@ class TestCollectionFatalErrors(unittest.TestCase):
         _load_targets,
         _launch_browser,
     ):
-        with self.assertRaisesRegex(RuntimeError, "browser failed"):
-            collect_fees._run_fee_collection(collection_arguments())
+        with patch.object(collect_fees, 'PatentsDB') as fee_database:
+            fee_database.return_value.get_record.return_value = {'application_no': 'A'}
+            with self.assertRaisesRegex(RuntimeError, "browser failed"):
+                collect_fees._run_fee_collection(collection_arguments())
         self.assertEqual(self.checkpoint_file.read_text(encoding='utf-8'), 'A\n')
 
     def test_fwxx_single_collection_propagates_browser_exit_before_query(self):
@@ -264,6 +266,140 @@ class TestFwxxBatchInterruptions(DetailBatchInterruptionCases, unittest.TestCase
     batch_collection = '_run_fwxx_collection'
     stored_snapshot = True
 
+    def setUp(self):
+        super().setUp()
+        self._patch(collect_fwxx.time, 'sleep')
+        self.failure_streak = self._patch(collect_fwxx, 'CollectionFailureStreak').return_value
+
+    def test_first_failure_then_success_persists_each_application_once(self):
+        first_fields = {'fwxx_list': [{'fawenmc': 'first application'}]}
+        second_fields = {'fwxx_list': [{'fawenmc': 'second application'}]}
+        self.collect_one.side_effect = [collect_fwxx.FwxxCollectionRetryableError('搜索尚未就绪'), first_fields, second_fields]
+
+        collect_fwxx._run_fwxx_collection(collection_arguments())
+
+        self.assertEqual(
+            [attempt.kwargs['application_no'] for attempt in self.collect_one.call_args_list],
+            ['A', 'A', 'B'],
+        )
+        self.assertEqual(self.persist_fields.call_args_list, [call('A', first_fields), call('B', second_fields)])
+        self.failure_streak.record_failure.assert_not_called()
+        self.assertEqual(self.failure_streak.record_success.call_count, 2)
+        self.assertEqual(self.checkpoint_file.read_text(encoding='utf-8'), '')
+        batch = read_collection_batch(list_collection_batches()[0]['id'])
+        self.assertEqual(batch['status'], 'completed')
+        self.assertEqual([item['attempt_count'] for item in batch['items']], [1, 1])
+        self.assertEqual([attempt['status'] for attempt in batch['runs'][-1]['attempts']], ['success', 'success'])
+
+    def test_failed_application_stays_in_resume_list_after_later_success(self):
+        collected_fields = {'captured': True}
+        self.collect_one.side_effect = [
+            collect_fwxx.FwxxCollectionRetryableError('搜索尚未就绪'),
+            collect_fwxx.FwxxCollectionRetryableError('发文缓存超时'),
+            collected_fields,
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, '采集失败 1 条'):
+            collect_fwxx._run_fwxx_collection(collection_arguments())
+
+        self.assertEqual(
+            [attempt.kwargs['application_no'] for attempt in self.collect_one.call_args_list],
+            ['A', 'A', 'B'],
+        )
+        self.persist_fields.assert_called_once_with('B', collected_fields)
+        self.failure_streak.record_failure.assert_called_once_with()
+        self.failure_streak.record_success.assert_called_once_with()
+        self.logger_class.return_value.export_to_excel.assert_called_once()
+        self.assertEqual(self.checkpoint_file.read_text(encoding='utf-8'), 'A\n')
+        batch = read_collection_batch(list_collection_batches()[0]['id'])
+        self.assertEqual(batch['status'], 'failed')
+        self.assertEqual([item['status'] for item in batch['items']], ['failed', 'success'])
+        self.assertEqual([item['attempt_count'] for item in batch['items']], [1, 1])
+        self.assertEqual(batch['items'][0]['reason'], '第 1 次: 搜索尚未就绪；第 2 次: 发文缓存超时')
+        self.assertEqual([attempt['status'] for attempt in batch['runs'][-1]['attempts']], ['failed', 'success'])
+
+    def test_limited_failure_preserves_failed_and_unselected_applications(self):
+        self.checkpoint_file.write_text('202310411762X\n2024110065970\n', encoding='utf-8')
+        arguments = collection_arguments()
+        arguments.input = str(self.checkpoint_file)
+        arguments.force = True
+        arguments.test = 1
+        self.collect_one.side_effect = collect_fwxx.FwxxCollectionRetryableError('发文缓存超时')
+
+        with self.assertRaisesRegex(RuntimeError, '采集失败 1 条'):
+            collect_fwxx._run_fwxx_collection(arguments)
+
+        self.assertEqual(
+            [attempt.kwargs['application_no'] for attempt in self.collect_one.call_args_list],
+            ['202310411762X', '202310411762X'],
+        )
+        self.failure_streak.record_failure.assert_called_once_with()
+        self.failure_streak.record_success.assert_not_called()
+        self.persist_fields.assert_not_called()
+        self.assertEqual(
+            self.checkpoint_file.read_text(encoding='utf-8'),
+            '202310411762X\n2024110065970\n',
+        )
+
+    def test_fatal_error_is_not_retried_or_counted_as_recoverable_failure(self):
+        self.collect_one.side_effect = collect_fwxx.DetailCollectionFatalError('official identity mismatch')
+
+        with self.assertRaisesRegex(collect_fwxx.DetailCollectionFatalError, 'official identity mismatch'):
+            collect_fwxx._run_fwxx_collection(collection_arguments())
+
+        self.collect_one.assert_called_once()
+        self.persist_fields.assert_not_called()
+        self.failure_streak.record_failure.assert_not_called()
+        self.failure_streak.record_success.assert_not_called()
+        self.assertEqual(self.checkpoint_file.read_text(encoding='utf-8'), 'A\nB\n')
+        batch = read_collection_batch(list_collection_batches()[0]['id'])
+        self.assertEqual([item['status'] for item in batch['items']], ['interrupted', 'pending'])
+        self.browser_service.launch_and_login.return_value.quit.assert_called_once()
+
+    def test_failure_streak_counts_exhausted_applications_instead_of_attempts(self):
+        import collection_health
+
+        self._patch(collect_fwxx, 'CollectionFailureStreak', collection_health.CollectionFailureStreak)
+        self._patch(collection_health, 'WATCHDOG_FAILURE_THRESHOLD', 2)
+        record_alert = self._patch(collection_health, 'record_collection_alert')
+        self._patch(collect_fwxx, 'load_target_applications', return_value=['A', 'B', 'C'])
+        self.collect_one.side_effect = collect_fwxx.FwxxCollectionRetryableError('发文缓存超时')
+
+        with self.assertRaisesRegex(collect_fwxx.CollectionFailureStreakExceeded, '连续失败 2 条'):
+            collect_fwxx._run_fwxx_collection(collection_arguments())
+
+        self.assertEqual(
+            [attempt.kwargs['application_no'] for attempt in self.collect_one.call_args_list],
+            ['A', 'A', 'B', 'B'],
+        )
+        self.persist_fields.assert_not_called()
+        record_alert.assert_called_once()
+        self.assertEqual(self.checkpoint_file.read_text(encoding='utf-8'), 'A\nB\nC\n')
+        batch = read_collection_batch(list_collection_batches()[0]['id'])
+        self.assertEqual([item['status'] for item in batch['items']], ['failed', 'failed', 'pending'])
+
+    def test_interruption_during_second_attempt_preserves_current_application(self):
+        collected_fields = {'captured': True}
+        self.collect_one.side_effect = [collected_fields, collect_fwxx.FwxxCollectionRetryableError('发文缓存超时'), KeyboardInterrupt()]
+
+        with self.assertRaises(KeyboardInterrupt):
+            collect_fwxx._run_fwxx_collection(collection_arguments())
+
+        self.assertEqual(
+            [attempt.kwargs['application_no'] for attempt in self.collect_one.call_args_list],
+            ['A', 'B', 'B'],
+        )
+        self.persist_fields.assert_called_once_with('A', collected_fields)
+        self.failure_streak.record_failure.assert_not_called()
+        self.failure_streak.record_success.assert_called_once_with()
+        self.assertEqual(self.checkpoint_file.read_text(encoding='utf-8'), 'B\n')
+        batch = read_collection_batch(list_collection_batches()[0]['id'])
+        self.assertEqual(batch['status'], 'interrupted')
+        self.assertEqual([item['status'] for item in batch['items']], ['success', 'interrupted'])
+        self.assertEqual([item['attempt_count'] for item in batch['items']], [1, 1])
+        self.assertEqual([attempt['status'] for attempt in batch['runs'][-1]['attempts']], ['success', 'interrupted'])
+        self.browser_service.launch_and_login.return_value.quit.assert_called_once()
+
 
 class TestFeeBatchInterruptions(DetailBatchInterruptionCases, unittest.TestCase):
     collector = collect_fees
@@ -277,6 +413,12 @@ class TestFeeBatchInterruptions(DetailBatchInterruptionCases, unittest.TestCase)
         'paid_fee_records': [],
         'fee_receipt_dispatch_records': [],
     }
+
+    def setUp(self):
+        super().setUp()
+        collect_fees.PatentsDB.return_value.get_record.side_effect = lambda application_no: {
+            'application_no': application_no,
+        }
 
 
 if __name__ == "__main__":

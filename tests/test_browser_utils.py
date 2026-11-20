@@ -3,15 +3,18 @@
 
 import plistlib
 import unittest
+import zipfile
 from pathlib import Path
-from subprocess import CompletedProcess
+from subprocess import CalledProcessError, CompletedProcess
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import browser_utils
 from browser_utils import (
     _find_matching_chromedriver,
+    _prepare_macos_arm64_chromedriver,
     _get_chrome_major_version,
+    _get_chromedriver_major_version,
     _get_macos_chrome_major_version,
     _major_version_from_text,
     create_driver_with_retry,
@@ -113,7 +116,9 @@ class TestChromedriverDiscovery(unittest.TestCase):
         with TemporaryDirectory() as cache_dir:
             cached_driver = Path(cache_dir, 'undetected_chromedriver')
             cached_driver.write_bytes(b'')
-            with patch('browser_utils.uc.Patcher.data_path', cache_dir):
+            with patch('browser_utils.uc.Patcher.data_path', cache_dir), patch(
+                'browser_utils.BASE_DIR', cache_dir
+            ):
                 with patch(
                     'browser_utils._get_chromedriver_major_version', return_value=150
                 ):
@@ -122,7 +127,9 @@ class TestChromedriverDiscovery(unittest.TestCase):
     def test_ignores_cached_driver_of_other_major_version(self):
         with TemporaryDirectory() as cache_dir:
             Path(cache_dir, 'undetected_chromedriver').write_bytes(b'')
-            with patch('browser_utils.uc.Patcher.data_path', cache_dir):
+            with patch('browser_utils.uc.Patcher.data_path', cache_dir), patch(
+                'browser_utils.BASE_DIR', cache_dir
+            ):
                 with patch(
                     'browser_utils._get_chromedriver_major_version', return_value=148
                 ):
@@ -133,8 +140,128 @@ class TestChromedriverDiscovery(unittest.TestCase):
             self.assertIsNone(_find_matching_chromedriver(None))
         driver_search.assert_not_called()
 
+    def test_native_cache_precedes_translated_manual_driver(self):
+        with TemporaryDirectory() as cache_dir:
+            native_driver = Path(cache_dir, 'undetected_chromedriver_mac_arm64')
+            native_driver.write_bytes(b'')
+            translated_driver = Path(cache_dir, 'chromedriver-mac-x64', 'chromedriver')
+            translated_driver.parent.mkdir()
+            translated_driver.write_bytes(b'')
+            with patch('browser_utils.uc.Patcher.data_path', cache_dir), patch(
+                'browser_utils.BASE_DIR', cache_dir
+            ), patch('browser_utils.sys.platform', 'darwin'), patch(
+                'browser_utils.platform.machine', return_value='arm64'
+            ), patch('browser_utils._get_chromedriver_major_version', return_value=153):
+                self.assertEqual(_find_matching_chromedriver(153), str(native_driver))
+
+    def test_rejects_driver_that_exits_unsuccessfully(self):
+        with patch('browser_utils.subprocess.run', return_value=CompletedProcess(
+            args=[], returncode=1, stdout='ChromeDriver 153.0.0.0\n'
+        )):
+            self.assertIsNone(_get_chromedriver_major_version('/unusable/chromedriver'))
+
+    def test_rejects_driver_of_unexecutable_architecture(self):
+        with patch('browser_utils.subprocess.run', side_effect=OSError('Bad CPU type')):
+            self.assertIsNone(_get_chromedriver_major_version('/x64/chromedriver'))
+
+
+class TestMacosArm64DriverPreparation(unittest.TestCase):
+    def setUp(self):
+        self.cache_directory = TemporaryDirectory()
+        self.addCleanup(self.cache_directory.cleanup)
+        self.cache_path = Path(self.cache_directory.name)
+        self.archive_path = self.cache_path / 'download.zip'
+        with zipfile.ZipFile(self.archive_path, 'w') as archive:
+            archive.writestr(
+                'chromedriver-mac-arm64/chromedriver',
+                b'{window.cdc_test = window.Array;}\n',
+            )
+        self.cached_driver_path = self.cache_path / 'undetected_chromedriver_mac_arm64'
+        self.cached_driver_path.write_bytes(b'previous working driver')
+        for patched_target, patched_value in (
+            ('browser_utils.uc.Patcher.data_path', str(self.cache_path)),
+            ('browser_utils.uc.Patcher.platform', 'darwin'),
+        ):
+            applied_patch = patch(patched_target, patched_value)
+            applied_patch.start()
+            self.addCleanup(applied_patch.stop)
+        driver_search_patch = patch('browser_utils._find_matching_chromedriver', return_value=None)
+        driver_search_patch.start()
+        self.addCleanup(driver_search_patch.stop)
+
+    def test_downloads_native_archive_and_publishes_patched_driver(self):
+        with patch('browser_utils.uc.Patcher.fetch_release_number', return_value=
+                   browser_utils.uc.patcher.LooseVersion('153.0.8000.1')), patch(
+            'undetected_chromedriver.patcher.urlretrieve',
+            return_value=(str(self.archive_path), None),
+        ) as retrieve_archive, patch(
+            'browser_utils.subprocess.run',
+            return_value=CompletedProcess(args=[], returncode=0, stdout='ChromeDriver 153.0.8000.1'),
+        ) as driver_commands:
+            self.assertEqual(_prepare_macos_arm64_chromedriver(153), str(self.cached_driver_path))
+        self.assertIn('/153.0.8000.1/mac-arm64/chromedriver-mac-arm64.zip',
+                      retrieve_archive.call_args.args[0])
+        self.assertIn(b'undetected chromedriver', self.cached_driver_path.read_bytes())
+        self.assertEqual(driver_commands.call_args_list[0].args[0][:4],
+                         ['codesign', '--force', '--sign', '-'])
+        self.assertEqual(driver_commands.call_args_list[1].args[0][-1], '--version')
+        self.assertEqual(list(self.cache_path.iterdir()), [self.cached_driver_path])
+
+    def test_invalid_download_preserves_previous_cache(self):
+        with patch('browser_utils.uc.Patcher.fetch_release_number', return_value=
+                   browser_utils.uc.patcher.LooseVersion('153.0.8000.1')), patch(
+            'undetected_chromedriver.patcher.urlretrieve',
+            return_value=(str(self.archive_path), None),
+        ), patch('browser_utils.subprocess.run', side_effect=[
+            CompletedProcess(args=[], returncode=0), OSError('Bad CPU type'),
+        ]):
+            with self.assertRaisesRegex(RuntimeError, '无法执行'):
+                _prepare_macos_arm64_chromedriver(153)
+        self.assertEqual(self.cached_driver_path.read_bytes(), b'previous working driver')
+        self.assertEqual(list(self.cache_path.iterdir()), [self.cached_driver_path])
+
+    def test_signature_failure_preserves_previous_cache(self):
+        with patch('browser_utils.uc.Patcher.fetch_release_number', return_value=
+                   browser_utils.uc.patcher.LooseVersion('153.0.8000.1')), patch(
+            'undetected_chromedriver.patcher.urlretrieve',
+            return_value=(str(self.archive_path), None),
+        ), patch('browser_utils.subprocess.run', side_effect=CalledProcessError(1, ['codesign'])):
+            with self.assertRaises(CalledProcessError):
+                _prepare_macos_arm64_chromedriver(153)
+        self.assertEqual(self.cached_driver_path.read_bytes(), b'previous working driver')
+        self.assertEqual(list(self.cache_path.iterdir()), [self.cached_driver_path])
+
+    def test_prepares_manual_driver_without_modifying_original(self):
+        manual_driver_path = self.cache_path / 'manual-chromedriver'
+        original_bytes = b'{window.cdc_test = window.Array;}\n'
+        manual_driver_path.write_bytes(original_bytes)
+        with patch('browser_utils._find_matching_chromedriver', return_value=str(manual_driver_path)), patch(
+            'browser_utils.uc.Patcher.fetch_package'
+        ) as retrieve_archive, patch('browser_utils.subprocess.run', return_value=CompletedProcess(
+            args=[], returncode=0, stdout='ChromeDriver 153.0.8000.1',
+        )):
+            self.assertEqual(_prepare_macos_arm64_chromedriver(153), str(self.cached_driver_path))
+        retrieve_archive.assert_not_called()
+        self.assertEqual(manual_driver_path.read_bytes(), original_bytes)
+        self.assertIn(b'undetected chromedriver', self.cached_driver_path.read_bytes())
+
+    def test_reuses_patched_matching_driver_without_network_or_signing(self):
+        self.cached_driver_path.write_bytes(b'undetected chromedriver')
+        with patch('browser_utils._find_matching_chromedriver',
+                   return_value=str(self.cached_driver_path)), patch(
+            'browser_utils.uc.Patcher.fetch_package'
+        ) as retrieve_archive, patch('browser_utils.subprocess.run') as driver_commands:
+            self.assertEqual(_prepare_macos_arm64_chromedriver(153), str(self.cached_driver_path))
+        retrieve_archive.assert_not_called()
+        driver_commands.assert_not_called()
+
 
 class TestDriverCreation(unittest.TestCase):
+    def setUp(self):
+        platform_patch = patch('browser_utils.sys.platform', 'linux')
+        platform_patch.start()
+        self.addCleanup(platform_patch.stop)
+
     def test_refuses_to_launch_when_mitm_proxy_is_down(self):
         with patch('browser_utils.check_mitm_proxy', return_value=False):
             with patch('browser_utils.uc.Chrome') as chrome:
@@ -186,6 +313,20 @@ class TestDriverCreation(unittest.TestCase):
         self.assertIn('150', message)
         self.assertIn(browser_utils._manual_chromedriver_dir_name(), message)
         self.assertIn('boom', message)
+
+    def test_apple_silicon_downloads_native_driver_before_browser_launch(self):
+        with patch('browser_utils.sys.platform', 'darwin'), patch(
+            'browser_utils.platform.machine', return_value='arm64'
+        ), patch('browser_utils._get_chrome_major_version', return_value=153), patch(
+            'browser_utils._find_matching_chromedriver', return_value=None
+        ), patch('browser_utils._prepare_macos_arm64_chromedriver',
+                 return_value='/native/chromedriver') as native_download, patch(
+            'browser_utils.uc.Chrome'
+        ) as chrome:
+            create_driver_with_retry(use_mitm=False)
+        native_download.assert_called_once_with(153)
+        self.assertEqual(chrome.call_args.kwargs['driver_executable_path'], '/native/chromedriver')
+        self.assertNotIn('version_main', chrome.call_args.kwargs)
 
 
 if __name__ == '__main__':

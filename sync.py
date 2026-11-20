@@ -19,6 +19,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from settings import BASE_DIR, DETECTION_LOG_JSONL_FILE, PATENTS_DB_FILE
 from db_manager import PatentsDB
+from detection_log_backup import read_backup_lines
 from machine_identity import (
     MachineRoleConfigurationError,
     require_database_rebuild_authorization,
@@ -71,8 +72,7 @@ def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
 
 def record_count() -> int:
     try:
-        with open(LOG_FILE, 'r', encoding='utf-8') as f:
-            return sum(1 for line in f if line.strip())
+        return sum(1 for line in read_backup_lines(DETECTION_LOG_JSONL_FILE) if line.strip())
     except Exception:
         return 0
 

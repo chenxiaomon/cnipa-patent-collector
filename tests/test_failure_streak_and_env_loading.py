@@ -7,7 +7,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import collect_fees
 import collection_health
 import settings
 from collection_health import CollectionFailureStreak, CollectionFailureStreakExceeded
@@ -17,12 +16,12 @@ class TestCollectionFailureStreak(unittest.TestCase):
     @patch.object(collection_health, 'WATCHDOG_FAILURE_THRESHOLD', 3)
     @patch.object(collection_health, 'record_collection_alert')
     def test_reaching_threshold_records_alert_and_raises(self, record_alert):
-        streak = CollectionFailureStreak('费用信息采集')
+        streak = CollectionFailureStreak('主采集')
         streak.record_failure()
         streak.record_failure()
         with self.assertRaises(CollectionFailureStreakExceeded) as raised:
             streak.record_failure()
-        self.assertIn('费用信息采集', str(raised.exception))
+        self.assertIn('主采集', str(raised.exception))
         self.assertIn('连续失败 3 条', str(raised.exception))
         record_alert.assert_called_once()
         self.assertEqual(record_alert.call_args.args[0], 'consecutive_failures')
@@ -44,17 +43,6 @@ class TestCollectionFailureStreak(unittest.TestCase):
         streak.record_failure()
         streak.record_failure()
         self.assertEqual(streak.count, 2)
-
-
-class TestFeeCollectionStopsOnStreak(unittest.TestCase):
-    @patch.object(collect_fees, 'USE_MITM_PROXY', True)
-    @patch(
-        'collect_fees.run_fee_collection',
-        side_effect=CollectionFailureStreakExceeded('费用信息采集 连续失败 20 条，已停止。'),
-    )
-    def test_cli_exits_with_code_3(self, _run_collection):
-        exit_code = collect_fees.main([])
-        self.assertEqual(exit_code, 3)
 
 
 class TestEnvFileLoading(unittest.TestCase):

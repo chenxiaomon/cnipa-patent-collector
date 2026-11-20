@@ -112,7 +112,9 @@ class TestCollectionCoordinatePreflight(unittest.TestCase):
                         patch.object(collector, 'CoordinateService') as coordinates,
                         patch.object(collector, 'BrowserService') as browser,
                         patch.object(collector, 'InputService') as input_service,
+                        patch.object(collect_fees, 'PatentsDB') as fee_database,
                     ):
+                        fee_database.return_value.get_record.return_value = {'application_no': 'A'}
                         coordinates.load_search_coordinates.return_value = (1, 2, 3, 4)
                         coordinates.load_fwxx_coordinates.return_value = (5, 6, 7, 8)
                         coordinates.load_detail_link_coordinates.return_value = (5, 6)

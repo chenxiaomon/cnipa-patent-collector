@@ -18,7 +18,7 @@ import desktop_collection_lock
 class TestFeeCoordinateFlow(unittest.TestCase):
     @patch("collect_fees.time.sleep")
     @patch("collect_fees.pyautogui.hotkey")
-    @patch("collect_fees.poll_cache_for_key")
+    @patch("collect_fees.wait_for_fee_snapshot")
     @patch("collect_fees.clear_cache_key")
     @patch("collect_fees.InputService")
     @patch("collect_fees.CoordinateService")
@@ -56,7 +56,7 @@ class TestFeeCoordinateFlow(unittest.TestCase):
             "application_no": "A", "attempt_id": "attempt-current",
         }), patch("collect_fees.wait_for_detail_identity"), patch(
             "collect_fees.clear_matching_detail_attempt"
-        ):
+        ), patch("collect_fees.wait_for_detail_search_target"):
             collect_fees.collect_one_fee(
                 driver,
                 "A",

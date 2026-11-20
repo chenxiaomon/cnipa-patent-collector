@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import sync
 from db_manager import PatentsDB
+from detection_log_backup import write_backup_lines
 
 
 class TestSyncInitialization(unittest.TestCase):
@@ -19,7 +20,7 @@ class TestSyncInitialization(unittest.TestCase):
         self.upstream = self.root / 'upstream'
         self.replica = self.root / 'replica with spaces'
         self.upstream.mkdir()
-        self.backup_relative_path = Path('data/results/detection_log.jsonl')
+        self.backup_relative_path = Path('data/results/detection_log.jsonl.gz')
         self.upstream_backup = self.upstream / self.backup_relative_path
         self.upstream_backup.parent.mkdir(parents=True)
         self.git(self.upstream, 'init')
@@ -40,9 +41,9 @@ class TestSyncInitialization(unittest.TestCase):
         )
 
     def write_upstream_snapshot(self, title):
-        self.upstream_backup.write_text(
-            json.dumps({'application_no': 'CN202310000001', 'zhuanlimc': title}) + '\n',
-            encoding='utf-8',
+        write_backup_lines(
+            self.upstream_backup,
+            [json.dumps({'application_no': 'CN202310000001', 'zhuanlimc': title})],
         )
         self.git(self.upstream, 'add', '--', self.backup_relative_path.as_posix())
         self.git(self.upstream, 'commit', '-m', title)
@@ -67,9 +68,9 @@ class TestSyncInitialization(unittest.TestCase):
         self.assertEqual(records[0]['zhuanlimc'], 'updated')
 
     def test_diverged_backup_is_preserved_without_creating_database(self):
-        self.replica_backup.write_text(
-            json.dumps({'application_no': 'CN202310000001', 'zhuanlimc': 'local'}) + '\n',
-            encoding='utf-8',
+        write_backup_lines(
+            self.replica_backup,
+            [json.dumps({'application_no': 'CN202310000001', 'zhuanlimc': 'local'})],
         )
         self.git(self.replica, 'add', '--', self.backup_relative_path.as_posix())
         self.git(self.replica, 'commit', '-m', 'local')
@@ -113,20 +114,34 @@ class TestBackupImportValidation(unittest.TestCase):
                 database = PatentsDB(root / 'patents.db')
                 database.upsert({'application_no': 'CN202310000002', 'zhuanlimc': 'existing'})
                 previous_records = database.get_all_records()
-                backup = root / 'backup.jsonl'
-                backup.write_text(json.dumps(first_record) + '\n' + invalid_line + '\n', encoding='utf-8')
+                backup = root / 'backup.jsonl.gz'
+                write_backup_lines(backup, [json.dumps(first_record), invalid_line])
 
                 with self.assertRaisesRegex(ValueError, '2'):
                     database.import_from_jsonl(backup)
 
                 self.assertEqual(database.get_all_records(), previous_records)
 
+    def test_plain_text_backup_is_rejected_without_import(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            database = PatentsDB(root / 'patents.db')
+            database.upsert({'application_no': 'CN202310000002', 'zhuanlimc': 'existing'})
+            previous_records = database.get_all_records()
+            backup = root / 'detection_log.jsonl'
+            backup.write_text('{"application_no": "CN202310000001"}\n', encoding='utf-8')
+
+            with self.assertRaisesRegex(ValueError, 'gzip'):
+                database.import_from_jsonl(backup)
+
+            self.assertEqual(database.get_all_records(), previous_records)
+
     def test_valid_backup_accepts_blank_lines(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             database = PatentsDB(root / 'patents.db')
-            backup = root / 'backup.jsonl'
-            backup.write_text('\n{"application_no": "CN202310000001"}\n\n', encoding='utf-8')
+            backup = root / 'backup.jsonl.gz'
+            write_backup_lines(backup, ['', '{"application_no": "CN202310000001"}', ''])
 
             self.assertEqual(database.import_from_jsonl(backup), 1)
             self.assertEqual(database.count(), 1)
@@ -135,12 +150,12 @@ class TestBackupImportValidation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             database = PatentsDB(root / 'patents.db')
-            backup = root / 'backup.jsonl'
+            backup = root / 'backup.jsonl.gz'
             records = [
                 {'application_no': 'CN202310000001', 'status_code': -1},
                 {'application_no': 'CN202310000001', 'status_code': 200, 'zhuanlimc': 'collected'},
             ]
-            backup.write_text(''.join(json.dumps(record) + '\n' for record in records), encoding='utf-8')
+            write_backup_lines(backup, [json.dumps(record) for record in records])
 
             self.assertEqual(database.import_from_jsonl(backup), 2)
             self.assertEqual(database.count(), 1)

@@ -53,9 +53,9 @@ def heartbeat_age_seconds(heartbeat: dict | None) -> float | None:
 
 
 def terminate_process_tree(process: subprocess.Popen) -> None:
-    if process.poll() is not None:
-        return
     if sys.platform == 'win32':
+        if process.poll() is not None:
+            return
         subprocess.run(
             ['taskkill', '/PID', str(process.pid), '/T', '/F'],
             check=False,
@@ -66,19 +66,88 @@ def terminate_process_tree(process: subprocess.Popen) -> None:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=8)
-    else:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        try:
-            process.wait(timeout=8)
-        except subprocess.TimeoutExpired:
+        return
+
+    def read_process_ancestry() -> dict[int, tuple[int, int, str]]:
+        # Only ownership columns are needed; never inspect commands or credentials.
+        listing = subprocess.run(
+            ['ps', '-axo', 'pid=,ppid=,pgid=,stat='],
+            check=True, capture_output=True, text=True, timeout=2,
+        )
+        ancestry = {}
+        for row in listing.stdout.splitlines():
+            pid_text, parent_text, group_text, state = row.split()
+            ancestry[int(pid_text)] = (int(parent_text), int(group_text), state)
+        return ancestry
+
+    # Callers create a separate session for each owned task. Take the ancestry
+    # snapshot before poll()/wait() can reap the root and lose its descendants.
+    # An already reaped root cannot authorize signalling a recycled PID/group.
+    if process.returncode is not None:
+        return
+    ancestry = read_process_ancestry()
+    root = ancestry.get(process.pid)
+    if root is None:
+        process.poll()
+        return
+    if root[0] != os.getpid() or root[1] != process.pid:
+        raise RuntimeError('拒绝停止未经独立进程组隔离的任务')
+
+    descendants = {process.pid}
+    pending_parents = [process.pid]
+    children_by_parent: dict[int, list[int]] = {}
+    for pid, (parent_pid, _, _) in ancestry.items():
+        children_by_parent.setdefault(parent_pid, []).append(pid)
+    while pending_parents:
+        for child_pid in children_by_parent.get(pending_parents.pop(), []):
+            if child_pid not in descendants:
+                descendants.add(child_pid)
+                pending_parents.append(child_pid)
+    owned_groups = {
+        ancestry[pid][1] for pid in descendants
+        if ancestry[pid][1] in descendants
+    }
+
+    def signal_groups(group_ids: set[int], signum: int) -> None:
+        for group_id in group_ids:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
+                os.killpg(group_id, signum)
             except ProcessLookupError:
                 pass
-            process.wait(timeout=8)
+
+    def remaining_groups(group_ids: set[int]) -> set[int]:
+        # A zombie holds no open pipes and cannot handle signals; its reaper,
+        # not this shutdown operation, owns removing its process-table entry.
+        return group_ids & {
+            group_id for _, group_id, state in read_process_ancestry().values()
+            if not state.startswith('Z')
+        }
+
+    # Give the watchdog its ordinary TERM path first. Signalling its separate
+    # collector simultaneously could interrupt the collector's finally twice.
+    signal_groups({process.pid}, signal.SIGTERM)
+    signalled_groups = {process.pid}
+    deadline = time.monotonic() + 8
+    while owned_groups:
+        if process.poll() is not None:
+            signal_groups(owned_groups - signalled_groups, signal.SIGTERM)
+            signalled_groups.update(owned_groups)
+        owned_groups = remaining_groups(owned_groups)
+        if not owned_groups or time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+
+    if owned_groups:
+        signal_groups(owned_groups, signal.SIGKILL)
+        kill_deadline = time.monotonic() + 8
+        while owned_groups:
+            owned_groups = remaining_groups(owned_groups)
+            if not owned_groups:
+                break
+            if time.monotonic() >= kill_deadline:
+                raise subprocess.TimeoutExpired(process.args, 8)
+            time.sleep(0.05)
+    process.wait(timeout=8)
 
 
 def collection_command(batch_id: str) -> list[str]:
@@ -102,9 +171,9 @@ def start_collection_process(batch_id: str) -> subprocess.Popen:
 
 
 def supervision_failure(process: subprocess.Popen) -> tuple[str, str] | None:
-    login_alert = read_alert_status()
-    if login_alert.get('reason') == 'login_required':
-        return 'login_required', login_alert['details']
+    collection_alert = read_alert_status()
+    if collection_alert.get('reason') in {'login_required', 'coordinate_calibration_required'}:
+        return collection_alert['reason'], collection_alert['details']
     free_gb = shutil.disk_usage(BASE_DIR).free / (1024 ** 3)
     if free_gb < WATCHDOG_MIN_FREE_GB:
         return 'disk_space_low', f'磁盘剩余 {free_gb:.2f} GB，阈值 {WATCHDOG_MIN_FREE_GB:.2f} GB'
@@ -143,10 +212,12 @@ def run_supervised_collection() -> int:
 
 def _supervise_collection_batch(batch_id: str) -> int:
     restart_count = 0
+    # Supervision starts right after CollectionBatch.prepare, so no target has succeeded yet.
+    succeeded_before_run = 0
     while not _stop_requested:
         write_collection_start_heartbeat(0)
         process = start_collection_process(batch_id)
-        print(f'[watchdog] 采集进程已启动，PID={process.pid}，重启次数={restart_count}')
+        print(f'[watchdog] 采集进程已启动，PID={process.pid}，连续失败轮次={restart_count}')
         failure: tuple[str, str] | None = None
         while not _stop_requested:
             failure = supervision_failure(process)
@@ -167,7 +238,7 @@ def _supervise_collection_batch(batch_id: str) -> int:
             return 0
         assert failure is not None
         reason, details = failure
-        if reason == 'login_required':
+        if reason in {'login_required', 'coordinate_calibration_required'}:
             record_collection_alert(reason, details, restart_count)
             print(f'[watchdog] {details}；等待人工处理，不自动重启。')
             return 1
@@ -176,13 +247,17 @@ def _supervise_collection_batch(batch_id: str) -> int:
             record_collection_alert('batch_finalization_failed', details, restart_count)
             print(f'[watchdog] 申请号已采集完成，但收尾失败: {details}；已停止。')
             return 1
+        if batch['succeeded'] > succeeded_before_run:
+            # New successes end the streak: the limit applies to consecutive runs, not the whole batch.
+            restart_count = 0
+        succeeded_before_run = batch['succeeded']
         restart_count += 1
         record_collection_alert(reason, details, restart_count)
-        print(f'[watchdog] {details}，准备第 {restart_count} 次重启。')
+        print(f'[watchdog] {details}，连续失败 {restart_count} 轮，准备重启。')
         if restart_count >= WATCHDOG_MAX_RESTARTS:
             record_collection_alert(
                 'restart_limit_reached',
-                f'连续重启失败 {restart_count} 次，已彻底停止。最后原因: {details}',
+                f'连续 {restart_count} 轮采集失败，已彻底停止。最后原因: {details}',
                 restart_count,
             )
             return 1

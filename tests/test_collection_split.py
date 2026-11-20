@@ -64,7 +64,7 @@ class TestFwxxCollectionBoundaries(unittest.TestCase):
             "application_no": "A", "attempt_id": "attempt-current",
         }), patch("collect_fwxx.wait_for_detail_identity"), patch(
             "collect_fwxx.clear_matching_detail_attempt"
-        ):
+        ), patch("collect_fwxx.wait_for_detail_search_target"):
             collected = collect_fwxx.collect_one_fwxx(
                 driver,
                 "A",
@@ -84,6 +84,7 @@ class TestFwxxCollectionBoundaries(unittest.TestCase):
             collect_fwxx.PATENT_FWXX_CACHE_FILE,
             "A",
             max_wait=collect_fwxx.FWXX_CACHE_POLL_TIMEOUT,
+            on_poll=collect_fwxx.raise_if_cnipa_login_required,
             validate=ANY,
         )
         self.assertTrue(poll_cache.call_args.kwargs["validate"](poll_cache.return_value))
@@ -110,20 +111,20 @@ class TestFwxxCollectionBoundaries(unittest.TestCase):
         driver = MagicMock()
         driver.window_handles = ["search"]
 
-        collected = collect_fwxx.collect_one_fwxx(
-            driver,
-            "A",
-            input_x=1,
-            input_y=2,
-            button_x=3,
-            button_y=4,
-            link_x=5,
-            link_y=6,
-            fwxx_menu_x=7,
-            fwxx_menu_y=8,
-        )
+        with self.assertRaisesRegex(collect_fwxx.FwxxCollectionRetryableError, '无法清理旧发文缓存'):
+            collect_fwxx.collect_one_fwxx(
+                driver,
+                "A",
+                input_x=1,
+                input_y=2,
+                button_x=3,
+                button_y=4,
+                link_x=5,
+                link_y=6,
+                fwxx_menu_x=7,
+                fwxx_menu_y=8,
+            )
 
-        self.assertIsNone(collected)
         input_service.type_in_search.assert_not_called()
         input_service.move_and_click.assert_not_called()
         poll_cache.assert_not_called()

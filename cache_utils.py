@@ -147,6 +147,7 @@ def poll_cache_for_key(
     max_wait: float = 8.0,
     interval: float = 0.5,
     validate: Callable[[Any], bool] = None,
+    on_poll: Callable[[], None] = None,
 ) -> Optional[Any]:
     """
     轮询缓存文件，直到找到指定 key 且通过校验函数
@@ -157,6 +158,7 @@ def poll_cache_for_key(
         max_wait: 最长等待秒数
         interval: 轮询间隔秒数
         validate: 可选校验函数，返回 True 表示数据有效；为 None 时只要 key 存在即返回
+        on_poll: 每轮读取前检查调用方的等待条件；异常立即向上传播
 
     Returns:
         找到的数据；超时返回 None
@@ -165,6 +167,8 @@ def poll_cache_for_key(
     previous_revision = None
     value = None
     while time.monotonic() < deadline:
+        if on_poll is not None:
+            on_poll()
         try:
             snapshot_stat = os.stat(cache_file)
         except FileNotFoundError:
@@ -180,6 +184,8 @@ def poll_cache_for_key(
             if validate is None or validate(value):
                 return value
         time.sleep(interval)
+    if on_poll is not None:
+        on_poll()
     return None
 
 
@@ -191,6 +197,7 @@ def poll_cache_with_retry(
     max_attempts: int = 3,
     validate: Callable[[Any], bool] = None,
     on_retry: Callable[[int], None] = None,
+    on_poll: Callable[[], None] = None,
 ) -> Tuple[Optional[Any], int]:
     """
     带指数退避重试的缓存轮询。
@@ -206,6 +213,7 @@ def poll_cache_with_retry(
         max_attempts:  最大尝试次数（含首次）
         validate:      可选校验函数
         on_retry:      单次超时后、进入下一轮等待前调用；参数为已超时的尝试序号
+        on_poll:       每轮读取前的调用方检查，异常中止等待且不再重试
 
     Returns:
         (数据 或 None, 实际尝试次数)
@@ -213,7 +221,7 @@ def poll_cache_with_retry(
     for attempt in range(1, max_attempts + 1):
         wait = base_wait * (2 ** (attempt - 1))
         result = poll_cache_for_key(cache_file, key, max_wait=wait,
-                                    interval=interval, validate=validate)
+                                    interval=interval, validate=validate, on_poll=on_poll)
         if result is not None:
             return result, attempt
         if attempt < max_attempts:

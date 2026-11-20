@@ -11,6 +11,11 @@ data/master_sync.lock
 data/collection_heartbeat.json
 data/alert_status.json
 data/watchdog_events.jsonl
+data/cnipa_session.json
+data/cnipa_session_failure.json
+data/results/cnipa_api_events.jsonl*
+data/job_logs/
+data/dashboard_service.log*
 data/alert_forward_state.json
 data/api_token.txt
 backups/
@@ -31,6 +36,8 @@ data/phase0_browser.lock
 data/public_browser.lock
 data/public_pagination.lock
 data/patent_detail_identity_cache.json
+data/patent_detail_search_cache.json
+data/**/*.lock
 data/fwxx_list.txt
 data/manual_fwxx_lists/
 data/checkpoint_resume.txt*
@@ -47,10 +54,12 @@ data/raw_searches/
 data/force_update.flag
 data/login_ready.flag
 
-# SQLite 数据库（主存储，二进制，不入库；用 detection_log.jsonl 作为 git 可追踪备份）
+# SQLite 数据库（主存储，二进制，不入库；用 detection_log.jsonl.gz 作为 git 可追踪备份）
 data/patents.db
 data/patents.db-wal
 data/patents.db-shm
+# 旧的纯文本备份已改为 .jsonl.gz；纯文本逼近 GitHub 100MB 单文件上限，不再提交
+data/results/detection_log.jsonl
 
 # 配置备份（临时产物，不入库）
 data/config_backup_*.json
@@ -59,6 +68,8 @@ data/config_backup_*.json
 data/results/*.xlsx
 data/results/agency_verification_report.csv
 data/results/agency_verification_report.json
+# JSON 导出（Dashboard「JSON ↓」，可从 patents.db 重新生成）；全量超过 GitHub 100MB 单文件上限
+data/results/detection_log.json
 
 # ── 浏览器驱动（二进制，不入库）──────────────────────────
 chromedriver-win64/
@@ -92,3 +103,6 @@ data/results/*_backup_*.jsonl
 data/results/*_backup_*.db*
 data/results/dashboard_*.log
 data/results/public_search_results.json
+
+# 本机运行诊断报告（含真实批次和业务记录）
+docs/runtime-log-review-*.md

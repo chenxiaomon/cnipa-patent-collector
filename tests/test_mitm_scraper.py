@@ -754,10 +754,15 @@ class TestProcessFeeInformation(unittest.TestCase):
         self.scraper._process_fee_response(flow)
 
         cache_entry = mock_write.call_args[0][1]['2026102909420']
-        self.assertEqual(cache_entry, {
-            'paid_fee_records': [],
-            'detail_attempt_id': 'attempt-current',
-        })
+        self.assertEqual(cache_entry['paid_fee_records'], [])
+        self.assertEqual(cache_entry['detail_attempt_id'], 'attempt-current')
+        self.assertNotIn('payable_fee_records', cache_entry)
+        self.assertNotIn('late_fee_schedule_records', cache_entry)
+        self.assertNotIn('fee_receipt_dispatch_records', cache_entry)
+        self.assertIn('fee_snapshot_at', cache_entry)
+        self.assertEqual(cache_entry['fee_section_issues']['payable_fee_records']['reason'], 'records_not_objects')
+        self.assertEqual(cache_entry['fee_section_issues']['late_fee_schedule_records']['reason'], 'records_missing')
+        self.assertEqual(cache_entry['fee_section_issues']['fee_receipt_dispatch_records']['section_type'], 'null')
 
     @patch('patent_mitm_scraper.write_json_cache')
     @patch('patent_mitm_scraper.read_json_cache')

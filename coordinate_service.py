@@ -146,6 +146,10 @@ def _coordinate_metadata() -> dict:
 
 
 def _show_calibration_prompt(message: str) -> None:
+    if sys.platform == "darwin":
+        from macos_coordinate_capture import show_calibration_prompt
+        show_calibration_prompt(message)
+        return
     if sys.platform != "win32":
         raise CoordinateConfigurationError("当前平台不支持点击式坐标校准")
     user32 = ctypes.windll.user32
@@ -217,6 +221,12 @@ def _capture_next_left_click_coordinate(
     window_handle: int,
 ) -> tuple[int, int]:
     """Capture a deliberate target click in the prepared CNIPA window."""
+    if sys.platform == "darwin":
+        from macos_coordinate_capture import capture_target_click
+        return capture_target_click(
+            coordinate_label, window_handle, _configured_window_geometry(),
+            _CNIPA_WINDOW_TITLE_MARKER,
+        )
     _show_calibration_prompt(f"点击确定后，请在 60 秒内单击【{coordinate_label}】。")
     user32 = ctypes.windll.user32
     user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
@@ -279,6 +289,11 @@ def _wait_for_operator_selected_cnipa_chrome_window(user32) -> int:
 
 def position_foreground_window_for_coordinate_calibration() -> int:
     """Position only the CNIPA Chrome window selected by the operator."""
+    if sys.platform == "darwin":
+        from macos_coordinate_capture import select_calibration_window
+        return select_calibration_window(
+            _configured_window_geometry(), _CNIPA_WINDOW_TITLE_MARKER,
+        )
     if sys.platform != "win32":
         raise CoordinateConfigurationError("当前平台不支持人工前台窗口校准")
 

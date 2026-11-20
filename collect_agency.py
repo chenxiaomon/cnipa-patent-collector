@@ -161,7 +161,7 @@ def _page_confirms_application_no(page_source: str, application_no: str) -> bool
 def _close_detail_page(driver, detail_handle: str, search_handle: str) -> None:
     if detail_handle in driver.window_handles:
         driver.switch_to.window(detail_handle)
-        pyautogui.hotkey("ctrl", "w")
+        driver.close()
         time.sleep(FWXX_DETAIL_CLOSE_WAIT)
 
     remaining_handles = list(driver.window_handles)

@@ -45,11 +45,13 @@ from browser_utils import (
     raise_system_exit_on_sigterm,
 )
 from cache_utils import clear_cache_key, normalize_app_no, parse_app_no_list, poll_cache_with_retry
-from coordinate_service import CoordinateService
+from coordinate_service import CoordinateConfigurationError, CoordinateService
 from browser_service import BrowserService, stop_virtual_display
+from cnipa_session import CNIPALoginRequired, raise_if_cnipa_login_required
 from collection_health import (
     CollectionFailureStreak,
     CollectionFailureStreakExceeded,
+    record_collection_alert,
     write_collection_progress_heartbeat,
     write_collection_start_heartbeat,
     write_collection_stopped_heartbeat,
@@ -131,6 +133,7 @@ def search_application(
 
     try:
         # 检测浏览器是否还活着
+        raise_if_cnipa_login_required()
         if not is_browser_alive(driver):
             print(f"    [!] 浏览器已关闭，无法采集")
             return None
@@ -164,6 +167,7 @@ def search_application(
             max_attempts=3,
             validate=_is_patent_data_complete,
             on_retry=retry_search,
+            on_poll=raise_if_cnipa_login_required,
         )
 
         if patent_data:
@@ -204,6 +208,8 @@ def search_application(
         record.response_time_ms = round((time.time() - start_time) * 1000, 2)
         print(f"  ✓ 状态: {record.status_code}, 耗时: {record.response_time_ms}ms")
 
+    except CNIPALoginRequired:
+        raise
     except Exception as e:
         record = DetectionRecord(
             application_no=normalize_app_no(application_no),
@@ -456,6 +462,14 @@ if __name__ == '__main__':
             resume_automation(args.resume_batch, test_count=args.test)
         else:
             run_automation(test_count=args.test, update_list=args.update_list)
+    except CoordinateConfigurationError as error:
+        # Report only after the batch and desktop leases have been released.
+        record_collection_alert('coordinate_calibration_required', str(error), 0)
+        print(f"\n[!] {error}")
+        sys.exit(2)
+    except CNIPALoginRequired as error:
+        print(f"\n[!] {error}")
+        sys.exit(1)
     except (DetailCollectionDesktopBusyError, CollectionBatchBusyError, ValueError) as error:
         print(f"\n[!] {error}")
         sys.exit(2)

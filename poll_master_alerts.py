@@ -47,7 +47,7 @@ def send_serverchan_alert(alert_status: dict) -> None:
         f"时间: {alert_status.get('timestamp')}\n\n"
         f"原因: {alert_status.get('reason')}\n\n"
         f"详情: {alert_status.get('details')}\n\n"
-        f"重启次数: {alert_status.get('restart_count', 0)}"
+        f"连续失败轮次: {alert_status.get('restart_count', 0)}"
     )
     body = urllib.parse.urlencode({'title': title, 'desp': description}).encode('utf-8')
     request = urllib.request.Request(

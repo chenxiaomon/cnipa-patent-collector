@@ -71,14 +71,22 @@ from atomic_write import write_json_atomic
 from detection_logger import DetectionLogger
 from detail_attempt import (
     DetailCollectionFatalError,
+    DetailIdentityTimeout,
     begin_detail_attempt,
     clear_matching_detail_attempt,
     matches_detail_attempt,
     wait_for_detail_identity,
 )
+from detail_search import (
+    DetailSearchRetryableError,
+    wait_for_detail_search_target,
+    wait_for_unique_detail_window,
+    restore_detail_search_page,
+)
 from browser_utils import is_browser_alive, raise_system_exit_on_sigterm
 from collection_health import CollectionFailureStreak, CollectionFailureStreakExceeded
 from collection_checkpoint import CollectionBatch, CollectionBatchBusyError
+from cnipa_session import CNIPALoginRequired, raise_if_cnipa_login_required
 from coordinate_service import CoordinateService
 from browser_service import BrowserService
 from input_service import InputService
@@ -253,6 +261,10 @@ def _load_standalone_collected() -> set:
 # Part 4: 单个申请号采集流程
 # ============================================================================
 
+class FwxxCollectionRetryableError(RuntimeError):
+    """本件尚未完成且页面可安全恢复，批次可重新搜索一次。"""
+
+
 def collect_one_fwxx(
     driver,
     application_no: str,
@@ -284,13 +296,16 @@ def collect_one_fwxx(
         fwxx_menu_x, fwxx_menu_y: 发文信息菜单坐标
 
     Returns:
-        本次成功采集到的字段，或 None
+        本次成功采集到的字段；未完成时抛出可重试错误，页面无法安全恢复时抛出致命错误。
     """
     collected_fields = {}
     detail_attempt = None
     detail_handle = None
     search_handle = None
+    detail_click_started = False
+    collection_timeline = [('准备与缓存清理', time.perf_counter())]
     try:
+        raise_if_cnipa_login_required()
         # 检测浏览器是否还活着
         if not is_browser_alive(driver):
             raise DetailCollectionFatalError('浏览器已关闭，本条未采集，发文批次已中断')
@@ -307,8 +322,7 @@ def collect_one_fwxx(
         try:
             clear_cache_key(PATENT_FWXX_CACHE_FILE, application_no)
         except Exception as error:
-            print(f"    [!] 无法清理旧发文缓存，已停止本件采集: {error}")
-            return None
+            raise FwxxCollectionRetryableError(f'无法清理旧发文缓存: {error}') from error
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 步骤 1：搜索申请号（复用 PyAutoGUI 防爬虫逻辑）
@@ -318,6 +332,8 @@ def collect_one_fwxx(
 
         # 输入申请号并点击查询（保持原始防爬虫延迟）
         print(f"    [*] 点击查询按钮...")
+        collection_timeline.append(('输入与提交查询', time.perf_counter()))
+        detail_attempt = begin_detail_attempt(application_no)
         InputService.type_in_search(
             input_x, input_y, button_x, button_y, application_no,
             delay_range=(FWXX_INPUT_DELAY_MIN, FWXX_INPUT_DELAY_MAX),
@@ -325,16 +341,9 @@ def collect_one_fwxx(
             post_search_wait=FWXX_POST_SEARCH_WAIT,
         )
 
-        # 验证搜索结果是否正常（检查页面是否有异常提示）
-        try:
-            # 检查页面上是否存在常见的"无结果"提示
-            page_text = driver.page_source.lower()
-            if any(keyword in page_text for keyword in ['无查询结果', '无搜索结果', '请输入查询', '没有找到']):
-                print(f"    [!] 搜索无结果或出现异常提示")
-                print(f"    [*] 跳过此申请号，继续下一个...")
-                return None
-        except Exception:
-            pass
+        collection_timeline.append(('搜索结果就绪', time.perf_counter()))
+        wait_for_detail_search_target(detail_attempt)
+        print(f"    [✓] 本轮搜索响应已确认唯一目标申请号 {application_no}")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 步骤 2：点击申请号链接进入详情页（新标签）
@@ -342,18 +351,23 @@ def collect_one_fwxx(
 
         # 自动点击申请号链接
         print(f"    [*] 点击申请号链接进入详情页...")
-        detail_attempt = begin_detail_attempt(application_no)
+        collection_timeline.append(('打开详情页', time.perf_counter()))
+        detail_click_started = True
 
         InputService.move_and_click(link_x, link_y, post_click_wait=FWXX_DETAIL_CLICK_WAIT)
 
-        new_handles = [handle for handle in driver.window_handles if handle != search_handle]
-        if len(new_handles) != 1:
-            raise DetailCollectionFatalError("发文详情页未唯一打开，已停止批次")
-
-        detail_handle = new_handles[0]
+        detail_handle = wait_for_unique_detail_window(driver, search_handle)
         driver.switch_to.window(detail_handle)
         time.sleep(FWXX_TAB_SWITCH_WAIT)
-        wait_for_detail_identity(detail_attempt)
+        collection_timeline.append(('官方详情身份核验', time.perf_counter()))
+        try:
+            wait_for_detail_identity(detail_attempt)
+        except DetailIdentityTimeout as error:
+            print(f"    [!] {error}，正在恢复搜索页...")
+            restore_detail_search_page(driver, search_handle, detail_attempt['attempt_id'])
+            detail_attempt = None
+            detail_handle = None
+            raise FwxxCollectionRetryableError(str(error)) from error
         print("    [✓] 官方申请号已确认，开始采集发文")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -361,6 +375,7 @@ def collect_one_fwxx(
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
         print(f"    [*] 点击'发文信息'菜单...")
+        collection_timeline.append(('发文菜单与缓存响应', time.perf_counter()))
         InputService.move_and_click(
             fwxx_menu_x,
             fwxx_menu_y,
@@ -376,6 +391,7 @@ def collect_one_fwxx(
             PATENT_FWXX_CACHE_FILE,
             application_no,
             max_wait=FWXX_CACHE_POLL_TIMEOUT,
+            on_poll=raise_if_cnipa_login_required,
             validate=partial(
                 matches_detail_attempt,
                 expected_attempt_id=detail_attempt['attempt_id'],
@@ -383,24 +399,45 @@ def collect_one_fwxx(
         )
 
         if not fwxx_data:
-            print(f"    [!] 未从缓存中获得发文信息")
-            # 降级处理：关闭标签但继续
+            raise FwxxCollectionRetryableError(
+                f'已确认详情身份，等待 {FWXX_CACHE_POLL_TIMEOUT:g} 秒仍未获得本次发文缓存'
+            )
         else:
             print(f"    [✓] 成功读取发文信息")
             collected_fields.update({
                 field: value for field, value in fwxx_data.items()
                 if field != 'detail_attempt_id'
             })
-        return collected_fields or None
+        return collected_fields
 
-    except DetailCollectionFatalError:
+    except DetailSearchRetryableError as error:
+        if detail_click_started:
+            print(f"    [!] {error}，正在恢复搜索页...")
+            restore_detail_search_page(driver, search_handle, detail_attempt['attempt_id'])
+            detail_attempt = None
+            detail_handle = None
+        raise FwxxCollectionRetryableError(str(error)) from error
+    except (DetailCollectionFatalError, CNIPALoginRequired, FwxxCollectionRetryableError):
         raise
+    except pyautogui.FailSafeException as error:
+        raise DetailCollectionFatalError('鼠标紧急停止已触发，发文批次已中断') from error
     except WebDriverException as error:
         raise DetailCollectionFatalError('浏览器连接失效，发文批次已中断') from error
     except Exception as e:
-        print(f"    [!] 采集失败: {str(e)[:100]}")
-        return collected_fields or None
+        if detail_click_started and detail_handle is None:
+            restore_detail_search_page(driver, search_handle, detail_attempt['attempt_id'])
+            detail_attempt = None
+        raise FwxxCollectionRetryableError(
+            f'{collection_timeline[-1][0]}失败: {type(e).__name__}: {str(e)[:200]}'
+        ) from e
     finally:
+        collection_timeline.append(('完成', time.perf_counter()))
+        stage_durations = ', '.join(
+            f'{stage_name} {next_start - stage_start:.1f}s'
+            for (stage_name, stage_start), (_, next_start)
+            in zip(collection_timeline, collection_timeline[1:])
+        )
+        print(f"    [耗时] {application_no}: {stage_durations}")
         if detail_attempt is not None:
             clear_matching_detail_attempt(detail_attempt['attempt_id'])
         if detail_handle is not None:
@@ -587,18 +624,31 @@ def _collect_fwxx_batch(args, checkpoint: CollectionBatch) -> None:
 
             # 采集单个申请号
             checkpoint.record_started(application_no)
-            fwxx_fields = collect_one_fwxx(
-                driver=driver,
-                application_no=application_no,
-                input_x=input_x,
-                input_y=input_y,
-                button_x=button_x,
-                button_y=button_y,
-                link_x=link_x,
-                link_y=link_y,
-                fwxx_menu_x=fwxx_menu_x,
-                fwxx_menu_y=fwxx_menu_y,
-            )
+            # 内部重试属于同一件；批次与连续失败计数只记录最终结果。
+            attempt_failures = []
+            fwxx_fields = None
+            for collection_attempt in range(2):
+                if collection_attempt:
+                    print(f"  [↻] 首次失败原因: {attempt_failures[-1]}；重新搜索并重试一次...")
+                    time.sleep(FWXX_POST_SEARCH_WAIT)
+                try:
+                    fwxx_fields = collect_one_fwxx(
+                        driver=driver,
+                        application_no=application_no,
+                        input_x=input_x,
+                        input_y=input_y,
+                        button_x=button_x,
+                        button_y=button_y,
+                        link_x=link_x,
+                        link_y=link_y,
+                        fwxx_menu_x=fwxx_menu_x,
+                        fwxx_menu_y=fwxx_menu_y,
+                    )
+                except FwxxCollectionRetryableError as error:
+                    attempt_failures.append(str(error))
+                    print(f"  [!] 第 {collection_attempt + 1}/2 次采集失败: {error}")
+                else:
+                    break
 
             # 仅更新发文字段
             if fwxx_fields:
@@ -613,9 +663,12 @@ def _collect_fwxx_batch(args, checkpoint: CollectionBatch) -> None:
                     checkpoint.record_failure(application_no, '发文数据未写入专利主库，已保存未匹配备份')
                     failure_streak.record_failure()
             else:
-                print(f"  ❌ 未采集到数据")
+                print("  ❌ 两次尝试仍未采集到数据，已保留未完成记录，继续后续申请号")
                 failed_count += 1
-                checkpoint.record_failure(application_no, '未采集到有效发文数据')
+                checkpoint.record_failure(application_no, '；'.join(
+                    f'第 {attempt_index} 次: {reason}'
+                    for attempt_index, reason in enumerate(attempt_failures, 1)
+                ))
                 failure_streak.record_failure()
 
             # 申请号之间的随机延迟（防反爬）
@@ -647,6 +700,9 @@ def _collect_fwxx_batch(args, checkpoint: CollectionBatch) -> None:
                 f'发文采集失败 {failed_count} 条，未完成清单: {FWXX_COLLECTION_CHECKPOINT_FILE}'
             )
 
+    except (DetailCollectionFatalError, CNIPALoginRequired):
+        # 批次上下文先保存中断原因，由 CLI 输出一次可操作的错误提示。
+        raise
     except CollectionFailureStreakExceeded:
         # 熔断信息已由 CollectionFailureStreak 打点并写入报警，无需 traceback
         raise
@@ -667,7 +723,7 @@ def _collect_fwxx_batch(args, checkpoint: CollectionBatch) -> None:
             except Exception:
                 pass
 
-        print("\n[✓] 程序结束")
+        print("\n[*] 程序结束")
 
 
 # ============================================================================
@@ -720,6 +776,9 @@ if __name__ == "__main__":
 
     try:
         run_fwxx_collection(args=args)
+    except (DetailCollectionFatalError, CNIPALoginRequired) as error:
+        print(f"\n⛔ 发文采集中断: {error}")
+        sys.exit(1)
     except (DetailCollectionDesktopBusyError, CollectionBatchBusyError, ValueError) as error:
         print(f"\n[!] {error}")
         sys.exit(2)

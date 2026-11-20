@@ -73,7 +73,7 @@ class TestAgencyDetailFlow(unittest.TestCase):
         begin_attempt,
         clear_attempt,
         poll_cache,
-        close_tab,
+        hotkey,
         _sleep,
     ):
         driver = MagicMock()
@@ -86,6 +86,7 @@ class TestAgencyDetailFlow(unittest.TestCase):
             driver.window_handles.append("detail")
 
         def close_detail_tab(*_args, **_kwargs):
+            self.assertEqual(driver.switch_to.window.call_args, call("detail"))
             driver.window_handles.remove("detail")
 
         begin_attempt.side_effect = lambda _app_no: (
@@ -97,7 +98,7 @@ class TestAgencyDetailFlow(unittest.TestCase):
             }
         )
         input_service.move_and_click.side_effect = reveal_detail_tab
-        close_tab.side_effect = close_detail_tab
+        driver.close.side_effect = close_detail_tab
         expected_ack = agency_ack()
         poll_cache.return_value = expected_ack
 
@@ -135,7 +136,8 @@ class TestAgencyDetailFlow(unittest.TestCase):
         )
         coordinate_service.load_fwxx_coordinates.assert_not_called()
         coordinate_service.load_fee_menu_coordinates.assert_not_called()
-        close_tab.assert_called_once_with("ctrl", "w")
+        driver.close.assert_called_once_with()
+        hotkey.assert_not_called()
         self.assertEqual(driver.switch_to.window.call_args_list[0], call("search"))
 
     @patch("collect_agency.poll_cache_for_key")
@@ -238,7 +240,6 @@ class TestAgencyDetailFlow(unittest.TestCase):
         clear_attempt.assert_called_once_with("attempt-current")
 
     @patch("collect_agency.time.sleep")
-    @patch("collect_agency.pyautogui.hotkey")
     @patch("collect_agency.poll_cache_for_key", return_value=agency_ack())
     @patch("collect_agency.clear_matching_agency_attempt")
     @patch("collect_agency.begin_agency_attempt", return_value={
@@ -255,7 +256,6 @@ class TestAgencyDetailFlow(unittest.TestCase):
         _begin_attempt,
         _clear_attempt,
         _poll_cache,
-        _close_tab,
         _sleep,
     ):
         driver = MagicMock()

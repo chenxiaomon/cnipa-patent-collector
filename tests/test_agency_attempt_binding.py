@@ -182,7 +182,6 @@ class TestMITMAgencyAttemptBinding(unittest.TestCase):
 
 class TestCollectorAttemptTiming(unittest.TestCase):
     @patch("collect_agency.time.sleep")
-    @patch("collect_agency.pyautogui.hotkey")
     @patch("collect_agency.clear_matching_agency_attempt")
     @patch("collect_agency.begin_agency_attempt")
     @patch("collect_agency.InputService")
@@ -193,7 +192,6 @@ class TestCollectorAttemptTiming(unittest.TestCase):
         input_service,
         begin_attempt,
         _clear_attempt,
-        close_tab,
         _sleep,
     ):
         current_attempt = attempt_marker("attempt-current", "2024110065970")
@@ -216,7 +214,7 @@ class TestCollectorAttemptTiming(unittest.TestCase):
                 driver.window_handles.remove("detail")
 
             input_service.move_and_click.side_effect = write_ack_before_poll
-            close_tab.side_effect = close_detail_tab
+            driver.close.side_effect = close_detail_tab
             with patch.object(
                 collect_agency,
                 "PATENT_AGENCY_CACHE_FILE",

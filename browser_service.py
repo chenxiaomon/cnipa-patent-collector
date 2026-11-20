@@ -17,6 +17,7 @@ from browser_utils import (
 )
 from selenium.common.exceptions import TimeoutException
 from collection_health import record_collection_alert
+from cnipa_session import begin_cnipa_session
 
 from settings import (
     BROWSER_PAGE_LOAD_TIMEOUT,
@@ -127,6 +128,7 @@ class BrowserService:
             print("\n✓ 浏览器已打开")
 
             BrowserService._do_login(driver)
+            begin_cnipa_session()
             return driver
         except BaseException as error:
             # The caller has not received the driver yet, so startup owns cleanup.

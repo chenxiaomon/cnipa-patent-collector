@@ -28,7 +28,7 @@ cnipa-patent-collector/
 ├── detection_logger.py       # 数据记录和 Excel 导出
 ├── data/
 │   ├── patents.db                    # 运行时唯一真相源（所有读写通过 PatentsDB）
-│   ├── results/detection_log.jsonl  # 只读 git 备份，每次大批次后由 export_to_jsonl() 刷新
+│   ├── results/detection_log.jsonl.gz  # 只读 git 备份（gzip 压缩），每次大批次后由 export_to_jsonl() 刷新
 │   ├── focus_strategy.json           # 跟踪申请周期配置
 │   ├── update_strategy.json          # 全局更新优先级策略
 │   └── update_list_*.txt             # 各周期更新清单
@@ -39,7 +39,7 @@ cnipa-patent-collector/
 - `data/config*.json`（坐标）、`data/patent_*_cache.json`：本机专用，不入库
 - `data/config_backup_*.json`、`data/results/*.xlsx`：临时产物，不入库
 - `data/patents.db`：主数据，追踪入库（运行时 SSOT，禁止在运行时直接读 JSONL，sync.py 例外）
-- `data/results/detection_log.jsonl`：只读 git 备份，由 `PatentsDB.export_to_jsonl()` 刷新
+- `data/results/detection_log.jsonl.gz`：只读 git 备份，由 `PatentsDB.export_to_jsonl()` 刷新；gzip 格式只经 `detection_log_backup.py` 读写（纯文本 2026-11 已达 94.6MB，逼近 GitHub 100MB 单文件上限）
 - `/tmp/cnipa_*.png`：截图临时文件，30 秒后自动清理
 
 ## 开发约定
