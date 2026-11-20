@@ -23,7 +23,7 @@
     },
     {
       "path": ".gitignore",
-      "sha256": "449e9947230ade89e78e92fd1cafe191a3aa92bc1191b6a6eea06ac5b01f73a9"
+      "sha256": "6a051d3f2a66070b5ec27605dadf8b3beead910c47341f6b702c180ba6a9b857"
     },
     {
       "path": "CHANGELOG.md",
@@ -31,7 +31,7 @@
     },
     {
       "path": "CLAUDE.md",
-      "sha256": "d05c48161a522b996e8d5d228e4c4c646e066e82cc6d46852df34fdd48bf50aa"
+      "sha256": "c4716b73225aa9ff08f7caad2244c04bead4169e567ac5f558643d6e9e809a76"
     },
     {
       "path": "Dockerfile",

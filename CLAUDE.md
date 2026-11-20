@@ -38,6 +38,7 @@ cnipa-patent-collector/
 
 - `data/config*.json`（坐标）、`data/patent_*_cache.json`：本机专用，不入库
 - `data/config_backup_*.json`、`data/results/*.xlsx`：临时产物，不入库
+- `data/update_list_dynamic*.txt`、`data/retry_failed.txt`、`data/retry_batch_*.txt`：命令从 patents.db 随时重新生成的申请号清单，不入库；新增此类生成文件时同步加进 `.gitignore`
 - `data/patents.db`：主数据，追踪入库（运行时 SSOT，禁止在运行时直接读 JSONL，sync.py 例外）
 - `data/results/detection_log.jsonl.gz`：只读 git 备份，由 `PatentsDB.export_to_jsonl()` 刷新；gzip 格式只经 `detection_log_backup.py` 读写（纯文本 2026-11 已达 94.6MB，逼近 GitHub 100MB 单文件上限）
 - `/tmp/cnipa_*.png`：截图临时文件，30 秒后自动清理

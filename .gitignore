@@ -47,6 +47,12 @@ data/collection_batches/
 data/failed_applications.txt
 data/search_list_retry.txt
 data/search_list.txt
+# 由命令随时从 patents.db 重新生成的申请号清单，不入库
+# 状态检查清单：update_by_strategy.py generate
+data/update_list_dynamic*.txt
+# 失败重试清单与批次：retry_failed.py --write-list / --batch-size
+data/retry_failed.txt
+data/retry_batch_*.txt
 data/raw_responses/
 data/raw_searches/
 
