@@ -68,6 +68,8 @@ data/config_backup_*.json
 data/results/*.xlsx
 data/results/agency_verification_report.csv
 data/results/agency_verification_report.json
+# JSON 导出（Dashboard「JSON ↓」，可从 patents.db 重新生成）；全量超过 GitHub 100MB 单文件上限
+data/results/detection_log.json
 
 # ── 浏览器驱动（二进制，不入库）──────────────────────────
 chromedriver-win64/
