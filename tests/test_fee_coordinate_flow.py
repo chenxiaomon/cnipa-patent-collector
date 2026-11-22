@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import MagicMock, call, patch
 
 import collect_fees
+import collection_checkpoint
 import coordinate_service
 
 import desktop_collection_lock
@@ -144,6 +145,7 @@ class TestFeeCoordinateFlow(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             with (
                 patch.object(collect_fees, 'FEE_COLLECTION_CHECKPOINT_FILE', Path(temporary_directory) / 'resume.txt'),
+                patch.object(collection_checkpoint, 'COLLECTION_BATCHES_DIR', Path(temporary_directory) / 'batches'),
                 self.assertRaisesRegex(RuntimeError, '采集失败 1 条'),
             ):
                 collect_fees._run_fee_collection(arguments)

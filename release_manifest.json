@@ -503,7 +503,7 @@
     },
     {
       "path": "tests/test_browser_service_login.py",
-      "sha256": "f79a409f78d2aa397d67814b116c3214bf25b0acabc7f5fe5688f5d1092c5e06"
+      "sha256": "59afa409af33c6cc1bb0a4b80b29ded84a73b90a83dd2f909039ad65d95daa48"
     },
     {
       "path": "tests/test_browser_utils.py",
@@ -567,7 +567,7 @@
     },
     {
       "path": "tests/test_coordinate_offline_calibration.py",
-      "sha256": "36a943f15eb7d5a25e04225bc7a29bbe1b3c1d09765e9fac9acc89f8409790f8"
+      "sha256": "c3da6380f4e8a72bec702226d9b9e4719d3c7588b35d0cc0d22b2c4a25a5f6ff"
     },
     {
       "path": "tests/test_coordinate_placeholders.py",
@@ -591,7 +591,7 @@
     },
     {
       "path": "tests/test_dashboard_coordinate_calibration.py",
-      "sha256": "5877f36b40eef8ba3fd5ee2ccce9af8636dd1a54e013d5e8f868d86cd316e24e"
+      "sha256": "61ec9558e419364bb13f2dcc69ccadff352c16b4a45e560132978f73e68be12d"
     },
     {
       "path": "tests/test_dashboard_job_history.py",
@@ -659,15 +659,15 @@
     },
     {
       "path": "tests/test_fee_coordinate_flow.py",
-      "sha256": "852058fcdcc9ee04ce7c13458f47b0d0dd27d7dd29b720d3cd3c959a3260ee18"
+      "sha256": "8615cfa55fa7104d6e87a2d405a8471c6fc0dd2f7e59ef307bd158328b2ca2b1"
     },
     {
       "path": "tests/test_fee_failure_retry.py",
-      "sha256": "3bf26576022c357485f77c4d55238e77cd6a81ee2ee1935d30bbdfb91189397f"
+      "sha256": "d9d651776c5a3fa27b2f3b85db1251f87cf76d5538dbc31c32373d2de2abacfc"
     },
     {
       "path": "tests/test_fee_persistence_integration.py",
-      "sha256": "aca390bb82f06f64bc77ab6c6395e76757863554f6633da6c6d355e4daa4c159"
+      "sha256": "3575fd89c16992e03efd51e242f7bf25385c682cc10c468ee24b41e79eaf95e2"
     },
     {
       "path": "tests/test_fee_response_shapes.py",
@@ -683,7 +683,7 @@
     },
     {
       "path": "tests/test_fee_snapshot_versions.py",
-      "sha256": "fd62b6015c58defafb9758ff61e4f1b524ad2c437d99be4ef697397d4ce114da"
+      "sha256": "487ee52758cd4eda18fecfed84081408675944d55dbda4b44f2ca10be6bdb134"
     },
     {
       "path": "tests/test_fetch_update.py",

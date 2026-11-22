@@ -36,6 +36,13 @@ DETAIL_CONFIG = {
 
 
 class TestCoordinateCalibrationJobSpecs(unittest.TestCase):
+    def setUp(self) -> None:
+        job_log_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(job_log_directory.cleanup)
+        job_log_patch = mock.patch.object(web_dashboard, "DASHBOARD_JOB_LOG_DIR", Path(job_log_directory.name))
+        job_log_patch.start()
+        self.addCleanup(job_log_patch.stop)
+
     def test_search_coordinate_job_uses_manual_pointer_recorder(self):
         with mock.patch.object(web_dashboard, "resolve_task_python", return_value="python"):
             job_spec = web_dashboard.build_job_spec("calibrate_search", {})
@@ -86,7 +93,10 @@ class TestCoordinateCalibrationJobSpecs(unittest.TestCase):
                     web_dashboard.os.environ,
                     {"USE_MITM_PROXY": "true", "USE_VIRTUAL_DISPLAY": "true"},
                 ):
-                    recorder_jobs.start(action, {})
+                    calibration_job = recorder_jobs.start(action, {})
+                    # Thread is mocked, so the job never finishes and never closes its log;
+                    # Windows cannot delete the still-open file from the temporary directory.
+                    self.addCleanup(calibration_job.close_log)
 
                 popen.assert_called_once()
                 check_proxy.assert_not_called()

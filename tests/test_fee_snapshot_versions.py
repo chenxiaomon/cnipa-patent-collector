@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import collect_fees
+import collection_checkpoint
 import detection_logger
 from db_manager import PatentsDB
 from detection_logger import DetectionLogger, DetectionRecord
@@ -43,6 +44,9 @@ class TestFeeSnapshotVersions(unittest.TestCase):
         collection_database_patch = patch.object(collect_fees, "PATENTS_DB_FILE", self.database_path)
         collection_database_patch.start()
         self.addCleanup(collection_database_patch.stop)
+        unmatched_fee_patch = patch.object(collect_fees, "FEE_UNMATCHED_FILE", str(self.temporary_path / "fee_unmatched.json"))
+        unmatched_fee_patch.start()
+        self.addCleanup(unmatched_fee_patch.stop)
         self.logger = DetectionLogger(str(self.temporary_path / "detections.jsonl"))
 
     def test_old_fee_records_do_not_override_current_snapshot_in_logger_paths(self):
@@ -217,6 +221,7 @@ class TestFeeSnapshotVersions(unittest.TestCase):
     def _run_collection_for_payload(self, fee_payload):
         with (
             patch.object(collect_fees, 'FEE_COLLECTION_CHECKPOINT_FILE', self.temporary_path / 'resume.txt'),
+            patch.object(collection_checkpoint, 'COLLECTION_BATCHES_DIR', self.temporary_path / 'batches'),
             patch.object(collect_fees, "load_fee_dataset_targets", return_value=[APPLICATION_NO]),
             patch.object(collect_fees, "CoordinateService") as coordinate_service,
             patch.object(collect_fees, "BrowserService"),

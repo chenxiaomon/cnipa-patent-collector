@@ -107,6 +107,10 @@ class TestFeeFailureLifecycle(unittest.TestCase):
                 'collect_fees.FEE_COLLECTION_CHECKPOINT_FILE',
                 Path(temporary_directory) / 'resume.txt',
             ))
+            stack.enter_context(patch(
+                'collection_checkpoint.COLLECTION_BATCHES_DIR',
+                Path(temporary_directory) / 'batches',
+            ))
             (
                 _load_targets,
                 coordinate_service,
