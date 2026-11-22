@@ -22,7 +22,10 @@ class TestFeePersistenceIntegration(unittest.TestCase):
                 "anjianywzt": "rejected",
             })
 
-            with patch.object(collect_fees, "PATENTS_DB_FILE", db_path):
+            with (
+                patch.object(collect_fees, "PATENTS_DB_FILE", db_path),
+                patch.object(collect_fees, "FEE_UNMATCHED_FILE", str(Path(temporary_directory) / "fee_unmatched.json")),
+            ):
                 persisted = collect_fees.persist_fee_fields(
                     "2026102909420",
                     {

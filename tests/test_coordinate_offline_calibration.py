@@ -1276,7 +1276,7 @@ class TestFixedBrowserWindowGeometry(unittest.TestCase):
                 "browser_service.create_driver_with_retry",
                 return_value=driver,
             ):
-                with patch("browser_service.time.sleep"):
+                with patch("browser_service.time.sleep"), patch("browser_service.begin_cnipa_session"):
                     with patch.object(BrowserService := browser_service.BrowserService, "_do_login"):
                         BrowserService.launch_and_login(
                             "https://example.invalid",

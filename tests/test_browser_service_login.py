@@ -36,6 +36,7 @@ class TestPrivateLoginConfirmation(unittest.TestCase):
         self.stdin.isatty.return_value = True
         self.confirmation = patches.enter_context(patch('builtins.input', return_value=''))
         self.alert = patches.enter_context(patch.object(browser_service, 'record_collection_alert'))
+        patches.enter_context(patch.object(browser_service, 'begin_cnipa_session'))
         patches.enter_context(patch.object(browser_service, 'LOGIN_READY_FLAG_FILE', self.login_flag))
         patches.enter_context(patch.object(browser_service, 'CNIPA_LOGIN_WAIT_SECONDS', 0))
         patches.enter_context(patch.object(browser_service, 'USE_VIRTUAL_DISPLAY', False))
